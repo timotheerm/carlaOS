@@ -46,6 +46,10 @@ jobs:
           cache-dependency-path: apps/shell/package-lock.json
       - run: npm ci
         working-directory: apps/shell
+      # Runs the Windows clean-up helper for real on this throwaway machine:
+      # scan, apply, undo, and check everything is back as it was.
+      - name: Test the core on Windows
+        run: cargo test --locked -p carla-core -- --nocapture
       - name: Build the shell installer
         run: npx tauri build
         working-directory: apps/shell

@@ -179,11 +179,13 @@ export function Cloud({ services, notify }: { services: CloudService[]; notify: 
 export function Settings({
   theme,
   onTheme,
+  onCleanup,
   onExit,
   version,
 }: {
   theme: "light" | "dark";
   onTheme: () => void;
+  onCleanup: () => void;
   onExit: () => void;
   version: string;
 }) {
@@ -192,6 +194,10 @@ export function Settings({
       <button className="setting" data-focus data-autofocus data-fid="set:theme" onClick={onTheme}>
         <span>Appearance</span>
         <span className="setting__value">{theme === "light" ? "Light" : "Dark"}</span>
+      </button>
+      <button className="setting" data-focus data-fid="set:cleanup" onClick={onCleanup}>
+        <span>Clean up Windows</span>
+        <span className="setting__value">Administrator only</span>
       </button>
       <button className="setting" data-focus data-fid="set:exit" onClick={onExit}>
         <span>Exit to Windows</span>

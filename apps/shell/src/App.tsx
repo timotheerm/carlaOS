@@ -3,10 +3,12 @@ import { cloud, games, hosts } from "./data/sample";
 import { appInfo, quit } from "./native";
 import { currentFocusId, focusById, focusFirst, installScrollIntoView } from "./nav/focus";
 import { installInput, type Action } from "./nav/input";
+import { cleanup } from "./cleanup/store";
+import { Cleanup, type CleanupView } from "./screens/cleanup";
 import { Cloud, Desktops, Emulation, GameDetail, Games, Home, HostView, Ports, Settings, type Ctx } from "./screens/screens";
 import { Hints, SECTIONS, TopBar, type Section } from "./ui/chrome";
 
-type Page = { kind: "game"; id: string } | { kind: "host"; id: string };
+type Page = { kind: "game"; id: string } | { kind: "host"; id: string } | { kind: "cleanup"; id: CleanupView };
 type Theme = "light" | "dark";
 
 const THEME_KEY = "carla.theme";
@@ -101,6 +103,12 @@ export function App() {
     return installInput(onAction);
   }, [back, go, section, toggleFavourite]);
 
+  // The administrator pages lock themselves again as soon as they are left.
+  const inCleanup = stack.some((p) => p.kind === "cleanup");
+  useEffect(() => {
+    if (!inCleanup) cleanup.leave();
+  }, [inCleanup]);
+
   // After every page change put focus somewhere sensible.
   const top = stack[stack.length - 1];
   const pageKey = top ? `${top.kind}:${top.id}` : section;
@@ -124,6 +132,7 @@ export function App() {
   let page;
   if (top?.kind === "game") page = <GameDetail {...ctx} gameId={top.id} onToggleFavourite={toggleFavourite} />;
   else if (top?.kind === "host") page = <HostView {...ctx} hostId={top.id} />;
+  else if (top?.kind === "cleanup") page = <Cleanup view={top.id} open={(view) => push({ kind: "cleanup", id: view })} />;
   else if (section === "home") page = <Home {...ctx} />;
   else if (section === "games") page = <Games {...ctx} />;
   else if (section === "desktops") page = <Desktops {...ctx} />;
@@ -135,6 +144,7 @@ export function App() {
       <Settings
         theme={theme}
         onTheme={() => setTheme(theme === "light" ? "dark" : "light")}
+        onCleanup={() => push({ kind: "cleanup", id: "home" })}
         onExit={() => void quit()}
         version={version}
       />
