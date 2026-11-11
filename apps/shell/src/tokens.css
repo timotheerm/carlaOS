@@ -7,19 +7,20 @@
   --accent-soft: #f6d5dd;
   --text: #3a2a33;
   --text-quiet: #8c7f86;
+  --shadow: 0 0.75rem 2rem rgb(58 42 51 / 12%);
   --ok: #7fa98b;
   --warn: #d9a441;
   --off: #b5acb0;
 
-  --radius-card: 20px;
+  --radius-card: 1.25rem;
   --radius-pill: 999px;
-  --gap: 16px;
-  --touch-min: 64px;
+  --gap: 1rem;
+  --touch-min: 4rem;
 
   --font: "Nunito", "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif;
-  --text-body: 22px;
-  --text-title: 28px;
-  --text-display: 72px;
+  --text-body: 1.375rem;
+  --text-title: 1.75rem;
+  --text-display: 4.5rem;
 
   --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
   --fast: 150ms;
@@ -33,6 +34,7 @@
   --accent-soft: #5a3550;
   --text: #f8ecef;
   --text-quiet: #b9a6b3;
+  --shadow: 0 0.75rem 2rem rgb(0 0 0 / 40%);
   --ok: #9cc7a8;
   --warn: #e9bd6a;
   --off: #7d6f79;
@@ -40,6 +42,12 @@
 
 * {
   box-sizing: border-box;
+}
+
+/* One rem is 16px on the Ally's 1920px-wide screen and scales with any other
+   window, so the layout keeps its proportions everywhere. */
+html {
+  font-size: calc(100vw / 120);
 }
 
 html,
