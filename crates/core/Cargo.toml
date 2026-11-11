@@ -1,0 +1,12 @@
+[package]
+name = "carla-core"
+description = "Shared CarlaOS core: catalogue model, scanners and the companion protocol"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

@@ -1,0 +1,70 @@
+.splash {
+  height: 100%;
+  display: grid;
+  grid-template-rows: 1fr auto;
+  place-items: center;
+  padding: 48px;
+  background:
+    radial-gradient(60% 50% at 50% 38%, var(--accent-soft), transparent 70%),
+    var(--bg);
+}
+
+.splash__centre {
+  display: grid;
+  justify-items: center;
+  gap: var(--gap);
+}
+
+.splash__mark {
+  margin: 0;
+  font-size: var(--text-display);
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+.splash__mark span {
+  color: var(--accent);
+}
+
+.splash__line {
+  margin: 0;
+  color: var(--text-quiet);
+}
+
+.splash__bar {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--gap);
+  color: var(--text-quiet);
+}
+
+.splash__actions {
+  display: flex;
+  gap: var(--gap);
+}
+
+.pill {
+  min-height: var(--touch-min);
+  padding: 0 32px;
+  border: 2px solid transparent;
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+  transition:
+    transform var(--fast) var(--ease),
+    border-color var(--fast) var(--ease),
+    box-shadow var(--fast) var(--ease);
+}
+
+.pill:focus-visible,
+.pill:hover {
+  outline: none;
+  border-color: var(--accent);
+  transform: scale(1.04);
+  box-shadow: 0 8px 28px color-mix(in srgb, var(--accent) 35%, transparent);
+}

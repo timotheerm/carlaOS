@@ -1,0 +1,10 @@
+[package]
+name = "carla-companion"
+description = "CarlaOS desktop companion: reports status and games, prepares streams"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+carla-core = { path = "../core" }
+serde_json.workspace = true

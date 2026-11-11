@@ -1,0 +1,23 @@
+[workspace]
+resolver = "2"
+members = ["crates/core", "crates/companion", "apps/shell/src-tauri"]
+# The shell needs WebView2 (Windows) or webkit2gtk (Linux) to build, so plain
+# `cargo build` / `cargo test` at the root only covers the portable crates.
+default-members = ["crates/core", "crates/companion"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/timotheerm/carlaOS"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
+opt-level = "s"

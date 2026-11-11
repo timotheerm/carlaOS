@@ -1,0 +1,67 @@
+/* CarlaOS design tokens. Every colour, size and duration in the UI comes from
+   here, so the whole look can be tuned on the handheld in one place. */
+:root {
+  --bg: #fbf5f3;
+  --surface: #ffffff;
+  --accent: #d98ba0;
+  --accent-soft: #f6d5dd;
+  --text: #3a2a33;
+  --text-quiet: #8c7f86;
+  --ok: #7fa98b;
+  --warn: #d9a441;
+  --off: #b5acb0;
+
+  --radius-card: 20px;
+  --radius-pill: 999px;
+  --gap: 16px;
+  --touch-min: 64px;
+
+  --font: "Nunito", "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif;
+  --text-body: 22px;
+  --text-title: 28px;
+  --text-display: 72px;
+
+  --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+  --fast: 150ms;
+  --slow: 200ms;
+}
+
+:root[data-theme="dark"] {
+  --bg: #1e1220;
+  --surface: #2c1b2f;
+  --accent: #f2a7bb;
+  --accent-soft: #5a3550;
+  --text: #f8ecef;
+  --text-quiet: #b9a6b3;
+  --ok: #9cc7a8;
+  --warn: #e9bd6a;
+  --off: #7d6f79;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: var(--text-body);
+  overflow: hidden;
+  user-select: none;
+  -webkit-font-smoothing: antialiased;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition-duration: 0ms !important;
+    animation-duration: 0ms !important;
+  }
+}
