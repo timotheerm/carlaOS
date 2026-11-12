@@ -69,7 +69,8 @@ pub struct Status {
 /// One game installed on a desktop.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoteGame {
-    /// Catalogue id, the same on every machine (`steam:<app id>`).
+    /// Catalogue id, the same on every machine (`steam:<app id>`, or
+    /// `manual:<key>` for a program the administrator added there).
     pub id: String,
     pub source: String,
     pub source_id: String,

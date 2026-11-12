@@ -85,14 +85,16 @@ fn sync_games(library: &Library, host: &HostRow, link: &Link) -> Result<usize, S
     let have_cover: std::collections::HashSet<String> =
         library.store().list()?.into_iter().filter(|g| g.cover.is_some()).map(|g| g.id).collect();
     let dir = art_dir(library);
-    let found: Vec<Scanned> = games
+    // Steam games, and programs the administrator added on the desktop.
+    let from = |source: &'static str| -> Vec<Scanned> {
+        games
         .iter()
-        .filter(|g| g.source == "steam")
+        .filter(|g| g.source == source && g.id == format!("{source}:{}", g.source_id))
         .map(|g| {
             // Fetch a picture only for games that have none here yet.
             let mut cover = None;
             if g.has_cover && !have_cover.contains(&g.id) && g.source_id.bytes().all(|b| b.is_ascii_alphanumeric()) {
-                let path = dir.join(format!("steam-{}.jpg", g.source_id));
+                let path = dir.join(format!("{source}-{}.jpg", g.source_id));
                 if path.is_file() {
                     cover = Some(path);
                 } else if let Ok(bytes) = link.cover(&g.id) {
@@ -103,9 +105,12 @@ fn sync_games(library: &Library, host: &HostRow, link: &Link) -> Result<usize, S
             }
             Scanned { source_id: g.source_id.clone(), title: g.title.clone(), install_path: PathBuf::new(), cover, hero: None }
         })
-        .collect();
-    library.store().sync(&host.id, "steam", &found, now())?;
-    Ok(found.len())
+        .collect()
+    };
+    let (steam, manual) = (from("steam"), from("manual"));
+    library.store().sync(&host.id, "steam", &steam, now())?;
+    library.store().sync(&host.id, "manual", &manual, now())?;
+    Ok(steam.len() + manual.len())
 }
 
 /// A desktop's game list changes rarely, and reading it makes the desktop
@@ -285,6 +290,47 @@ pub fn hosts_remove(admin: State<'_, Admin>, library: State<'_, Library>, id: St
     library.store().remove_host(&id)
 }
 
+/// Look through a desktop's games again now, without waiting for the next
+/// regular look. For after a game was installed or added there.
+#[tauri::command(async)]
+pub fn hosts_rescan(app: AppHandle, admin: State<'_, Admin>, library: State<'_, Library>, id: String) -> Result<usize, String> {
+    admin.require()?;
+    let host = library.store().hosts()?.into_iter().find(|h| h.id == id).ok_or("That desktop is no longer set up.")?;
+    let (link, status, _) = reach(&host).map_err(|e| match e {
+        Error::Unreachable => format!("{} did not answer. It may be off or asleep.", host.name),
+        e => e.to_string(),
+    })?;
+    let host = seen(&library, &host, &link, &status);
+    let games = sync_games(&library, &host, &link)?;
+    allow_pictures(&app, &art_dir(&library));
+    Ok(games)
+}
+
+/// Send a desktop to sleep. It refuses while a game runs there.
+#[tauri::command(async)]
+pub fn hosts_sleep(admin: State<'_, Admin>, library: State<'_, Library>, id: String) -> Result<(), String> {
+    admin.require()?;
+    let host = library.store().hosts()?.into_iter().find(|h| h.id == id).ok_or("That desktop is no longer set up.")?;
+    match reach(&host) {
+        Ok((link, ..)) => link.sleep().map_err(|e| e.to_string()),
+        Err(Error::Unreachable) => Err(format!("{} is not answering. It may already be asleep.", host.name)),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// After a stream for which CarlaOS woke the desktop: let it sleep again.
+/// Quiet, and the desktop itself refuses while the game is still open there.
+pub(crate) fn sleep_again(library: &Library, place: &str) {
+    let Some(host) = library.store().hosts().ok().and_then(|hosts| hosts.into_iter().find(|h| h.id == place)) else { return };
+    // The game needs a moment to close after the stream has ended.
+    std::thread::sleep(Duration::from_secs(20));
+    if let Ok((link, status, _)) = reach(&host) {
+        if status.state != HostState::Busy {
+            let _ = link.sleep();
+        }
+    }
+}
+
 /// A game's achievements from the first desktop that has it and answers,
 /// with that desktop's name.
 pub(crate) fn achievements(library: &Library, game_id: &str, places: &[String]) -> Option<(Vec<carla_core::library::achievements::Achievement>, String)> {
@@ -336,13 +382,16 @@ fn wake_and_wait(host: &HostRow, stopped: &dyn Fn() -> bool) -> Result<(Link, St
 
 /// Tell the desktop which game is wanted and start Moonlight on it. A desktop
 /// that does not answer is woken first; `waking` is called when that starts.
-pub(crate) fn start_stream(library: &Library, game_id: &str, place: &str, waking: &dyn Fn(), stopped: &dyn Fn() -> bool) -> Result<Child, String> {
+/// Also says whether the desktop had to be woken.
+pub(crate) fn start_stream(library: &Library, game_id: &str, place: &str, waking: &dyn Fn(), stopped: &dyn Fn() -> bool) -> Result<(Child, bool), String> {
     let host = library.store().hosts()?.into_iter().find(|h| h.id == place).ok_or("That desktop is no longer set up.")?;
     let exe = moonlight::find().ok_or("Moonlight is not installed on this Ally.")?;
+    let mut woke = false;
     let (link, status, _) = match reach(&host) {
         Ok(found) => found,
         Err(Error::Unreachable) if !host.macs.is_empty() => {
             waking();
+            woke = true;
             wake_and_wait(&host, stopped)?
         }
         Err(Error::Unreachable) => return Err(format!("{} did not answer. It may be off or asleep.", host.name)),
@@ -362,5 +411,6 @@ pub(crate) fn start_stream(library: &Library, game_id: &str, place: &str, waking
             Err(e) => return Err(e.to_string()),
         }
     }
-    moonlight::stream(&exe, &link.address, Picture::default()).map_err(|e| format!("Moonlight could not be started: {e}."))
+    let moonlight = moonlight::stream(&exe, &link.address, Picture::default()).map_err(|e| format!("Moonlight could not be started: {e}."))?;
+    Ok((moonlight, woke))
 }

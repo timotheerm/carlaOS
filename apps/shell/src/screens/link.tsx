@@ -5,7 +5,7 @@ import { backend } from "../cleanup/backend";
 import type { AdminStatus } from "../cleanup/types";
 import type { FoundHost, Host } from "../data/types";
 import { library, message } from "../library/store";
-import { focusFirst } from "../nav/focus";
+import { focusFirst, keepFocus } from "../nav/focus";
 import { CodePad, PinPad } from "../ui/pin";
 
 type Step =
@@ -15,6 +15,7 @@ type Step =
   | { at: "address" }
   | { at: "code"; address: string; name: string | null }
   | { at: "done"; name: string; games: number; warning: string | null }
+  | { at: "host"; id: string }
   | { at: "remove"; host: Host };
 
 export function LinkDesktops({ hosts, notify }: { hosts: Host[]; notify: (text: string) => void }) {
@@ -23,6 +24,7 @@ export function LinkDesktops({ hosts, notify }: { hosts: Host[]; notify: (text: 
   const [address, setAddress] = useState("");
   const [linking, setLinking] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
 
   // Locked on the way in and again on the way out.
   useEffect(() => {
@@ -34,6 +36,10 @@ export function LinkDesktops({ hosts, notify }: { hosts: Host[]; notify: (text: 
     const main = document.querySelector("main");
     if (main) focusFirst(main);
   }, [admin?.unlocked, step.at, hosts.length]);
+
+  // "Put to sleep" leaves the page when the desktop stops answering.
+  const watched = step.at === "host" ? hosts.find((h) => h.id === step.id)?.state : null;
+  useLayoutEffect(() => keepFocus("desk:rescan"), [watched]);
 
   if (!admin) return null;
   if (!admin.unlocked) {
@@ -207,6 +213,73 @@ export function LinkDesktops({ hosts, notify }: { hosts: Host[]; notify: (text: 
     );
   }
 
+  if (step.at === "host") {
+    const host = hosts.find((h) => h.id === step.id);
+    if (!host) {
+      return (
+        <div className="settings">
+          <button className="setting" data-focus data-autofocus data-fid="desk:back" onClick={() => setStep({ at: "list" })}>
+            <span>This desktop is no longer set up</span>
+            <span className="setting__value">Back</span>
+          </button>
+        </div>
+      );
+    }
+    const awake = host.state === "ready" || host.state === "busy" || host.state === "not_ready";
+    return (
+      <div className="settings">
+        <div className="pagehead">
+          <h1>{host.name}</h1>
+          <p>
+            {host.hardware || "Desktop"}
+            {host.address ? ` · ${host.address}` : ""}
+          </p>
+        </div>
+        <button
+          className="setting"
+          data-focus
+          data-autofocus
+          data-fid="desk:rescan"
+          onClick={() => {
+            if (busy) return;
+            setBusy(true);
+            library.rescanHost(host.id).then(
+              (games) => notify(`${games} ${games === 1 ? "game" : "games"} on ${host.name}.`),
+              (e) => notify(message(e)),
+            ).finally(() => setBusy(false));
+          }}
+        >
+          <span>Look for games again</span>
+          <span className="setting__value">{busy ? "Looking…" : "After installing or adding a game there"}</span>
+        </button>
+        {awake && (
+          <button
+            className="setting"
+            data-focus
+            data-fid="desk:sleep"
+            onClick={() =>
+              library.sleepHost(host.id).then(
+                () => notify(`${host.name} is going to sleep.`),
+                (e) => notify(message(e)),
+              )
+            }
+          >
+            <span>Put to sleep</span>
+            <span className="setting__value">{host.canWake ? "The Ally can wake it again" : "It has not said how to wake it yet"}</span>
+          </button>
+        )}
+        <button className="setting" data-focus data-fid="desk:remove" onClick={() => setStep({ at: "remove", host })}>
+          <span>Remove {host.name}</span>
+          <span className="setting__value">Stops streaming from it</span>
+        </button>
+        <button className="setting" data-focus data-fid="desk:back" onClick={() => setStep({ at: "list" })}>
+          <span>Done</span>
+          <span className="setting__value">Back to Desktops</span>
+        </button>
+      </div>
+    );
+  }
+
   if (step.at === "remove") {
     const host = step.host;
     return (
@@ -215,7 +288,7 @@ export function LinkDesktops({ hosts, notify }: { hosts: Host[]; notify: (text: 
           <h1>Remove {host.name}?</h1>
           <p>Its games leave the library unless they are also somewhere else. Playtime is kept. You can link it again later.</p>
         </div>
-        <button className="setting" data-focus data-autofocus data-fid="unlink:no" onClick={() => setStep({ at: "list" })}>
+        <button className="setting" data-focus data-autofocus data-fid="unlink:no" onClick={() => setStep({ at: "host", id: host.id })}>
           <span>Keep it</span>
           <span className="setting__value" />
         </button>
@@ -251,9 +324,9 @@ export function LinkDesktops({ hosts, notify }: { hosts: Host[]; notify: (text: 
         <span className="setting__value">Needs the code it shows</span>
       </button>
       {hosts.map((h) => (
-        <button key={h.id} className="setting" data-focus data-fid={`unlink:${h.id}`} onClick={() => setStep({ at: "remove", host: h })}>
+        <button key={h.id} className="setting" data-focus data-fid={`desk:${h.id}`} onClick={() => setStep({ at: "host", id: h.id })}>
           <span>{h.name}</span>
-          <span className="setting__value">{h.address ? `${h.address} · remove` : "Remove"}</span>
+          <span className="setting__value">{h.address ? `${h.address} · manage` : "Manage"}</span>
         </button>
       ))}
     </div>

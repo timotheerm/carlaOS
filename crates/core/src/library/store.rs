@@ -142,7 +142,7 @@ impl Store {
         let exe = text(&game.exe);
         // The id is stable for a given program, so re-adding does not duplicate.
         let source_id = exe.to_lowercase();
-        let id = format!("manual:{:016x}", fnv(&source_id));
+        let id = format!("manual:{}", super::manual_key(&exe));
         let dir = game.exe.parent().map(text).unwrap_or_default();
         let tx = self.db.transaction().map_err(err)?;
         tx.execute(
@@ -219,12 +219,13 @@ impl Store {
             .map_err(err)?;
         rows.into_iter()
             .map(|mut g| {
-                g.manual = g.id.starts_with("manual:");
                 g.places = places
                     .query_map(params![g.id], |r| r.get(0))
                     .map_err(err)?
                     .collect::<rusqlite::Result<_>>()
                     .map_err(err)?;
+                // Only what was added by hand on this machine can be removed here.
+                g.manual = g.id.starts_with("manual:") && g.places.iter().any(|p| p == LOCAL);
                 Ok(g)
             })
             .collect()
@@ -386,9 +387,6 @@ impl Store {
 }
 
 /// FNV-1a, for short stable ids. Not for anything secret.
-fn fnv(s: &str) -> u64 {
-    s.bytes().fold(0xcbf2_9ce4_8422_2325, |h, b| (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3))
-}
 
 #[cfg(test)]
 mod tests {
@@ -528,6 +526,21 @@ mod tests {
         let games = store.list().unwrap();
         assert_eq!(games.len(), 1, "a game that was only on the desktop is no longer offered");
         assert_eq!(games[0].places, ["local"]);
+    }
+
+    #[test]
+    fn a_game_added_by_hand_on_a_desktop_is_streamable_but_not_removable_here() {
+        let mut store = Store::in_memory().unwrap();
+        let key = crate::library::manual_key("D:\\Games\\Lanterns\\Lanterns.exe");
+        assert_eq!(key, crate::library::manual_key("d:\\games\\lanterns\\LANTERNS.EXE"), "the same program whatever the capitals");
+        store.sync("home", "manual", &[scanned(&key, "Paper Lanterns")], 1).unwrap();
+        let games = store.list().unwrap();
+        assert_eq!((games[0].id.clone(), games[0].platform.as_str(), games[0].manual), (format!("manual:{key}"), "Standalone", false));
+        assert_eq!(games[0].places, ["home"]);
+        assert_eq!(store.install(&games[0].id, "home").unwrap().source, "manual");
+        // Taken off the desktop's list: gone here at the next look.
+        store.sync("home", "manual", &[], 2).unwrap();
+        assert!(store.list().unwrap().is_empty());
     }
 
     #[test]

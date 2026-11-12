@@ -53,6 +53,8 @@ fn main() {
             hosts::hosts_link,
             hosts::hosts_remove,
             hosts::hosts_wake,
+            hosts::hosts_rescan,
+            hosts::hosts_sleep,
             details::library_details,
             details::saves_backup,
             details::saves_restore,
