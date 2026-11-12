@@ -37,8 +37,9 @@ const out = resolve(option("out") ?? join(source, "target", "installers"));
 const withHost = !args.includes("--no-host");
 const makensis = process.env.MAKENSIS || "makensis";
 
-// NSIS reads forward slashes on every system; backslashes only on Windows.
-const nsisPath = (path) => path.replaceAll("\\", "/");
+// NSIS on Windows only finds files given with backslashes, which is what
+// Node's paths already are there. Elsewhere paths have none to begin with.
+const nsisPath = (path) => path;
 
 function nsis(script, defines) {
   const flags = Object.entries(defines).map(([name, value]) => `-D${name}=${value}`);
