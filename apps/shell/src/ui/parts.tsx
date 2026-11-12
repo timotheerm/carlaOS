@@ -16,6 +16,14 @@ export function placeLabel(place: string, hosts: Host[]): string {
 // Placeholder artwork: a soft gradient from the game's hue. Real covers replace
 // this in the library milestone.
 export function Cover({ game, wide = false }: { game: Game; wide?: boolean }) {
+  const picture = wide ? (game.hero ?? game.cover) : game.cover;
+  if (picture) {
+    return (
+      <div className={wide ? "cover cover--wide cover--art" : "cover cover--art"} aria-hidden>
+        <img src={picture} alt="" loading="lazy" draggable={false} />
+      </div>
+    );
+  }
   return (
     <div
       className={wide ? "cover cover--wide" : "cover"}
