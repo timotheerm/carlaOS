@@ -50,6 +50,9 @@ jobs:
       # scan, apply, undo, and check everything is back as it was.
       - name: Test the core on Windows
         run: cargo test --locked -p carla-core -- --nocapture
+      # Linking, signing and key sealing, with Windows data protection for real.
+      - name: Test the companion on Windows
+        run: cargo test --locked -p carla-companion
       - name: Build the shell installer
         run: npx tauri build
         working-directory: apps/shell

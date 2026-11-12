@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod admin;
+mod hosts;
 mod library;
 
 use carla_core::{AppInfo, Role};
@@ -45,6 +46,11 @@ fn main() {
             library::library_pick,
             library::library_add_manual,
             library::library_remove_manual,
+            hosts::hosts_list,
+            hosts::hosts_refresh,
+            hosts::hosts_discover,
+            hosts::hosts_link,
+            hosts::hosts_remove,
         ])
         .run(tauri::generate_context!())
         .expect("failed to start the CarlaOS shell");

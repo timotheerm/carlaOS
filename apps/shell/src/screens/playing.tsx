@@ -10,8 +10,12 @@ export function Playing({ session, onEnd }: { session: Session; onEnd: () => voi
       <h1 className="detail__title">{session.title}</h1>
       <p className="lede">
         {session.phase === "starting"
-          ? "This can take a moment the first time."
-          : "CarlaOS comes back by itself when you quit the game."}
+          ? session.stream
+            ? "Connecting to the desktop."
+            : "This can take a moment the first time."
+          : session.stream
+            ? "CarlaOS comes back by itself when the stream ends."
+            : "CarlaOS comes back by itself when you quit the game."}
       </p>
       <button className="pill" data-focus data-autofocus data-fid="playing:end" onClick={onEnd}>
         I have finished playing

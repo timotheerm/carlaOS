@@ -106,3 +106,20 @@ pub struct Install {
     pub exe: Option<PathBuf>,
     pub args: String,
 }
+
+/// A linked desktop as the catalogue stores it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostRow {
+    /// The desktop's own id, which is also the place name of its installs.
+    pub id: String,
+    pub name: String,
+    pub address: String,
+    pub port: u16,
+    /// What the desktop calls this Ally.
+    pub device_id: String,
+    /// The device key, sealed with [`crate::secret::seal`].
+    pub key: Vec<u8>,
+    pub hardware: String,
+    /// Unix seconds of the last answer.
+    pub last_seen: Option<i64>,
+}

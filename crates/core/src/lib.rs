@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 pub mod admin;
 pub mod debloat;
 pub mod library;
+pub mod link;
+pub mod secret;
 
 /// Version of the core crate, shown in Settings and reported by the companion.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

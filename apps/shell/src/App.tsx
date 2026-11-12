@@ -6,13 +6,14 @@ import { currentFocusId, focusById, focusFirst, installScrollIntoView } from "./
 import { installInput, type Action } from "./nav/input";
 import { cleanup } from "./cleanup/store";
 import { Cleanup, type CleanupView } from "./screens/cleanup";
+import { LinkDesktops } from "./screens/link";
 import { Manage } from "./screens/manage";
 import { Playing } from "./screens/playing";
 import { Cloud, Desktops, Emulation, GameDetail, Games, Home, HostView, Ports, Settings, type Ctx } from "./screens/screens";
 import { Hints, SECTIONS, TopBar, type Section } from "./ui/chrome";
 
 type Page = { kind: "game"; id: string } | { kind: "host"; id: string } | { kind: "cleanup"; id: CleanupView }
-  | { kind: "manage"; id: "home" };
+  | { kind: "manage"; id: "home" } | { kind: "desktops"; id: "home" };
 type Theme = "light" | "dark";
 
 const THEME_KEY = "carla.theme";
@@ -127,13 +128,22 @@ export function App() {
     openGame: (id) => push({ kind: "game", id }),
     openHost: (id) => push({ kind: "host", id }),
     notify: setToast,
-    play: (gameId, place) => void library.launch(gameId, place).catch((e) => setToast(message(e))),
+    play: (gameId, place) => {
+      // Asking a desktop for a game takes a moment; say so at once.
+      if (place !== "local") setToast("Connecting…");
+      void library.launch(gameId, place).catch((e) => setToast(message(e)));
+    },
+    refreshHosts: () => {
+      setToast("Checking…");
+      void library.refreshHosts().catch((e) => setToast(message(e)));
+    },
   };
 
   let page;
   if (top?.kind === "game") page = <GameDetail {...ctx} gameId={top.id} onToggleFavourite={toggleFavourite} />;
   else if (top?.kind === "host") page = <HostView {...ctx} hostId={top.id} />;
   else if (top?.kind === "manage") page = <Manage games={games} notify={setToast} />;
+  else if (top?.kind === "desktops") page = <LinkDesktops hosts={hosts} notify={setToast} />;
   else if (top?.kind === "cleanup") page = <Cleanup view={top.id} open={(view) => push({ kind: "cleanup", id: view })} />;
   else if (section === "home") page = <Home {...ctx} />;
   else if (section === "games") page = <Games {...ctx} />;
@@ -148,6 +158,8 @@ export function App() {
         onTheme={() => setTheme(theme === "light" ? "dark" : "light")}
         onCleanup={() => push({ kind: "cleanup", id: "home" })}
         onManage={() => push({ kind: "manage", id: "home" })}
+        onDesktops={() => push({ kind: "desktops", id: "home" })}
+        hostCount={hosts.length}
         onRefresh={() => void library.scan().catch((e) => setToast(message(e)))}
         refreshing={scanning}
         gameCount={games.length}

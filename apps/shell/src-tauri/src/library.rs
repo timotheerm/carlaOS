@@ -3,7 +3,8 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::process::Child;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use carla_core::library::launch::{self, Phase, Watch};
 use carla_core::library::{steam, GameView, ManualGame, Store, LOCAL};
@@ -23,34 +24,36 @@ pub struct SessionView {
     title: String,
     /// "starting" until the game's program has been seen, then "running".
     phase: &'static str,
+    /// Streamed from a desktop, not running on this Ally.
+    stream: bool,
 }
 
-struct Active {
+pub(crate) struct Active {
     view: SessionView,
     /// Set when the player says they have finished and we could not tell.
     stop: bool,
 }
 
-struct Inner {
+pub(crate) struct Inner {
     store: Mutex<Store>,
     steam_root: Mutex<Option<PathBuf>>,
-    art_dir: PathBuf,
+    pub(crate) art_dir: PathBuf,
     active: Mutex<Option<Active>>,
 }
 
 #[derive(Clone)]
-pub struct Library(Arc<Inner>);
+pub struct Library(pub(crate) Arc<Inner>);
 
-fn now() -> i64 {
+pub(crate) fn now() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
 }
 
-fn locked<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+pub(crate) fn locked<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 /// Let the interface show pictures from this folder.
-fn allow_pictures(app: &AppHandle, dir: &Path) {
+pub(crate) fn allow_pictures(app: &AppHandle, dir: &Path) {
     if dir.is_dir() {
         let _ = app.asset_protocol_scope().allow_directory(dir, true);
     }
@@ -70,7 +73,7 @@ impl Library {
         })))
     }
 
-    fn store(&self) -> MutexGuard<'_, Store> {
+    pub(crate) fn store(&self) -> MutexGuard<'_, Store> {
         locked(&self.0.store)
     }
 
@@ -82,6 +85,7 @@ impl Library {
             allow_pictures(app, &root.join("appcache").join("librarycache"));
         }
         allow_pictures(app, &self.0.art_dir);
+        allow_pictures(app, &crate::hosts::art_dir(self));
         *locked(&self.0.steam_root) = root;
         let mut store = self.store();
         store.sync(LOCAL, "steam", &found, now())?;
@@ -117,36 +121,77 @@ pub fn library_end_session(library: State<'_, Library>) {
     }
 }
 
-#[tauri::command]
-pub fn library_launch(app: AppHandle, library: State<'_, Library>, game_id: String, place: String) -> Result<SessionView, String> {
-    if place != LOCAL {
-        return Err("Streaming from a desktop is not set up yet.".to_string());
+/// What is being watched while the player is away from CarlaOS.
+enum Running {
+    /// A game on this Ally.
+    Game(Watch),
+    /// Moonlight showing a game from a desktop.
+    Stream { moonlight: Child, since: Instant },
+}
+
+/// A stream that ends this soon never showed a game.
+const STREAM_SETTLE: Duration = Duration::from_secs(15);
+
+impl Running {
+    fn poll(&mut self) -> Phase {
+        match self {
+            Running::Game(watch) => watch.poll(),
+            Running::Stream { moonlight, since } => match moonlight.try_wait() {
+                Ok(None) if since.elapsed() < STREAM_SETTLE => Phase::Starting,
+                Ok(None) => Phase::Running,
+                _ if since.elapsed() < STREAM_SETTLE => Phase::NeverStarted,
+                _ => Phase::Finished,
+            },
+        }
     }
-    let mut active = locked(&library.0.active);
-    if let Some(current) = active.as_ref() {
+
+    /// The player said they are done; do not leave a stream running behind.
+    fn stop(&mut self) {
+        if let Running::Stream { moonlight, .. } = self {
+            let _ = moonlight.kill();
+            let _ = moonlight.wait();
+        }
+    }
+}
+
+#[tauri::command(async)]
+pub fn library_launch(app: AppHandle, library: State<'_, Library>, game_id: String, place: String) -> Result<SessionView, String> {
+    if let Some(current) = locked(&library.0.active).as_ref() {
         return Err(format!("{} is still running.", current.view.title));
     }
     let install = library.store().install(&game_id, &place)?;
-    let steam_root = locked(&library.0.steam_root).clone();
-    let child = launch::start(&install, steam_root.as_deref())
-        .map_err(|e| format!("{} could not be started: {e}.", install.title))?;
+    let mut running = if place == LOCAL {
+        let steam_root = locked(&library.0.steam_root).clone();
+        let child = launch::start(&install, steam_root.as_deref())
+            .map_err(|e| format!("{} could not be started: {e}.", install.title))?;
+        Running::Game(Watch::new(&install, child))
+    } else {
+        // Asking the desktop can take a few seconds; nothing is locked meanwhile.
+        Running::Stream { moonlight: crate::hosts::start_stream(&library, &game_id, &place)?, since: Instant::now() }
+    };
+    let mut active = locked(&library.0.active);
+    if let Some(current) = active.as_ref() {
+        // Two presses raced; the first one won.
+        running.stop();
+        return Err(format!("{} is still running.", current.view.title));
+    }
     let started = now();
     let session = library.store().start_session(&game_id, &place, started)?;
-    let view = SessionView { game_id, title: install.title.clone(), phase: "starting" };
+    let view = SessionView { game_id, title: install.title.clone(), phase: "starting", stream: place != LOCAL };
     *active = Some(Active { view: view.clone(), stop: false });
     drop(active);
     let _ = app.emit(SESSION_EVENT, Some(view.clone()));
 
     let library = library.inner().clone();
     std::thread::spawn(move || {
-        let mut watch = Watch::new(&install, child);
         let mut played = false;
         loop {
             std::thread::sleep(POLL);
-            let phase = watch.poll();
+            let phase = running.poll();
             let mut active = locked(&library.0.active);
             let Some(current) = active.as_mut() else { break };
             if current.stop {
+                running.stop();
                 break;
             }
             match phase {

@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::{params, Connection, OptionalExtension};
 
-use super::{GameView, Install, Kind, ManualGame, Scanned, LOCAL};
+use super::{GameView, HostRow, Install, Kind, ManualGame, Scanned, LOCAL};
 
 type Result<T> = std::result::Result<T, String>;
 
@@ -43,6 +43,17 @@ CREATE TABLE IF NOT EXISTS play_sessions (
     ended   INTEGER
 );
 CREATE INDEX IF NOT EXISTS play_sessions_game ON play_sessions (game_id);
+CREATE TABLE IF NOT EXISTS hosts (
+    id        TEXT PRIMARY KEY,
+    name      TEXT NOT NULL,
+    address   TEXT NOT NULL,
+    port      INTEGER NOT NULL,
+    device_id TEXT NOT NULL,
+    key       BLOB NOT NULL,
+    hardware  TEXT NOT NULL DEFAULT '',
+    last_seen INTEGER,
+    added     INTEGER NOT NULL
+);
 ";
 
 fn text(path: &Path) -> String {
@@ -222,6 +233,64 @@ impl Store {
             .ok_or_else(|| "That game is not installed there any more.".to_string())
     }
 
+    /// Remember a linked desktop. Linking the same desktop again replaces it.
+    /// `key` is stored as given, so seal it first.
+    pub fn save_host(&mut self, host: &HostRow, now: i64) -> Result<()> {
+        self.db
+            .execute(
+                "INSERT INTO hosts (id, name, address, port, device_id, key, hardware, last_seen, added)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                 ON CONFLICT (id) DO UPDATE SET name = ?2, address = ?3, port = ?4, device_id = ?5, key = ?6",
+                params![host.id, host.name, host.address, host.port, host.device_id, host.key, host.hardware, host.last_seen, now],
+            )
+            .map_err(err)?;
+        Ok(())
+    }
+
+    /// Linked desktops, in the order they were added.
+    pub fn hosts(&self) -> Result<Vec<HostRow>> {
+        let mut query = self
+            .db
+            .prepare("SELECT id, name, address, port, device_id, key, hardware, last_seen FROM hosts ORDER BY added, name")
+            .map_err(err)?;
+        let rows = query
+            .query_map([], |r| {
+                Ok(HostRow {
+                    id: r.get(0)?,
+                    name: r.get(1)?,
+                    address: r.get(2)?,
+                    port: r.get(3)?,
+                    device_id: r.get(4)?,
+                    key: r.get(5)?,
+                    hardware: r.get(6)?,
+                    last_seen: r.get(7)?,
+                })
+            })
+            .map_err(err)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(err)?;
+        Ok(rows)
+    }
+
+    /// Note that a desktop answered, and what it said about itself.
+    pub fn host_seen(&mut self, id: &str, name: &str, hardware: &str, now: i64) -> Result<()> {
+        self.db
+            .execute("UPDATE hosts SET name = ?2, hardware = ?3, last_seen = ?4 WHERE id = ?1", params![id, name, hardware, now])
+            .map_err(err)?;
+        Ok(())
+    }
+
+    /// Forget a desktop and the games that were only there.
+    pub fn remove_host(&mut self, id: &str) -> Result<()> {
+        if id == LOCAL {
+            return Ok(());
+        }
+        let tx = self.db.transaction().map_err(err)?;
+        tx.execute("DELETE FROM installs WHERE place = ?1", params![id]).map_err(err)?;
+        tx.execute("DELETE FROM hosts WHERE id = ?1", params![id]).map_err(err)?;
+        tx.commit().map_err(err)
+    }
+
     pub fn start_session(&mut self, game_id: &str, place: &str, now: i64) -> Result<i64> {
         self.db
             .execute("INSERT INTO play_sessions (game_id, place, started) VALUES (?1, ?2, ?3)", params![game_id, place, now])
@@ -313,5 +382,44 @@ mod tests {
         store.start_session("steam:1", LOCAL, 500).unwrap();
         store.close_dangling_sessions().unwrap();
         assert_eq!(store.list().unwrap()[0].playtime_minutes, 0);
+    }
+
+    #[test]
+    fn a_desktop_adds_a_place_to_play_and_takes_it_away_again() {
+        let mut store = Store::in_memory().unwrap();
+        store.sync(LOCAL, "steam", &[scanned("10", "Here And There")], 1).unwrap();
+        let host = HostRow {
+            id: "home".into(),
+            name: "HOME PC".into(),
+            address: "192.168.1.20".into(),
+            port: 47600,
+            device_id: "d1".into(),
+            key: vec![1, 2, 3],
+            hardware: String::new(),
+            last_seen: None,
+        };
+        store.save_host(&host, 5).unwrap();
+        store.sync("home", "steam", &[scanned("10", "Here And There"), scanned("20", "Only There")], 6).unwrap();
+
+        let games = store.list().unwrap();
+        assert_eq!(games.len(), 2);
+        assert_eq!(games[0].places, ["local", "home"]);
+        assert_eq!(games[1].places, ["home"]);
+
+        store.host_seen("home", "Home PC", "Ryzen", 9).unwrap();
+        let hosts = store.hosts().unwrap();
+        assert_eq!((hosts[0].name.as_str(), hosts[0].hardware.as_str(), hosts[0].last_seen), ("Home PC", "Ryzen", Some(9)));
+        assert_eq!(hosts[0].key, [1, 2, 3]);
+
+        // Linking again keeps one row and takes the new key.
+        store.save_host(&HostRow { key: vec![9], ..host }, 10).unwrap();
+        assert_eq!(store.hosts().unwrap().len(), 1);
+        assert_eq!(store.hosts().unwrap()[0].key, [9]);
+
+        store.remove_host("home").unwrap();
+        assert!(store.hosts().unwrap().is_empty());
+        let games = store.list().unwrap();
+        assert_eq!(games.len(), 1, "a game that was only on the desktop is no longer offered");
+        assert_eq!(games[0].places, ["local"]);
     }
 }

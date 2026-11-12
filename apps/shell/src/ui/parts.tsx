@@ -87,7 +87,8 @@ const STATE_TEXT: Record<HostState, string> = {
   not_ready: "Needs attention",
   asleep: "Asleep",
   off: "Off",
-  unreachable: "Unreachable",
+  unreachable: "Not answering",
+  unknown: "Checking",
 };
 
 const STATE_TONE: Record<HostState, "ok" | "warn" | "off"> = {
@@ -97,6 +98,7 @@ const STATE_TONE: Record<HostState, "ok" | "warn" | "off"> = {
   asleep: "off",
   off: "off",
   unreachable: "off",
+  unknown: "off",
 };
 
 export function HostCard({
@@ -132,7 +134,8 @@ export function HostCard({
         {host.latencyMs !== null ? ` · ${host.latencyMs} ms` : ""}
       </span>
       {large && <span className="host__line host__line--quiet">{host.hardware}</span>}
-      {large && <span className="host__line host__line--quiet">Last seen {host.lastSeen}</span>}
+      {large && host.state === "busy" && host.playing && <span className="host__line host__line--quiet">Playing {host.playing}</span>}
+      {large && host.state !== "ready" && host.state !== "busy" && <span className="host__line host__line--quiet">Last seen {host.lastSeen}</span>}
     </button>
   );
 }

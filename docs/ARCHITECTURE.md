@@ -1,6 +1,6 @@
 # Architecture
 
-Status: approved 11 Nov 2026. M0 and M1 are merged. M2 (local library) is described in [LIBRARY.md](LIBRARY.md).
+Status: approved 11 Nov 2026. M0 to M2 are merged; the local library is described in [LIBRARY.md](LIBRARY.md). M3 (streaming from a desktop) is described in [STREAMING.md](STREAMING.md).
 
 ## Shape
 

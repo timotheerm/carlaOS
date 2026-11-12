@@ -1,0 +1,232 @@
+//! What the companion keeps on disk, all in one folder of the Windows account
+//! it runs under. Keys and the Sunshine password are sealed (see
+//! `carla_core::secret`), so the files are useless to another account.
+
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use carla_core::link::{self, enrol};
+use carla_core::secret;
+use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
+
+pub fn now() -> i64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
+}
+
+pub fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+pub fn unhex(text: &str) -> Option<Vec<u8>> {
+    if text.len() % 2 != 0 || !text.is_ascii() {
+        return None;
+    }
+    (0..text.len()).step_by(2).map(|i| u8::from_str_radix(&text[i..i + 2], 16).ok()).collect()
+}
+
+/// The companion's folder. `CARLA_COMPANION_DIR` overrides it, for testing.
+pub fn default_dir() -> PathBuf {
+    if let Some(dir) = std::env::var_os("CARLA_COMPANION_DIR") {
+        return PathBuf::from(dir);
+    }
+    if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+        return PathBuf::from(local).join("CarlaOS").join("companion");
+    }
+    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+    home.join(".local").join("share").join("carlaos-companion")
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Config {
+    pub id: String,
+    pub name: String,
+    pub port: u16,
+    /// Sunshine's web address on this machine.
+    pub sunshine_url: String,
+    pub sunshine_user: String,
+    /// Sealed, hex.
+    pub sunshine_password: String,
+}
+
+impl Config {
+    pub fn new(name: &str) -> Self {
+        Self {
+            id: link::random_hex(8),
+            name: name.to_string(),
+            port: link::PORT,
+            sunshine_url: "https://localhost:47990".to_string(),
+            sunshine_user: String::new(),
+            sunshine_password: String::new(),
+        }
+    }
+
+    pub fn set_sunshine(&mut self, user: &str, password: &str) -> Result<(), String> {
+        self.sunshine_user = user.to_string();
+        self.sunshine_password = hex(&secret::seal(password.as_bytes())?);
+        Ok(())
+    }
+
+    pub fn sunshine_password(&self) -> Option<String> {
+        let sealed = unhex(&self.sunshine_password)?;
+        String::from_utf8(secret::open(&sealed).ok()?).ok()
+    }
+}
+
+/// An Ally that has been linked.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Device {
+    pub id: String,
+    pub name: String,
+    /// The device key, sealed, hex.
+    pub key: String,
+    pub added: i64,
+}
+
+impl Device {
+    pub fn key(&self) -> Option<Vec<u8>> {
+        secret::open(&unhex(&self.key)?).ok()
+    }
+}
+
+/// The code currently shown to the administrator.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Code {
+    pub code: String,
+    pub expires: i64,
+    pub tries: u32,
+}
+
+/// The game the next stream is for.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Pending {
+    pub game_id: String,
+    pub title: String,
+    pub source: String,
+    pub source_id: String,
+    pub install_path: PathBuf,
+    pub at: i64,
+}
+
+/// Written by the launcher while a game runs, with the time it last looked.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Playing {
+    pub game_id: String,
+    pub title: String,
+    pub at: i64,
+}
+
+/// A pending game older than this was for a stream that never started.
+pub const PENDING_LIFETIME: i64 = 120;
+/// The launcher writes this often; twice as old means it is gone.
+pub const PLAYING_BEAT: i64 = 5;
+
+#[derive(Debug, Clone)]
+pub struct Files {
+    dir: PathBuf,
+}
+
+impl Files {
+    pub fn new(dir: PathBuf) -> Self {
+        Self { dir }
+    }
+
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+
+    fn read<T: DeserializeOwned>(&self, name: &str) -> Option<T> {
+        serde_json::from_str(&fs::read_to_string(self.dir.join(name)).ok()?).ok()
+    }
+
+    fn write<T: Serialize>(&self, name: &str, value: &T) -> Result<(), String> {
+        let problem = |e: std::io::Error| format!("The companion could not save {name}: {e}.");
+        fs::create_dir_all(&self.dir).map_err(problem)?;
+        // Write beside and rename, so a reader never sees half a file.
+        let beside = self.dir.join(format!("{name}.new"));
+        fs::write(&beside, serde_json::to_string_pretty(value).expect("serialisable")).map_err(problem)?;
+        fs::rename(&beside, self.dir.join(name)).map_err(problem)
+    }
+
+    fn remove(&self, name: &str) {
+        let _ = fs::remove_file(self.dir.join(name));
+    }
+
+    pub fn config(&self) -> Option<Config> {
+        self.read("config.json")
+    }
+
+    pub fn save_config(&self, config: &Config) -> Result<(), String> {
+        self.write("config.json", config)
+    }
+
+    pub fn devices(&self) -> Vec<Device> {
+        self.read("devices.json").unwrap_or_default()
+    }
+
+    pub fn add_device(&self, name: &str, key: &[u8]) -> Result<Device, String> {
+        let device = Device { id: link::random_hex(8), name: name.to_string(), key: hex(&secret::seal(key)?), added: now() };
+        let mut devices = self.devices();
+        devices.push(device.clone());
+        self.write("devices.json", &devices)?;
+        Ok(device)
+    }
+
+    /// Stop accepting a device. Returns whether it was known.
+    pub fn forget_device(&self, id: &str) -> Result<bool, String> {
+        let mut devices = self.devices();
+        let before = devices.len();
+        devices.retain(|d| d.id != id);
+        self.write("devices.json", &devices)?;
+        Ok(devices.len() != before)
+    }
+
+    /// Make a new code, replacing any earlier one.
+    pub fn new_code(&self) -> Result<Code, String> {
+        let code = Code { code: enrol::new_code(), expires: now() + enrol::CODE_LIFETIME, tries: 0 };
+        self.write("enrol.json", &code)?;
+        Ok(code)
+    }
+
+    /// The code, if one is still usable, counting this as one use of it.
+    pub fn use_code(&self, now: i64) -> Option<String> {
+        let mut code: Code = self.read("enrol.json")?;
+        if now >= code.expires || code.tries >= enrol::CODE_TRIES {
+            self.remove("enrol.json");
+            return None;
+        }
+        code.tries += 1;
+        self.write("enrol.json", &code).ok()?;
+        Some(code.code)
+    }
+
+    pub fn clear_code(&self) {
+        self.remove("enrol.json");
+    }
+
+    pub fn set_pending(&self, pending: &Pending) -> Result<(), String> {
+        self.write("pending.json", pending)
+    }
+
+    /// Take the game the stream is for. It can only be taken once.
+    pub fn take_pending(&self, now: i64) -> Option<Pending> {
+        let pending: Pending = self.read("pending.json")?;
+        self.remove("pending.json");
+        (now - pending.at <= PENDING_LIFETIME).then_some(pending)
+    }
+
+    pub fn set_playing(&self, playing: Option<&Playing>) {
+        match playing {
+            Some(p) => {
+                let _ = self.write("playing.json", p);
+            }
+            None => self.remove("playing.json"),
+        }
+    }
+
+    pub fn playing(&self, now: i64) -> Option<Playing> {
+        let playing: Playing = self.read("playing.json")?;
+        (now - playing.at <= PLAYING_BEAT * 2).then_some(playing)
+    }
+}
