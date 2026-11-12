@@ -1,0 +1,67 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Tests and UI build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --locked
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/shell/package-lock.json
+      - run: npm ci
+        working-directory: apps/shell
+      - run: npm run build
+        working-directory: apps/shell
+
+  windows:
+    name: Windows installers
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/shell/package-lock.json
+      - run: npm ci
+        working-directory: apps/shell
+      # Runs the Windows clean-up helper for real on this throwaway machine:
+      # scan, apply, undo, and check everything is back as it was.
+      - name: Test the core on Windows
+        run: cargo test --locked -p carla-core -- --nocapture
+      - name: Build the shell installer
+        run: npx tauri build
+        working-directory: apps/shell
+      - name: Build the companion
+        run: cargo build --release --locked -p carla-companion
+      - uses: actions/upload-artifact@v4
+        with:
+          name: carlaos-shell-installer
+          path: target/release/bundle/nsis/*.exe
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: carlaos-companion
+          path: target/release/carla-companion.exe
+          if-no-files-found: error
