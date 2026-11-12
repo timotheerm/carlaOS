@@ -1,6 +1,6 @@
 # Streaming from a desktop
 
-Status: M3. Written and tested as far as possible without the hardware. See
+Status: M3, plus waking and Tailscale addresses from M4. Written and tested as far as possible without the hardware. See
 "Not yet tried on real machines" at the end.
 
 ## What the player sees
@@ -59,6 +59,30 @@ shell ── signed HTTP, port 47600 ───▶  companion ── https://loca
   so a game has the same id (`steam:<app id>`) everywhere and shows as one card
   with several places to play.
 
+## Waking a desktop and reaching it from elsewhere
+
+- **Addresses.** Each time a desktop answers, it lists every address it has:
+  home network and, when Tailscale is installed, its Tailscale address
+  (100.64.0.0/10). The Ally asks all known addresses at once and uses the one
+  that answers, preferring the home network. So the same link works at home
+  and away, and survives the router handing out a new address. Away from home
+  both machines need Tailscale signed in to the same account; nothing else is
+  set up. A desktop can also be linked for the first time by typing its
+  Tailscale address.
+- **Waking.** The desktop also reports the hardware addresses of its
+  home-network adapters. When it does not answer, the Ally can send a
+  Wake-on-LAN packet: from the desktop's page ("Wake HOME PC"), or by itself
+  when the player presses Stream. It then waits up to 90 seconds for the
+  desktop and for Sunshine, showing "Waking the desktop", and starts the game.
+- **What waking needs.** A wired network adapter with Wake-on-LAN turned on in
+  the firmware (BIOS) and in the adapter's Windows power settings, the desktop
+  asleep or shut down but still powered, and the Ally on the same home
+  network. Wi-Fi adapters usually cannot be woken. Waking from another location
+  needs an always-on device at home to send the packet; that is not built yet.
+- After waking, Windows must be signed in for games to start. A desktop that
+  sleeps keeps its session; one that was shut down stops at the sign-in screen
+  unless it signs in automatically.
+
 ## Trust
 
 | Step | What protects it |
@@ -102,9 +126,10 @@ and documentation, but has only run against stand-ins:
 - Windows data protection and start-up with Windows (covered by the Windows
   build's tests, not by a person).
 
-Known limits in this milestone: Steam games only on desktops; one desktop
-address per link (no Tailscale address yet); a desktop that is asleep cannot be
-woken from the Ally. Those are M4.
+- Waking a real desktop, and reaching one through Tailscale.
+
+Known limits: Steam games only on desktops; waking only from the same network
+as the desktop.
 
 Before the first real stream from HOME PC, check the AMD driver: Sunshine has
 open reports of crashes with the RX 9070 XT on Adrenalin 26.6.x, with 25.9.1

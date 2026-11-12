@@ -60,6 +60,10 @@ fn text(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
 
+fn list(json: &str) -> Vec<String> {
+    serde_json::from_str(json).unwrap_or_default()
+}
+
 fn platform(source: &str) -> &'static str {
     match source {
         "steam" => "Steam",
@@ -86,6 +90,17 @@ impl Store {
     fn prepare(db: Connection) -> Result<Self> {
         db.execute_batch("PRAGMA foreign_keys = ON;").map_err(err)?;
         db.execute_batch(SCHEMA).map_err(err)?;
+        // Columns added after the first release. SQLite has no "add column if
+        // missing", so look first.
+        for column in ["addresses", "macs"] {
+            let has: bool = db
+                .query_row("SELECT COUNT(*) FROM pragma_table_info('hosts') WHERE name = ?1", params![column], |r| r.get::<_, i64>(0))
+                .map(|n| n > 0)
+                .map_err(err)?;
+            if !has {
+                db.execute_batch(&format!("ALTER TABLE hosts ADD COLUMN {column} TEXT NOT NULL DEFAULT '[]';")).map_err(err)?;
+            }
+        }
         Ok(Self { db })
     }
 
@@ -251,7 +266,7 @@ impl Store {
     pub fn hosts(&self) -> Result<Vec<HostRow>> {
         let mut query = self
             .db
-            .prepare("SELECT id, name, address, port, device_id, key, hardware, last_seen FROM hosts ORDER BY added, name")
+            .prepare("SELECT id, name, address, port, device_id, key, hardware, last_seen, addresses, macs FROM hosts ORDER BY added, name")
             .map_err(err)?;
         let rows = query
             .query_map([], |r| {
@@ -264,6 +279,8 @@ impl Store {
                     key: r.get(5)?,
                     hardware: r.get(6)?,
                     last_seen: r.get(7)?,
+                    addresses: list(&r.get::<_, String>(8)?),
+                    macs: list(&r.get::<_, String>(9)?),
                 })
             })
             .map_err(err)?
@@ -272,10 +289,15 @@ impl Store {
         Ok(rows)
     }
 
-    /// Note that a desktop answered, and what it said about itself.
-    pub fn host_seen(&mut self, id: &str, name: &str, hardware: &str, now: i64) -> Result<()> {
+    /// Note that a desktop answered, at which address, and what it said about
+    /// itself. `host` carries the new values; its key is left alone.
+    pub fn host_seen(&mut self, host: &HostRow, now: i64) -> Result<()> {
+        let json = |v: &[String]| serde_json::to_string(v).expect("serialisable");
         self.db
-            .execute("UPDATE hosts SET name = ?2, hardware = ?3, last_seen = ?4 WHERE id = ?1", params![id, name, hardware, now])
+            .execute(
+                "UPDATE hosts SET name = ?2, hardware = ?3, last_seen = ?4, address = ?5, addresses = ?6, macs = ?7 WHERE id = ?1",
+                params![host.id, host.name, host.hardware, now, host.address, json(&host.addresses), json(&host.macs)],
+            )
             .map_err(err)?;
         Ok(())
     }
@@ -397,6 +419,8 @@ mod tests {
             key: vec![1, 2, 3],
             hardware: String::new(),
             last_seen: None,
+            addresses: Vec::new(),
+            macs: Vec::new(),
         };
         store.save_host(&host, 5).unwrap();
         store.sync("home", "steam", &[scanned("10", "Here And There"), scanned("20", "Only There")], 6).unwrap();
@@ -406,20 +430,56 @@ mod tests {
         assert_eq!(games[0].places, ["local", "home"]);
         assert_eq!(games[1].places, ["home"]);
 
-        store.host_seen("home", "Home PC", "Ryzen", 9).unwrap();
+        let seen = HostRow {
+            name: "Home PC".into(),
+            hardware: "Ryzen".into(),
+            address: "100.90.1.2".into(),
+            addresses: vec!["192.168.1.20".into(), "100.90.1.2".into()],
+            macs: vec!["aa:bb:cc:dd:ee:ff".into()],
+            key: Vec::new(),
+            ..host.clone()
+        };
+        store.host_seen(&seen, 9).unwrap();
         let hosts = store.hosts().unwrap();
         assert_eq!((hosts[0].name.as_str(), hosts[0].hardware.as_str(), hosts[0].last_seen), ("Home PC", "Ryzen", Some(9)));
-        assert_eq!(hosts[0].key, [1, 2, 3]);
+        assert_eq!(hosts[0].key, [1, 2, 3], "seeing a desktop never touches its key");
+        assert_eq!(hosts[0].address, "100.90.1.2");
+        assert_eq!(hosts[0].addresses, ["192.168.1.20", "100.90.1.2"]);
+        assert_eq!(hosts[0].macs, ["aa:bb:cc:dd:ee:ff"]);
 
         // Linking again keeps one row and takes the new key.
         store.save_host(&HostRow { key: vec![9], ..host }, 10).unwrap();
         assert_eq!(store.hosts().unwrap().len(), 1);
         assert_eq!(store.hosts().unwrap()[0].key, [9]);
+        assert_eq!(store.hosts().unwrap()[0].macs, ["aa:bb:cc:dd:ee:ff"], "and still knows how to wake it");
 
         store.remove_host("home").unwrap();
         assert!(store.hosts().unwrap().is_empty());
         let games = store.list().unwrap();
         assert_eq!(games.len(), 1, "a game that was only on the desktop is no longer offered");
         assert_eq!(games[0].places, ["local"]);
+    }
+
+    #[test]
+    fn a_catalogue_from_the_first_release_gains_the_new_columns() {
+        let dir = std::env::temp_dir().join(format!("carla-store-old-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("library.sqlite");
+        {
+            let db = Connection::open(&path).unwrap();
+            db.execute_batch(
+                "CREATE TABLE hosts (id TEXT PRIMARY KEY, name TEXT NOT NULL, address TEXT NOT NULL, port INTEGER NOT NULL,
+                 device_id TEXT NOT NULL, key BLOB NOT NULL, hardware TEXT NOT NULL DEFAULT '', last_seen INTEGER, added INTEGER NOT NULL);
+                 INSERT INTO hosts VALUES ('home', 'HOME PC', '192.168.1.20', 47600, 'd1', x'0102', '', NULL, 1);",
+            )
+            .unwrap();
+        }
+        for _ in 0..2 {
+            let store = Store::open(&path).unwrap();
+            let hosts = store.hosts().unwrap();
+            assert_eq!((hosts[0].name.as_str(), hosts[0].key.as_slice()), ("HOME PC", [1u8, 2].as_slice()));
+            assert!(hosts[0].addresses.is_empty() && hosts[0].macs.is_empty());
+        }
     }
 }

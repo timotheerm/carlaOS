@@ -51,6 +51,7 @@ fn main() {
             hosts::hosts_discover,
             hosts::hosts_link,
             hosts::hosts_remove,
+            hosts::hosts_wake,
         ])
         .run(tauri::generate_context!())
         .expect("failed to start the CarlaOS shell");

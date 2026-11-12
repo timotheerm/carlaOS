@@ -23,7 +23,7 @@ export type Game = {
   manual?: boolean; // added by hand, so it can be removed
 };
 
-export type Session = { gameId: string; title: string; phase: "starting" | "running"; stream: boolean };
+export type Session = { gameId: string; title: string; phase: "waking" | "starting" | "running"; stream: boolean };
 
 export type NewGame = { title: string; exe: string; args: string; kind: Kind; cover: string | null };
 
@@ -40,6 +40,7 @@ export type Host = {
   playing?: string | null; // what is running there, when busy
   problem?: string | null; // one line on what is wrong, when it needs attention
   address?: string;
+  canWake?: boolean; // the desktop has said how to wake it
 };
 
 /// A companion found on the network, not linked yet.

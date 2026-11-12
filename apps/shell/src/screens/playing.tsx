@@ -6,10 +6,12 @@ import type { Session } from "../data/types";
 export function Playing({ session, onEnd }: { session: Session; onEnd: () => void }) {
   return (
     <div className="playing">
-      <p className="hero__eyebrow">{session.phase === "starting" ? "Starting" : "Playing"}</p>
+      <p className="hero__eyebrow">{session.phase === "waking" ? "Waking the desktop" : session.phase === "starting" ? "Starting" : "Playing"}</p>
       <h1 className="detail__title">{session.title}</h1>
       <p className="lede">
-        {session.phase === "starting"
+        {session.phase === "waking"
+          ? "It was asleep. This can take up to a minute."
+          : session.phase === "starting"
           ? session.stream
             ? "Connecting to the desktop."
             : "This can take a moment the first time."
@@ -18,7 +20,7 @@ export function Playing({ session, onEnd }: { session: Session; onEnd: () => voi
             : "CarlaOS comes back by itself when you quit the game."}
       </p>
       <button className="pill" data-focus data-autofocus data-fid="playing:end" onClick={onEnd}>
-        I have finished playing
+        {session.phase === "running" ? "I have finished playing" : "Stop"}
       </button>
     </div>
   );

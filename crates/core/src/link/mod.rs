@@ -17,6 +17,7 @@ pub mod discover;
 pub mod enrol;
 pub mod moonlight;
 pub mod sign;
+pub mod wake;
 
 /// TCP port of the companion API and UDP port for finding companions.
 pub const PORT: u16 = 47600;
@@ -57,6 +58,12 @@ pub struct Status {
     pub problem: Option<String>,
     /// Processor and memory, for the desktop's card.
     pub hardware: String,
+    /// Every address the desktop can be reached at: home network, Tailscale.
+    #[serde(default)]
+    pub addresses: Vec<String>,
+    /// Hardware addresses of its network adapters, for waking it.
+    #[serde(default)]
+    pub macs: Vec<String>,
 }
 
 /// One game installed on a desktop.

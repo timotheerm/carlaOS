@@ -122,4 +122,9 @@ pub struct HostRow {
     pub hardware: String,
     /// Unix seconds of the last answer.
     pub last_seen: Option<i64>,
+    /// Every address the desktop said it has; `address` is the one that
+    /// answered last.
+    pub addresses: Vec<String>,
+    /// Hardware addresses of its network adapters, for waking it.
+    pub macs: Vec<String>,
 }
