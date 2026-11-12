@@ -44,6 +44,9 @@ const STICK_THRESHOLD = 0.55;
 
 export function installInput(onAction: Handler): () => void {
   const onKey = (e: KeyboardEvent) => {
+    // While typing in a field, only up and down leave it.
+    const typing = e.target instanceof HTMLInputElement;
+    if (typing && e.key !== "ArrowUp" && e.key !== "ArrowDown" && e.key !== "Escape") return;
     const dir = KEY_DIR[e.key];
     if (dir) {
       e.preventDefault();
@@ -65,6 +68,13 @@ export function installInput(onAction: Handler): () => void {
 
   const poll = (now: number) => {
     raf = requestAnimationFrame(poll);
+    // The same controller is playing the game while one runs in front of us.
+    // Forget what was held, so nothing fires by itself on the way back.
+    if (!document.hasFocus()) {
+      heldDir = null;
+      for (let i = 0; i < 16; i++) wasDown.add(i);
+      return;
+    }
     const pad = navigator.getGamepads?.().find((p) => p && p.connected);
     if (!pad) return;
 

@@ -9,3 +9,8 @@ license.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.10"
+rusqlite = { version = "0.42", features = ["bundled"] }
+sysinfo = { version = "0.40", default-features = false, features = ["system"] }
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.56"

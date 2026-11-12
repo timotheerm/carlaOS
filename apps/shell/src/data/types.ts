@@ -17,7 +17,15 @@ export type Game = {
   playtimeMinutes: number;
   lastPlayed?: string; // ISO date
   added: string; // ISO date
+  favourite: boolean;
+  cover?: string; // picture URL, when there is real artwork
+  hero?: string;
+  manual?: boolean; // added by hand, so it can be removed
 };
+
+export type Session = { gameId: string; title: string; phase: "starting" | "running" };
+
+export type NewGame = { title: string; exe: string; args: string; kind: Kind; cover: string | null };
 
 export type HostState = "ready" | "busy" | "not_ready" | "asleep" | "off" | "unreachable";
 

@@ -1,6 +1,6 @@
 # Architecture
 
-Status: approved 11 Nov 2026. Milestone M0 (foundations) is in progress.
+Status: approved 11 Nov 2026. M0 and M1 are merged. M2 (local library) is described in [LIBRARY.md](LIBRARY.md).
 
 ## Shape
 

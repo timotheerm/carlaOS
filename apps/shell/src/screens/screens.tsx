@@ -9,6 +9,8 @@ export type Ctx = {
   openGame: (id: string) => void;
   openHost: (id: string) => void;
   notify: (text: string) => void;
+  /** Start a game from one of the places it is installed. */
+  play: (gameId: string, place: string) => void;
 };
 
 const byRecent = (a: Game, b: Game) => (b.lastPlayed ?? "").localeCompare(a.lastPlayed ?? "");
@@ -25,6 +27,10 @@ export function Home(ctx: Ctx) {
   const [hero, ...recent] = played;
   const favourites = ctx.games.filter((g) => ctx.favourites.has(g.id));
   const added = [...ctx.games].sort((a, b) => b.added.localeCompare(a.added)).slice(0, 8);
+
+  if (ctx.games.length === 0) {
+    return <Empty>No games yet. Install some, or add them under Settings, then Manage games.</Empty>;
+  }
 
   return (
     <>
@@ -47,12 +53,14 @@ export function Home(ctx: Ctx) {
           </span>
         </button>
       )}
-      <Row title="My desktops">
-        {ctx.hosts.map((h) => (
-          <HostCard key={h.id} host={h} gameCount={countOn(ctx.games, h.id)} onOpen={ctx.openHost} />
-        ))}
-      </Row>
-      <Row title="Recently played">{cards(recent.slice(0, 8), ctx)}</Row>
+      {ctx.hosts.length > 0 && (
+        <Row title="My desktops">
+          {ctx.hosts.map((h) => (
+            <HostCard key={h.id} host={h} gameCount={countOn(ctx.games, h.id)} onOpen={ctx.openHost} />
+          ))}
+        </Row>
+      )}
+      {recent.length > 0 && <Row title="Recently played">{cards(recent.slice(0, 8), ctx)}</Row>}
       {favourites.length > 0 && <Row title="Favourites">{cards(favourites, ctx)}</Row>}
       <Row title="Recently added">{cards(added, ctx)}</Row>
     </>
@@ -103,6 +111,7 @@ export function Games(ctx: Ctx) {
 }
 
 export function Desktops(ctx: Ctx) {
+  if (ctx.hosts.length === 0) return <Empty>No desktops are set up yet. Streaming arrives in a later build.</Empty>;
   return (
     <div className="hosts">
       {ctx.hosts.map((h) => (
@@ -138,6 +147,7 @@ export function HostView({ hostId, ...ctx }: Ctx & { hostId: string }) {
 export function Emulation(ctx: Ctx) {
   const emulated = ctx.games.filter((g) => g.kind === "emulated");
   const consoles = [...new Set(emulated.map((g) => g.platform))].sort();
+  if (emulated.length === 0) return <Empty>No emulated games yet. Emulators arrive in a later build.</Empty>;
   return (
     <>
       {consoles.map((c) => (
@@ -150,7 +160,9 @@ export function Emulation(ctx: Ctx) {
 }
 
 export function Ports(ctx: Ctx) {
-  return <Grid>{cards(ctx.games.filter((g) => g.kind === "port"), ctx)}</Grid>;
+  const ports = ctx.games.filter((g) => g.kind === "port");
+  if (ports.length === 0) return <Empty>No native ports yet. Add one under Settings, then Manage games.</Empty>;
+  return <Grid>{cards(ports, ctx)}</Grid>;
 }
 
 export function Cloud({ services, notify }: { services: CloudService[]; notify: Ctx["notify"] }) {
@@ -180,9 +192,17 @@ export function Settings({
   theme,
   onTheme,
   onCleanup,
+  onManage,
+  onRefresh,
+  refreshing,
+  gameCount,
   onExit,
   version,
 }: {
+  onManage: () => void;
+  onRefresh: () => void;
+  refreshing: boolean;
+  gameCount: number;
   theme: "light" | "dark";
   onTheme: () => void;
   onCleanup: () => void;
@@ -195,6 +215,14 @@ export function Settings({
         <span>Appearance</span>
         <span className="setting__value">{theme === "light" ? "Light" : "Dark"}</span>
       </button>
+      <button className="setting" data-focus data-fid="set:refresh" onClick={onRefresh}>
+        <span>Refresh library</span>
+        <span className="setting__value">{refreshing ? "Looking…" : `${gameCount} games`}</span>
+      </button>
+      <button className="setting" data-focus data-fid="set:manage" onClick={onManage}>
+        <span>Manage games</span>
+        <span className="setting__value">Administrator only</span>
+      </button>
       <button className="setting" data-focus data-fid="set:cleanup" onClick={onCleanup}>
         <span>Clean up Windows</span>
         <span className="setting__value">Administrator only</span>
@@ -203,7 +231,7 @@ export function Settings({
         <span>Exit to Windows</span>
         <span className="setting__value">Closes CarlaOS</span>
       </button>
-      <p className="lede">CarlaOS {version}. Prototype build with sample games.</p>
+      <p className="lede">CarlaOS {version}</p>
     </div>
   );
 }
@@ -232,7 +260,7 @@ export function GameDetail({ gameId, onToggleFavourite, ...ctx }: Ctx & { gameId
                 data-focus
                 data-autofocus={i === 0 ? "" : undefined}
                 data-fid={`play:${place}`}
-                onClick={() => ctx.notify("Sample library. Launching games arrives in the next build.")}
+                onClick={() => ctx.play(game.id, place)}
               >
                 {label}
                 {asleep ? " (asleep)" : ""}

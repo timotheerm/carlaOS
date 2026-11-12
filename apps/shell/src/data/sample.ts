@@ -33,7 +33,7 @@ const g = (
   lastPlayed: string | undefined,
   added: string,
   description: string,
-): Game => ({ id, title, platform, kind, hue, places, playtimeMinutes, lastPlayed, added, description });
+): Game => ({ id, title, platform, kind, hue, places, playtimeMinutes, lastPlayed, added, description, favourite: false });
 
 export const games: Game[] = [
   g("neon-harbor", "Neon Harbor", "Steam", "game", 330, ["local", "home"], 1260, "2026-11-10", "2026-09-02",

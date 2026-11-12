@@ -27,6 +27,11 @@ impl Admin {
         }
     }
 
+    /// For commands elsewhere that only the administrator may run.
+    pub fn require(&self) -> Result<(), String> {
+        self.with_lock(|lock| lock.require())
+    }
+
     fn with_lock<T>(&self, f: impl FnOnce(&mut AdminLock) -> T) -> T {
         f(&mut self.lock.lock().unwrap_or_else(|e| e.into_inner()))
     }
