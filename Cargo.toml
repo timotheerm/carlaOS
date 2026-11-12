@@ -6,6 +6,8 @@ members = ["crates/core", "crates/companion", "apps/shell/src-tauri"]
 default-members = ["crates/core", "crates/companion"]
 
 [workspace.package]
+# A placeholder for local builds. Releases are numbered by their git tag and the
+# number is stamped in when they are built: see docs/RELEASES.md.
 version = "0.1.0"
 edition = "2021"
 license = "MIT"

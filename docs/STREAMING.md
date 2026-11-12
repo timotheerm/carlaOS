@@ -16,7 +16,9 @@ On the desktop:
 
 1. Install [Sunshine](https://github.com/LizardByte/Sunshine), open
    `https://localhost:47990` and choose its user name and password.
-2. Double-click `carla-companion.exe`. It asks for a name ("HOME PC") and the
+2. Run `CarlaOS-Desktop-Host-<version>-setup.exe` from the
+   [releases page](https://github.com/timotheerm/carlaOS/releases) and leave
+   the box on its last page ticked. A set-up window opens. It asks for a name ("HOME PC") and the
    Sunshine user name and password, adds one application called "CarlaOS" to
    Sunshine, sets itself to start with Windows without a window, and shows a
    six-digit code. Windows asks once whether the companion may accept
@@ -24,15 +26,17 @@ On the desktop:
 
 On the Ally:
 
-1. Install [Moonlight](https://github.com/moonlight-stream/moonlight-qt).
+1. Install CarlaOS (`CarlaOS-Ally-<version>-setup.exe`) and
+   [Moonlight](https://github.com/moonlight-stream/moonlight-qt).
 2. Settings, Desktops (administrator PIN), Add a desktop. The desktop is found
    by itself; choose it and enter the code.
 
 That is all. The Ally and Sunshine are paired without anyone typing a PIN, and
 the desktop's Steam games appear in the library with their covers.
 
-To get a new code later, double-click the companion again or run
-`carla-companion code`. `carla-companion devices` and `forget ID` list and
+To get a new code later, open **CarlaOS Desktop Host** from the Start menu or
+run `carla-companion code` (the program is in
+`%LOCALAPPDATA%\Programs\CarlaOS Desktop Host`). `carla-companion devices` and `forget ID` list and
 remove linked devices; `remove` stops it starting with Windows.
 
 ## How it fits together
