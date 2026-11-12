@@ -1,7 +1,7 @@
 import { useLayoutEffect, useState } from "react";
 import { focusFirst } from "../nav/focus";
 import type { CloudService, Game, Host } from "../data/types";
-import { Cover, Empty, GameCard, Grid, HostCard, Row, placeLabel, playtime } from "../ui/parts";
+import { Cover, Empty, GameCard, Grid, HostCard, Row, playtime } from "../ui/parts";
 
 export type Ctx = {
   games: Game[];
@@ -75,14 +75,13 @@ export function Home(ctx: Ctx) {
 const FILTERS = [
   { id: "all", label: "All" },
   { id: "local", label: "On this Ally" },
-  { id: "stream", label: "Streamable" },
+  { id: "stream", label: "Streamed" },
   { id: "fav", label: "Favourites" },
 ] as const;
 
 export function Games(ctx: Ctx) {
   const [filter, setFilter] = useState<(typeof FILTERS)[number]["id"]>("all");
   const list = ctx.games
-    .filter((g) => g.kind === "game" || g.kind === "homebrew")
     .filter((g) =>
       filter === "local"
         ? g.places.includes("local")
@@ -176,31 +175,10 @@ export function HostView({ hostId, ...ctx }: Ctx & { hostId: string }) {
   );
 }
 
-export function Emulation(ctx: Ctx) {
-  const emulated = ctx.games.filter((g) => g.kind === "emulated");
-  const consoles = [...new Set(emulated.map((g) => g.platform))].sort();
-  if (emulated.length === 0) return <Empty>No emulated games yet. Emulators arrive in a later build.</Empty>;
-  return (
-    <>
-      {consoles.map((c) => (
-        <Row key={c} title={c}>
-          {cards(emulated.filter((g) => g.platform === c), ctx)}
-        </Row>
-      ))}
-    </>
-  );
-}
-
-export function Ports(ctx: Ctx) {
-  const ports = ctx.games.filter((g) => g.kind === "port");
-  if (ports.length === 0) return <Empty>No native ports yet. Add one under Settings, then Manage games.</Empty>;
-  return <Grid>{cards(ports, ctx)}</Grid>;
-}
-
 export function Cloud({ services, notify }: { services: CloudService[]; notify: Ctx["notify"] }) {
   return (
     <>
-      <p className="lede">Rented cloud services. These are separate from your own desktops.</p>
+      <p className="lede">Cloud gaming: games that run in a rented data centre. Everything else is under My Games.</p>
       <div className="hosts">
         {services.map((s) => (
           <button
@@ -276,42 +254,3 @@ export function Settings({
   );
 }
 
-export function GameDetail({ gameId, onToggleFavourite, ...ctx }: Ctx & { gameId: string; onToggleFavourite: (id: string) => void }) {
-  const game = ctx.games.find((g) => g.id === gameId);
-  if (!game) return <Empty>This game is no longer in the library.</Empty>;
-  const fav = ctx.favourites.has(game.id);
-  return (
-    <article className="detail" data-game={game.id}>
-      <Cover game={game} wide />
-      <div className="detail__body">
-        <p className="hero__eyebrow">{game.platform}</p>
-        <h1 className="detail__title">{game.title}</h1>
-        <p className="detail__desc">{game.description}</p>
-        <p className="detail__meta">{playtime(game.playtimeMinutes)}</p>
-        <div className="detail__actions">
-          {game.places.map((place, i) => {
-            const host = ctx.hosts.find((h) => h.id === place);
-            const away = host && host.state !== "ready" && host.state !== "busy" && host.state !== "unknown";
-            const label = place === "local" ? "Play" : `Stream from ${placeLabel(place, ctx.hosts)}`;
-            return (
-              <button
-                key={place}
-                className={i === 0 ? "pill pill--primary" : "pill"}
-                data-focus
-                data-autofocus={i === 0 ? "" : undefined}
-                data-fid={`play:${place}`}
-                onClick={() => ctx.play(game.id, place)}
-              >
-                {label}
-                {away ? (host.state === "not_ready" ? " (needs attention)" : host.canWake ? " (wakes it first)" : " (not answering)") : ""}
-              </button>
-            );
-          })}
-          <button className="pill" data-focus data-fid="fav" onClick={() => onToggleFavourite(game.id)}>
-            {fav ? "♥ Favourite" : "♡ Favourite"}
-          </button>
-        </div>
-      </div>
-    </article>
-  );
-}

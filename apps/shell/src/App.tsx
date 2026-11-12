@@ -9,8 +9,10 @@ import { Cleanup, type CleanupView } from "./screens/cleanup";
 import { LinkDesktops } from "./screens/link";
 import { Manage } from "./screens/manage";
 import { Playing } from "./screens/playing";
-import { Cloud, Desktops, Emulation, GameDetail, Games, Home, HostView, Ports, Settings, type Ctx } from "./screens/screens";
+import { GameDetail } from "./screens/pregame";
+import { Cloud, Desktops, Games, Home, HostView, Settings, type Ctx } from "./screens/screens";
 import { Hints, SECTIONS, TopBar, type Section } from "./ui/chrome";
+import { Splash } from "./ui/splash";
 
 type Page = { kind: "game"; id: string } | { kind: "host"; id: string } | { kind: "cleanup"; id: CleanupView }
   | { kind: "manage"; id: "home" } | { kind: "desktops"; id: "home" };
@@ -34,6 +36,12 @@ export function App() {
   const { games, hosts, session, scanning } = useLibrary();
   const favourites = useMemo(() => new Set(games.filter((g) => g.favourite).map((g) => g.id)), [games]);
   const [toast, setToast] = useState<string | null>(null);
+  // The startup animation plays once each time CarlaOS starts.
+  const [splash, setSplash] = useState(true);
+  const endSplash = useCallback(() => {
+    setSplash(false);
+    if (main.current && !main.current.contains(document.activeElement)) focusFirst(main.current);
+  }, []);
   const [version, setVersion] = useState("");
   // Where focus was before each pushed page, so Back lands on the same card.
   const returnFocus = useRef<(string | null)[]>([]);
@@ -90,7 +98,7 @@ export function App() {
 
   useEffect(() => {
     const onAction = (action: Action) => {
-      if (playing) return; // only the one button on the playing screen works
+      if (playing || splash) return; // only the one button on the playing screen works
       if (action === "back") back();
       else if (action === "prev" || action === "next") {
         const i = SECTIONS.findIndex((s) => s.id === section);
@@ -102,7 +110,7 @@ export function App() {
       }
     };
     return installInput(onAction);
-  }, [back, go, playing, section, toggleFavourite]);
+  }, [back, go, playing, section, splash, toggleFavourite]);
 
   // The administrator pages lock themselves again as soon as they are left.
   const inCleanup = stack.some((p) => p.kind === "cleanup");
@@ -150,8 +158,6 @@ export function App() {
   else if (section === "home") page = <Home {...ctx} />;
   else if (section === "games") page = <Games {...ctx} />;
   else if (section === "desktops") page = <Desktops {...ctx} />;
-  else if (section === "emulation") page = <Emulation {...ctx} />;
-  else if (section === "ports") page = <Ports {...ctx} />;
   else if (section === "cloud") page = <Cloud services={cloud} notify={setToast} />;
   else
     page = (
@@ -199,6 +205,7 @@ export function App() {
           ["LB RB", "Sections"],
         ]}
       />
+      {splash && <Splash onDone={endSplash} />}
       {toast && (
         <div className="toast" role="status">
           {toast}

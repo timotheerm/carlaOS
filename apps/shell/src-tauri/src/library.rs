@@ -37,9 +37,10 @@ pub(crate) struct Active {
 
 pub(crate) struct Inner {
     store: Mutex<Store>,
-    steam_root: Mutex<Option<PathBuf>>,
+    pub(crate) steam_root: Mutex<Option<PathBuf>>,
     pub(crate) art_dir: PathBuf,
-    active: Mutex<Option<Active>>,
+    pub(crate) data_dir: PathBuf,
+    pub(crate) active: Mutex<Option<Active>>,
 }
 
 #[derive(Clone)]
@@ -70,6 +71,7 @@ impl Library {
             store: Mutex::new(store),
             steam_root: Mutex::new(None),
             art_dir: data_dir.join("art"),
+            data_dir: data_dir.to_path_buf(),
             active: Mutex::new(None),
         })))
     }
@@ -239,6 +241,9 @@ pub fn library_launch(app: AppHandle, library: State<'_, Library>, game_id: Stri
         // A game that never appeared was not played.
         let ended = if played { now() } else { started };
         let _ = library.store().end_session(session, ended);
+        if played && place == LOCAL {
+            crate::details::backup_after_play(&library, &game_id);
+        }
         *locked(&library.0.active) = None;
         let _ = app.emit(SESSION_EVENT, None::<SessionView>);
         if let Some(window) = app.get_webview_window("main") {

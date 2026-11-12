@@ -15,7 +15,7 @@ use std::io::{BufRead, Write};
 use std::net::{Ipv4Addr, UdpSocket};
 use std::sync::Arc;
 
-use carla_core::library::steam;
+use carla_core::library::{achievements, steam};
 use carla_core::link::{discover, enrol, wake, SUNSHINE_APP};
 use carla_core::{AppInfo, Role};
 
@@ -186,7 +186,9 @@ fn show_code(files: &Files) -> Result<(), String> {
 fn build(files: &Files, config: Config) -> Server {
     let streamer = streamer(&config).ok().map(|s| Box::new(s) as Box<dyn Streamer>);
     let scan = Box::new(|| steam::find_root().as_deref().map(steam::scan).unwrap_or_default());
-    Server::new(files.clone(), config, streamer, scan, launcher_command(), hardware(), network)
+    Server::new(files.clone(), config, streamer, scan, launcher_command(), hardware(), network, |app_id| {
+        steam::find_root().and_then(|root| achievements::steam(&root, app_id)).unwrap_or_default()
+    })
 }
 
 /// Run the API. `Err` when the port is taken, which means it already runs.

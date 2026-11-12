@@ -1,4 +1,4 @@
-import type { CloudService, Game, Host } from "./types";
+import type { Achievement, CloudService, Details, Game, Host, Match } from "./types";
 
 // Invented titles on purpose: the prototype must not ship or imply real artwork.
 export const hosts: Host[] = [
@@ -74,3 +74,90 @@ export const cloud: CloudService[] = [
   { id: "xcloud", name: "Xbox Cloud Gaming", note: "Game Pass in the cloud", hue: 130 },
   { id: "boosteroid", name: "Boosteroid", note: "Rented cloud PC", hue: 210 },
 ];
+
+// ---- what the browser preview shows on a game's page ----
+
+const DAY = 86_400;
+const at = (iso: string | undefined, daysBefore = 0) =>
+  iso ? Math.floor(new Date(iso).getTime() / 1000) - daysBefore * DAY : null;
+
+const OWN: [string, string, boolean][] = [
+  ["Opening night", "Finish the opening chapter.", false],
+  ["Collector", "Find 50 hidden things.", false],
+  ["Night owl", "Play past midnight in the story.", false],
+  ["Good company", "Bring every friend along.", false],
+  ["Untouchable", "Clear a chapter without a scratch.", false],
+  ["The long way round", "Take every detour.", false],
+  ["A secret", "", true],
+  ["Another secret", "", true],
+  ["Completionist", "See everything there is to see.", false],
+  ["The end", "Watch the credits.", false],
+];
+
+const MILESTONES: [string, string, string, number][] = [
+  ["first", "First steps", "Play for the first time.", 1],
+  ["time:1", "Settling in", "Play for one hour.", 60],
+  ["time:5", "Hooked", "Play for five hours.", 300],
+  ["time:10", "Regular", "Play for ten hours.", 600],
+  ["time:25", "Devoted", "Play for twenty-five hours.", 1500],
+  ["time:50", "True fan", "Play for fifty hours.", 3000],
+  ["time:100", "Part of the family", "Play for a hundred hours.", 6000],
+  ["days:3", "Back again", "Play on three different days.", 200],
+  ["days:7", "A week of it", "Play on seven different days.", 500],
+  ["days:30", "Old friends", "Play on thirty different days.", 2500],
+  ["marathon", "Marathon", "Play for three hours in one sitting.", 900],
+];
+
+/** Invented details for a sample game, steady from one look to the next. */
+export function sampleDetails(game: Game): Details {
+  const played = game.playtimeMinutes;
+  const steam = game.platform === "Steam" || game.platform === "Epic";
+  const earned = Math.min(OWN.length, Math.floor(played / 240));
+  const achievements: Achievement[] = steam
+    ? OWN.map(([name, description, hidden], i) => ({
+        id: `a${i}`,
+        name,
+        description,
+        hidden,
+        unlocked: i < earned ? at(game.lastPlayed, (earned - i) * 3) : null,
+      }))
+    : [];
+  const milestones: Achievement[] = MILESTONES.map(([id, name, description, needed], i) => ({
+    id,
+    name,
+    description,
+    hidden: false,
+    unlocked: played >= needed || (needed === 1 && !!game.lastPlayed) ? at(game.lastPlayed, (MILESTONES.length - i) * 2) : null,
+  }));
+  const local = game.places.includes("local");
+  const modified = at(game.lastPlayed);
+  return {
+    achievements,
+    achievementsFrom: steam ? (local ? "steam" : "HOME PC") : null,
+    milestones,
+    saves:
+      local && modified !== null && game.kind !== "emulated"
+        ? {
+            folder: `C:\\Users\\Carla\\Saved Games\\${game.title}`,
+            files: 4,
+            bytes: 2_600_000,
+            modified,
+            backups: [
+              { id: String(modified), at: modified, files: 4, bytes: 2_600_000 },
+              { id: String(modified - 3 * DAY), at: modified - 3 * DAY, files: 4, bytes: 2_450_000 },
+            ],
+          }
+        : null,
+    sessions: played === 0 ? 0 : Math.max(1, Math.round(played / 70)),
+  };
+}
+
+export function sampleMatches(term: string): Match[] {
+  const all = [
+    { id: "101", name: "Paper Lanterns" },
+    { id: "102", name: "Paper Lanterns: The Long Night" },
+    { id: "103", name: "Lantern Keeper" },
+  ];
+  const words = term.toLowerCase().split(/\s+/).filter(Boolean);
+  return words.length ? all.filter((m) => words.some((w) => m.name.toLowerCase().includes(w))) : all;
+}

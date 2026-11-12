@@ -25,6 +25,16 @@ export function focusById(id: string): boolean {
   return !!el;
 }
 
+/** When what had focus has gone from the page, put focus on something, so A
+    always does something. `prefer` names the best candidates, in order. */
+export function keepFocus(...prefer: string[]): void {
+  const active = document.activeElement;
+  if (active instanceof HTMLElement && active.isConnected && active.matches(SELECTOR) && !active.hasAttribute("disabled")) return;
+  if (prefer.some(focusById)) return;
+  const main = document.querySelector("main");
+  if (main) focusFirst(main);
+}
+
 export function currentFocusId(): string | null {
   return (document.activeElement as HTMLElement | null)?.dataset?.fid ?? null;
 }

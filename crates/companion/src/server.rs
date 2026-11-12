@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+use carla_core::library::achievements::Achievement;
 use carla_core::library::Scanned;
 use carla_core::link::enrol::{Exchange, Shared, Side};
 use carla_core::link::sign::{self, Replay};
@@ -60,6 +61,8 @@ pub struct Server {
     /// The desktop's addresses and adapter hardware addresses, read afresh
     /// each time because Tailscale and Wi-Fi come and go.
     network: fn() -> (Vec<String>, Vec<String>),
+    /// A Steam game's achievements on this desktop, by app id.
+    achievements: fn(&str) -> Vec<Achievement>,
     replay: Mutex<Replay>,
     exchanges: Mutex<HashMap<String, Waiting>>,
     games: Mutex<Option<(Instant, Vec<Scanned>)>>,
@@ -101,6 +104,7 @@ impl Server {
         launcher: String,
         hardware: String,
         network: fn() -> (Vec<String>, Vec<String>),
+        achievements: fn(&str) -> Vec<Achievement>,
     ) -> Self {
         Self {
             files,
@@ -110,6 +114,7 @@ impl Server {
             launcher,
             hardware,
             network,
+            achievements,
             replay: Mutex::default(),
             exchanges: Mutex::default(),
             games: Mutex::default(),
@@ -276,6 +281,13 @@ impl Server {
                     .collect::<Vec<_>>(),
             ),
             ("GET", path) if path.starts_with("/v1/cover/") => self.cover(&path["/v1/cover/".len()..]),
+            ("GET", path) if path.starts_with("/v1/achievements/") => {
+                // Only for games that are really installed here, by their own id.
+                match self.find(&path["/v1/achievements/".len()..]) {
+                    Some(game) => json(&(self.achievements)(&game.source_id)),
+                    None => refuse(404, &format!("That game is no longer installed on {}.", self.config.name)),
+                }
+            }
             ("POST", "/v1/stream/prepare") => self.prepare(req.body, now),
             ("POST", "/v1/stream/pair") => self.pair(req.body, req.from),
             _ => refuse(404, "The companion does not know that request."),
@@ -432,7 +444,9 @@ mod tests {
                 Scanned { source_id: "20".into(), title: "Second Game".into(), install_path: dir.join("second"), cover: None, hero: None },
             ]
         });
-        let server = Arc::new(Server::new(files.clone(), config, Some(Box::new(sunshine)), scan, "companion launch".into(), "Test CPU · 64 GB".into(), || (vec!["192.168.1.20".into()], vec!["aa:bb:cc:dd:ee:ff".into()])));
+        let server = Arc::new(Server::new(files.clone(), config, Some(Box::new(sunshine)), scan, "companion launch".into(), "Test CPU · 64 GB".into(), || (vec!["192.168.1.20".into()], vec!["aa:bb:cc:dd:ee:ff".into()]), |app| {
+            vec![Achievement { id: format!("ACH_{app}"), name: "Winner".into(), description: String::new(), hidden: false, unlocked: Some(7) }]
+        }));
         let http = tiny_http::Server::http("127.0.0.1:0").unwrap();
         let port = http.server_addr().to_ip().unwrap().port();
         std::thread::spawn(move || serve(server, http));
@@ -465,6 +479,9 @@ mod tests {
         assert_eq!(link.cover("steam:10").unwrap(), b"picture bytes");
         assert!(matches!(link.cover("steam:20"), Err(Error::Host(_))));
         assert!(matches!(link.cover("../config.json"), Err(Error::Host(_))));
+        let earned = link.achievements("steam:20").unwrap();
+        assert_eq!((earned[0].id.as_str(), earned[0].unlocked), ("ACH_20", Some(7)));
+        assert!(matches!(link.achievements("steam:99"), Err(Error::Host(_))));
 
         link.pair("1234", "Ally").unwrap();
         link.prepare("steam:20").unwrap();
@@ -517,7 +534,7 @@ mod tests {
         let desk = desk("replay", false);
         let link = linked(&desk);
         let files = desk.files.clone();
-        let server = Server::new(files, Config::new("HOME PC"), None, Box::new(Vec::new), String::new(), String::new(), || (Vec::new(), Vec::new()));
+        let server = Server::new(files, Config::new("HOME PC"), None, Box::new(Vec::new), String::new(), String::new(), || (Vec::new(), Vec::new()), |_| Vec::new());
         let (now, nonce) = (1_000_000, "0123456789abcdef0123456789abcdef");
         let body = br#"{"game_id":"steam:10"}"#;
         let signature = sign::request(&link.key, "POST", "/v1/stream/prepare", now, nonce, body);

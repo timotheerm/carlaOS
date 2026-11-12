@@ -4,8 +4,6 @@ export const SECTIONS = [
   { id: "home", label: "Home" },
   { id: "games", label: "My Games" },
   { id: "desktops", label: "My Desktops" },
-  { id: "emulation", label: "Emulation" },
-  { id: "ports", label: "Native Ports" },
   { id: "cloud", label: "Cloud" },
   { id: "settings", label: "Settings" },
 ] as const;

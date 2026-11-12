@@ -5,8 +5,10 @@ import { useSyncExternalStore } from "react";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { games as sampleGames, hosts as sampleHosts } from "../data/sample";
-import type { FoundHost, Game, Host, HostState, Kind, NewGame, Session } from "../data/types";
+import { sampleDetails, sampleMatches } from "../data/sample";
+import type { Details, FoundHost, Game, Host, HostState, Kind, Match, NewGame, Saves, Session } from "../data/types";
 import { inTauri } from "../native";
+import { when } from "../ui/parts";
 
 type State = { games: Game[]; hosts: Host[]; session: Session | null; scanning: boolean };
 
@@ -44,6 +46,19 @@ type HostView = {
 type Linked = { host: HostView; games: number; warning: string | null };
 type Found = { address: string; hello: { name: string; id: string } };
 
+type DetailsView = Omit<Details, "achievementsFrom"> & { achievements_from: string | null };
+type Fetched = { name: string; description: string; cover: string | null };
+
+// Saves as the browser preview pretends them, so backing up can be tried.
+const previewSaves = new Map<string, Saves | null>();
+function preview(gameId: string): Saves | null {
+  if (!previewSaves.has(gameId)) {
+    const game = state.games.find((g) => g.id === gameId);
+    previewSaves.set(gameId, game ? sampleDetails(game).saves : null);
+  }
+  return previewSaves.get(gameId) ?? null;
+}
+
 const FAV_KEY = "carla.favourites";
 const iso = (seconds: number) => new Date(seconds * 1000).toISOString();
 
@@ -73,17 +88,6 @@ const fromView = (g: GameView): Game => ({
 
 const fromSession = (s: SessionView | null): Session | null =>
   s && { gameId: s.game_id, title: s.title, phase: s.phase, stream: s.stream };
-
-// "today, 21:05", "yesterday, 22:14", "3 March".
-function when(seconds: number | null): string {
-  if (seconds === null) return "never";
-  const then = new Date(seconds * 1000);
-  const days = Math.round((new Date().setHours(0, 0, 0, 0) - new Date(then).setHours(0, 0, 0, 0)) / 86_400_000);
-  const time = then.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-  if (days <= 0) return `today, ${time}`;
-  if (days === 1) return `yesterday, ${time}`;
-  return then.toLocaleDateString([], { day: "numeric", month: "long" });
-}
 
 const awake = (state: HostState) => state === "ready" || state === "busy" || state === "not_ready";
 
@@ -277,7 +281,7 @@ export const library = {
     const added: Game = {
       id: `manual:${game.exe.toLowerCase()}`,
       title: game.title,
-      description: "",
+      description: game.description,
       platform: "Standalone",
       kind: game.kind,
       hue: hue(game.title),
@@ -286,6 +290,7 @@ export const library = {
       added: now,
       favourite: false,
       manual: true,
+      cover: game.cover ?? undefined,
     };
     set({ games: [...state.games.filter((g) => g.id !== added.id), added] });
   },
@@ -295,6 +300,71 @@ export const library = {
       await invoke("library_remove_manual", { id });
       await reload();
     } else set({ games: state.games.filter((g) => g.id !== id) });
+  },
+
+  /** Achievements, milestones and saves of one game. */
+  async details(gameId: string): Promise<Details> {
+    if (inTauri) {
+      const { achievements_from, ...rest } = await invoke<DetailsView>("library_details", { gameId });
+      return { ...rest, achievementsFrom: achievements_from };
+    }
+    const game = state.games.find((g) => g.id === gameId);
+    if (!game) return { achievements: [], achievementsFrom: null, milestones: [], saves: null, sessions: 0 };
+    return { ...sampleDetails(game), saves: preview(gameId) };
+  },
+
+  /** Copy the saves aside now. Resolves with the new overview. */
+  async backupSaves(gameId: string): Promise<Saves> {
+    if (inTauri) return invoke<Saves>("saves_backup", { gameId });
+    const saves = preview(gameId);
+    if (!saves) throw "CarlaOS does not know where this game keeps its saves.";
+    const at = Math.floor(Date.now() / 1000);
+    const next = { ...saves, backups: [{ id: String(at), at, files: saves.files, bytes: saves.bytes }, ...saves.backups].slice(0, 5) };
+    previewSaves.set(gameId, next);
+    return next;
+  },
+
+  /** Put a backup back. The saves of now are backed up first. Administrator only. */
+  async restoreSaves(gameId: string, backupId: string): Promise<Saves> {
+    if (inTauri) return invoke<Saves>("saves_restore", { gameId, backupId });
+    const saves = preview(gameId);
+    if (!saves) throw "CarlaOS does not know where this game keeps its saves.";
+    const wanted = saves.backups.find((b) => b.id === backupId);
+    const at = Math.floor(Date.now() / 1000);
+    const next = { ...saves, modified: wanted?.at ?? saves.modified, backups: [{ id: String(at), at, files: saves.files, bytes: saves.bytes }, ...saves.backups].slice(0, 5) };
+    previewSaves.set(gameId, next);
+    return next;
+  },
+
+  /** The administrator says where a game keeps its saves. Null when nothing was chosen. */
+  async pickSaveFolder(gameId: string): Promise<Saves | null> {
+    if (inTauri) return invoke<Saves | null>("saves_pick_folder", { gameId });
+    const next: Saves = { folder: "C:\\Users\\Carla\\Saved Games\\Example", files: 3, bytes: 1_400_000, modified: Math.floor(Date.now() / 1000) - 7200, backups: [] };
+    previewSaves.set(gameId, next);
+    return next;
+  },
+
+  async forgetSaveFolder(gameId: string) {
+    if (inTauri) await invoke("saves_forget_folder", { gameId });
+    else previewSaves.set(gameId, null);
+  },
+
+  /** Look a game up in the public store by name. Administrator only. */
+  async findOnline(term: string): Promise<Match[]> {
+    if (inTauri) return invoke<Match[]>("meta_search", { term });
+    await new Promise((r) => setTimeout(r, 300));
+    return sampleMatches(term);
+  },
+
+  /** Fetch the description and cover of one match. The cover is a file path. */
+  async fetchOnline(id: string): Promise<{ name: string; description: string; cover: string | null; preview: string | null }> {
+    if (inTauri) {
+      const got = await invoke<Fetched>("meta_fetch", { id });
+      return { ...got, preview: got.cover ? convertFileSrc(got.cover) : null };
+    }
+    await new Promise((r) => setTimeout(r, 300));
+    const name = sampleMatches("").find((m) => m.id === id)?.name ?? "Example";
+    return { name, description: "A short hand-drawn puzzle game about lighting the way home.", cover: null, preview: null };
   },
 };
 
