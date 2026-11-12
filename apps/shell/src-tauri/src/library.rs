@@ -7,7 +7,7 @@ use std::process::Child;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use carla_core::library::launch::{self, Phase, Watch};
-use carla_core::library::{steam, GameView, ManualGame, Store, LOCAL};
+use carla_core::library::{scan_store, steam, GameView, ManualGame, Store, LOCAL, STORES};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::DialogExt;
@@ -83,15 +83,18 @@ impl Library {
     /// Look at what is installed and bring the catalogue up to date.
     fn scan(&self, app: &AppHandle) -> Result<Vec<GameView>, String> {
         let root = steam::find_root();
-        let found = root.as_deref().map(steam::scan).unwrap_or_default();
         if let Some(root) = &root {
             allow_pictures(app, &root.join("appcache").join("librarycache"));
         }
         allow_pictures(app, &self.0.art_dir);
         allow_pictures(app, &crate::hosts::art_dir(self));
+        // Looked through before the catalogue is locked: reading disks is slow.
+        let found: Vec<_> = STORES.iter().map(|store| (*store, scan_store(store, root.as_deref()))).collect();
         *locked(&self.0.steam_root) = root;
         let mut store = self.store();
-        store.sync(LOCAL, "steam", &found, now())?;
+        for (source, games) in &found {
+            store.sync(LOCAL, source, games, now())?;
+        }
         store.list()
     }
 }

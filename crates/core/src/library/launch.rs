@@ -50,6 +50,18 @@ pub fn split_args(line: &str) -> Vec<String> {
     out
 }
 
+const EPIC_ADDRESS: &str = "com.epicgames.launcher://apps/";
+
+/// Hand an address to the program registered for it, without a shell in
+/// between that could read `&` or `%` as something else.
+fn open_address(address: &str) -> io::Result<()> {
+    if cfg!(windows) {
+        Command::new("rundll32.exe").arg("url.dll,FileProtocolHandler").arg(address).spawn().map(|_| ())
+    } else {
+        Command::new("xdg-open").arg(address).spawn().map(|_| ())
+    }
+}
+
 /// Start an install. Returns the started program when it is the game itself,
 /// and nothing when a store client was asked to start it.
 pub fn start(install: &Install, steam_root: Option<&Path>) -> io::Result<Option<Child>> {
@@ -57,6 +69,15 @@ pub fn start(install: &Install, steam_root: Option<&Path>) -> io::Result<Option<
         "steam" => {
             let root = steam_root.ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Steam is not installed"))?;
             Command::new(steam::client(root)).arg(format!("steam://rungameid/{}", install.source_id)).spawn()?;
+            Ok(None)
+        }
+        "epic" => {
+            // The address was built from the launcher's own manifest. Anything
+            // else in its place is not handed to Windows to open.
+            if !install.args.starts_with(EPIC_ADDRESS) || install.args.contains(char::is_whitespace) {
+                return Err(io::Error::new(io::ErrorKind::InvalidInput, "the Epic Games Launcher does not know this game any more"));
+            }
+            open_address(&install.args)?;
             Ok(None)
         }
         _ => {
@@ -199,6 +220,22 @@ mod tests {
         assert_eq!(split_args(r#"-windowed  --profile "My Save" -x"#), ["-windowed", "--profile", "My Save", "-x"]);
         assert_eq!(split_args(r#""" a"#), ["", "a"]);
         assert!(split_args("   ").is_empty());
+    }
+
+    #[test]
+    fn an_epic_game_is_only_started_through_the_launchers_own_address() {
+        let install = |args: &str| Install {
+            game_id: "epic:Jade".into(),
+            title: "Velvet Circuit".into(),
+            source: "epic".into(),
+            source_id: "Jade".into(),
+            install_path: PathBuf::new(),
+            exe: None,
+            args: args.into(),
+        };
+        assert!(start(&install("https://example.com/x"), None).is_err());
+        assert!(start(&install("com.epicgames.launcher://apps/Jade?action=launch & calc.exe"), None).is_err());
+        assert!(start(&install(""), None).is_err());
     }
 
     #[test]

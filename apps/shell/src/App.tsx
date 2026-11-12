@@ -9,13 +9,14 @@ import { Cleanup, type CleanupView } from "./screens/cleanup";
 import { LinkDesktops } from "./screens/link";
 import { Manage } from "./screens/manage";
 import { Playing } from "./screens/playing";
+import { Search } from "./screens/search";
 import { GameDetail } from "./screens/pregame";
 import { Cloud, Desktops, Games, Home, HostView, Settings, type Ctx } from "./screens/screens";
 import { Hints, SECTIONS, TopBar, type Section } from "./ui/chrome";
 import { Splash } from "./ui/splash";
 
 type Page = { kind: "game"; id: string } | { kind: "host"; id: string } | { kind: "cleanup"; id: CleanupView }
-  | { kind: "manage"; id: "home" } | { kind: "desktops"; id: "home" };
+  | { kind: "manage"; id: "home" } | { kind: "desktops"; id: "home" } | { kind: "search"; id: "home" };
 type Theme = "light" | "dark";
 
 const THEME_KEY = "carla.theme";
@@ -90,7 +91,9 @@ export function App() {
     setSection(s);
   }, []);
 
+  const [query, setQuery] = useState("");
   const playing = session !== null;
+  const searching = stack.some((p) => p.kind === "search");
   const toggleFavourite = useCallback(
     (id: string) => void library.setFavourite(id, !favourites.has(id)).catch((e) => setToast(message(e))),
     [favourites],
@@ -107,10 +110,16 @@ export function App() {
       } else if (action === "favourite") {
         const id = (document.activeElement as HTMLElement | null)?.closest<HTMLElement>("[data-game]")?.dataset.game;
         if (id) toggleFavourite(id);
+      } else if (action === "search") {
+        // Once is enough: Y on the search page itself does nothing.
+        if (!searching) {
+          setQuery("");
+          push({ kind: "search", id: "home" });
+        }
       }
     };
     return installInput(onAction);
-  }, [back, go, playing, section, splash, toggleFavourite]);
+  }, [back, go, playing, push, searching, section, splash, toggleFavourite]);
 
   // The administrator pages lock themselves again as soon as they are left.
   const inCleanup = stack.some((p) => p.kind === "cleanup");
@@ -152,6 +161,7 @@ export function App() {
   let page;
   if (top?.kind === "game") page = <GameDetail {...ctx} gameId={top.id} onToggleFavourite={toggleFavourite} />;
   else if (top?.kind === "host") page = <HostView {...ctx} hostId={top.id} />;
+  else if (top?.kind === "search") page = <Search {...ctx} query={query} setQuery={setQuery} />;
   else if (top?.kind === "manage") page = <Manage games={games} notify={setToast} />;
   else if (top?.kind === "desktops") page = <LinkDesktops hosts={hosts} notify={setToast} />;
   else if (top?.kind === "cleanup") page = <Cleanup view={top.id} open={(view) => push({ kind: "cleanup", id: view })} />;
@@ -202,6 +212,7 @@ export function App() {
           ["A", "Select"],
           ["B", "Back"],
           ["X", "Favourite"],
+          ["Y", "Search"],
           ["LB RB", "Sections"],
         ]}
       />

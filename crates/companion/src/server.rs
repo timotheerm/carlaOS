@@ -54,7 +54,7 @@ pub struct Server {
     files: Files,
     config: Config,
     streamer: Option<Box<dyn Streamer>>,
-    scan: Box<dyn Fn() -> Vec<Scanned> + Send + Sync>,
+    scan: Box<dyn Fn() -> Vec<Found> + Send + Sync>,
     /// What Sunshine runs when a stream starts.
     launcher: String,
     hardware: String,
@@ -67,9 +67,12 @@ pub struct Server {
     sleep: fn() -> Result<(), String>,
     replay: Mutex<Replay>,
     exchanges: Mutex<HashMap<String, Waiting>>,
-    games: Mutex<Option<(Instant, Vec<Scanned>)>>,
+    games: Mutex<Option<(Instant, Vec<Found>)>>,
     health: Mutex<Option<(Instant, Result<(), String>)>>,
 }
+
+/// An installed game and the store it is from ("steam", "epic", "gog").
+pub type Found = (&'static str, Scanned);
 
 type Answer = Result<(Vec<u8>, &'static str), (u16, String)>;
 
@@ -102,7 +105,7 @@ impl Server {
         files: Files,
         config: Config,
         streamer: Option<Box<dyn Streamer>>,
-        scan: Box<dyn Fn() -> Vec<Scanned> + Send + Sync>,
+        scan: Box<dyn Fn() -> Vec<Found> + Send + Sync>,
         launcher: String,
         hardware: String,
         network: fn() -> (Vec<String>, Vec<String>),
@@ -130,7 +133,7 @@ impl Server {
         Hello { name: self.config.name.clone(), id: self.config.id.clone(), version: VERSION.to_string(), api_version: API_VERSION }
     }
 
-    fn games(&self, fresh: bool) -> Vec<Scanned> {
+    fn games(&self, fresh: bool) -> Vec<Found> {
         let mut games = locked(&self.games);
         match games.as_ref() {
             Some((at, list)) if !fresh && at.elapsed() < SCAN_AGE => list.clone(),
@@ -142,8 +145,8 @@ impl Server {
         }
     }
 
-    fn find(&self, game_id: &str) -> Option<Scanned> {
-        let wanted = |list: Vec<Scanned>| list.into_iter().find(|g| format!("steam:{}", g.source_id) == game_id);
+    fn find(&self, game_id: &str) -> Option<Found> {
+        let wanted = |list: Vec<Found>| list.into_iter().find(|(source, g)| format!("{source}:{}", g.source_id) == game_id);
         // A game installed a moment ago is not in an older scan.
         wanted(self.games(false)).or_else(|| wanted(self.games(true)))
     }
@@ -155,9 +158,9 @@ impl Server {
     }
 
     fn listed(&self) -> Vec<RemoteGame> {
-        let steam = self.games(true).into_iter().map(|g| RemoteGame {
-            id: format!("steam:{}", g.source_id),
-            source: "steam".to_string(),
+        let steam = self.games(true).into_iter().map(|(source, g)| RemoteGame {
+            id: format!("{source}:{}", g.source_id),
+            source: source.to_string(),
             source_id: g.source_id,
             title: g.title,
             has_cover: g.cover.is_some(),
@@ -268,14 +271,14 @@ impl Server {
                 args: extra.args,
                 at: now,
             },
-            (None, Some(game)) => Pending {
+            (None, Some((source, game))) => Pending {
                 game_id: prepare.game_id.clone(),
                 title: game.title,
-                source: "steam".to_string(),
+                source: source.to_string(),
                 source_id: game.source_id,
                 install_path: game.install_path,
-                exe: None,
-                args: String::new(),
+                exe: game.exe,
+                args: game.args,
                 at: now,
             },
             (None, None) => return refuse(404, &format!("That game is no longer installed on {}.", self.config.name)),
@@ -306,7 +309,7 @@ impl Server {
     fn cover(&self, game_id: &str) -> Answer {
         let cover: Option<PathBuf> = match self.extra(game_id) {
             Some(extra) => extra.cover,
-            None => self.find(game_id).and_then(|g| g.cover),
+            None => self.find(game_id).and_then(|(_, g)| g.cover),
         };
         match cover.and_then(|path| std::fs::read(&path).ok().map(|bytes| (bytes, picture_kind(&path)))) {
             Some(found) => Ok(found),
@@ -322,7 +325,9 @@ impl Server {
             ("GET", path) if path.starts_with("/v1/achievements/") => {
                 // Only for games that are really installed here, by their own id.
                 match self.find(&path["/v1/achievements/".len()..]) {
-                    Some(game) => json(&(self.achievements)(&game.source_id)),
+                    Some(("steam", game)) => json(&(self.achievements)(&game.source_id)),
+                    // Other stores keep achievements on their servers only.
+                    Some(_) => json(&Vec::<Achievement>::new()),
                     None => refuse(404, &format!("That game is no longer installed on {}.", self.config.name)),
                 }
             }
@@ -482,8 +487,9 @@ mod tests {
         let sunshine = FakeSunshine { down, calls: calls.clone() };
         let scan = Box::new(move || {
             vec![
-                Scanned { source_id: "10".into(), title: "First Game".into(), install_path: dir.join("first"), cover: Some(dir.join("cover.jpg")), hero: None },
-                Scanned { source_id: "20".into(), title: "Second Game".into(), install_path: dir.join("second"), cover: None, hero: None },
+                ("steam", Scanned { source_id: "10".into(), title: "First Game".into(), install_path: dir.join("first"), cover: Some(dir.join("cover.jpg")), ..Scanned::default() }),
+                ("steam", Scanned { source_id: "20".into(), title: "Second Game".into(), install_path: dir.join("second"), ..Scanned::default() }),
+                ("gog", Scanned { source_id: "30".into(), title: "Third Game".into(), install_path: dir.join("third"), exe: Some(dir.join("third").join("third.exe")), args: "-windowed".into(), ..Scanned::default() }),
             ]
         });
         let server = Arc::new(Server::new(
@@ -528,20 +534,27 @@ mod tests {
         assert_eq!((status.addresses, status.macs), (vec!["192.168.1.20".to_string()], vec!["aa:bb:cc:dd:ee:ff".to_string()]));
 
         let games = link.games().unwrap();
-        assert_eq!(games.iter().map(|g| (g.id.as_str(), g.has_cover)).collect::<Vec<_>>(), [("steam:10", true), ("steam:20", false)]);
+        assert_eq!(games.iter().map(|g| (g.id.as_str(), g.has_cover)).collect::<Vec<_>>(), [("steam:10", true), ("steam:20", false), ("gog:30", false)]);
         assert_eq!(link.cover("steam:10").unwrap(), b"picture bytes");
         assert!(matches!(link.cover("steam:20"), Err(Error::Host(_))));
         assert!(matches!(link.cover("../config.json"), Err(Error::Host(_))));
         let earned = link.achievements("steam:20").unwrap();
         assert_eq!((earned[0].id.as_str(), earned[0].unlocked), ("ACH_20", Some(7)));
         assert!(matches!(link.achievements("steam:99"), Err(Error::Host(_))));
+        assert!(link.achievements("gog:30").unwrap().is_empty(), "only Steam keeps achievements on the disk");
 
         link.pair("1234", "Ally").unwrap();
         link.prepare("steam:20").unwrap();
         assert_eq!(*locked(&desk.calls), ["app companion launch", "pair 1234 Ally 127.0.0.1", "app companion launch"]);
+        locked(&desk.calls).clear();
         let pending = desk.files.take_pending(now_for_tests()).unwrap();
         assert_eq!((pending.title.as_str(), pending.source_id.as_str()), ("Second Game", "20"));
         assert!(desk.files.take_pending(now_for_tests()).is_none(), "the launcher takes it once");
+        // A game from another store goes to the launcher with its own program.
+        link.prepare("gog:30").unwrap();
+        let pending = desk.files.take_pending(now_for_tests()).unwrap();
+        assert_eq!((pending.source.as_str(), pending.source_id.as_str(), pending.args.as_str()), ("gog", "30", "-windowed"));
+        assert!(pending.exe.is_some_and(|exe| exe.ends_with("third.exe")));
         assert!(matches!(link.prepare("steam:99"), Err(Error::Host(_))));
     }
 
@@ -646,7 +659,7 @@ mod tests {
 
         let games = link.games().unwrap();
         let listed: Vec<_> = games.iter().map(|g| (g.id.as_str(), g.source.as_str(), g.title.as_str(), g.has_cover)).collect();
-        assert_eq!(listed, [("steam:10", "steam", "First Game", true), ("steam:20", "steam", "Second Game", false), (id.as_str(), "manual", "Paper Lanterns Deluxe", true)]);
+        assert_eq!(listed, [("steam:10", "steam", "First Game", true), ("steam:20", "steam", "Second Game", false), ("gog:30", "gog", "Third Game", false), (id.as_str(), "manual", "Paper Lanterns Deluxe", true)]);
         assert_eq!(link.cover(&id).unwrap(), b"picture bytes");
 
         link.prepare(&id).unwrap();
@@ -656,7 +669,7 @@ mod tests {
 
         // A program that has gone is no longer offered.
         std::fs::remove_file(&exe).unwrap();
-        assert_eq!(link.games().unwrap().len(), 2);
+        assert_eq!(link.games().unwrap().len(), 3);
         assert!(matches!(link.prepare(&id), Err(Error::Host(_))));
         assert_eq!(desk.files.drop_extra(&added.key).unwrap().as_deref(), Some("Paper Lanterns Deluxe"));
         assert_eq!(desk.files.drop_extra(&added.key).unwrap(), None);

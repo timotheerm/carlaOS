@@ -15,7 +15,7 @@ use std::io::{BufRead, Write};
 use std::net::{Ipv4Addr, UdpSocket};
 use std::sync::Arc;
 
-use carla_core::library::{achievements, steam};
+use carla_core::library::{achievements, scan_store, steam, STORES};
 use carla_core::link::{discover, enrol, wake, SUNSHINE_APP};
 use carla_core::{AppInfo, Role};
 
@@ -219,9 +219,15 @@ mod power {
     pub fn sleep() {}
 }
 
+/// Every game the stores on this desktop have installed.
+fn installed() -> Vec<server::Found> {
+    let root = steam::find_root();
+    STORES.iter().flat_map(|store| scan_store(store, root.as_deref()).into_iter().map(move |game| (*store, game))).collect()
+}
+
 fn build(files: &Files, config: Config) -> Server {
     let streamer = streamer(&config).ok().map(|s| Box::new(s) as Box<dyn Streamer>);
-    let scan = Box::new(|| steam::find_root().as_deref().map(steam::scan).unwrap_or_default());
+    let scan = Box::new(installed);
     Server::new(
         files.clone(),
         config,
@@ -302,8 +308,10 @@ fn run(args: &[String]) -> Result<i32, String> {
             let config = configured(&files)?;
             println!("Name on the Ally: {}", config.name);
             println!("Linked devices:   {}", files.devices().len());
-            let games = steam::find_root().as_deref().map(steam::scan).unwrap_or_default();
-            println!("Steam games:      {}", games.len());
+            let games = installed();
+            for (store, name) in [("steam", "Steam games:   "), ("epic", "Epic games:    "), ("gog", "GOG games:     ")] {
+                println!("{name}   {}", games.iter().filter(|(s, _)| *s == store).count());
+            }
             println!("Added by hand:    {}", files.extras().len());
             let (addresses, macs) = network();
             println!("Addresses:        {}", if addresses.is_empty() { "none found".to_string() } else { addresses.join(", ") });
