@@ -1,0 +1,140 @@
+//! The link between the Ally and a desktop companion.
+//!
+//! A desktop is linked once, with a six-digit code shown on the desktop. The
+//! two sides run a password-authenticated key exchange (SPAKE2) over that code,
+//! so the code is never sent and someone listening on the network gets one
+//! guess per attempt, not a million. Each side keeps the resulting device key.
+//! Every later request is signed with it, and so is every reply, so the desktop
+//! only obeys linked devices and the Ally only believes the desktop it linked.
+//!
+//! Requests are signed, not encrypted: what travels is game names and status.
+//! Between locations the traffic goes through Tailscale, which encrypts it.
+
+use serde::{Deserialize, Serialize};
+
+pub mod client;
+pub mod discover;
+pub mod enrol;
+pub mod moonlight;
+pub mod sign;
+
+/// TCP port of the companion API and UDP port for finding companions.
+pub const PORT: u16 = 47600;
+
+/// The single Sunshine application every stream goes through.
+pub const SUNSHINE_APP: &str = "CarlaOS";
+
+/// What a companion says about itself to anyone on the network.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Hello {
+    pub name: String,
+    /// Stable id of this desktop, chosen at set-up.
+    pub id: String,
+    pub version: String,
+    pub api_version: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum State {
+    /// A game can be streamed now.
+    Ready,
+    /// A game is already running there.
+    Busy,
+    /// The desktop is on but streaming is not working. See `problem`.
+    NotReady,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Status {
+    pub name: String,
+    pub id: String,
+    pub version: String,
+    pub state: State,
+    /// Title of the game running there, if any.
+    pub playing: Option<String>,
+    /// One line for the administrator when `state` is `not_ready`.
+    pub problem: Option<String>,
+    /// Processor and memory, for the desktop's card.
+    pub hardware: String,
+}
+
+/// One game installed on a desktop.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteGame {
+    /// Catalogue id, the same on every machine (`steam:<app id>`).
+    pub id: String,
+    pub source: String,
+    pub source_id: String,
+    pub title: String,
+    pub has_cover: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EnrolStart {
+    pub device_name: String,
+    /// The Ally's key-exchange message, hex.
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EnrolOffer {
+    pub enrol_id: String,
+    /// The desktop's key-exchange message, hex.
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EnrolFinish {
+    pub enrol_id: String,
+    /// Proof that the Ally derived the same key, hex.
+    pub proof: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EnrolDone {
+    pub device_id: String,
+    /// Proof that the desktop derived the same key, hex.
+    pub proof: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Prepare {
+    pub game_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Pair {
+    /// The four digits Moonlight is pairing with.
+    pub pin: String,
+    /// Name the Ally gets in Sunshine's list of clients.
+    pub name: String,
+}
+
+/// Body of every reply that is not a success.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Problem {
+    pub error: String,
+}
+
+pub(crate) fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+pub(crate) fn unhex(text: &str) -> Option<Vec<u8>> {
+    if text.len() % 2 != 0 || !text.is_ascii() {
+        return None;
+    }
+    (0..text.len()).step_by(2).map(|i| u8::from_str_radix(&text[i..i + 2], 16).ok()).collect()
+}
+
+/// Random bytes from the operating system.
+pub fn random(len: usize) -> Vec<u8> {
+    let mut bytes = vec![0; len];
+    getrandom::fill(&mut bytes).expect("the operating system provides random bytes");
+    bytes
+}
+
+pub fn random_hex(len: usize) -> String {
+    hex(&random(len))
+}

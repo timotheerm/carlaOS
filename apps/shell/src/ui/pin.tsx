@@ -114,3 +114,83 @@ export function PinPad({
     </div>
   );
 }
+
+// Six digits read off the desktop's screen. Same pad as the PIN, but the
+// digits stay visible: there is nothing to hide and they are easy to mistype.
+export function CodePad({
+  length,
+  title,
+  lede,
+  note,
+  busy,
+  onComplete,
+}: {
+  length: number;
+  title: string;
+  lede: string;
+  /** What went wrong with the last code, if anything. */
+  note: string | null;
+  /** The last code is being checked; the pad waits. */
+  busy: boolean;
+  onComplete: (code: string) => void;
+}) {
+  const [digits, setDigits] = useState("");
+  const entry = useRef("");
+  const busyRef = useRef(busy);
+  busyRef.current = busy;
+  const show = (value: string) => {
+    entry.current = value;
+    setDigits(value);
+  };
+  // A refused code clears the pad for the next try.
+  useEffect(() => {
+    if (!busy) show("");
+  }, [busy, note]);
+
+  const press = (d: string) => {
+    if (busyRef.current || entry.current.length >= length) return;
+    const next = entry.current + d;
+    show(next);
+    if (next.length === length) onComplete(next);
+  };
+  const pressRef = useRef(press);
+  pressRef.current = press;
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (/^[0-9]$/.test(e.key)) pressRef.current(e.key);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  return (
+    <div className="pin">
+      <h1>{title}</h1>
+      <p className="lede">{lede}</p>
+      <div className="pin__code" role="status" aria-label={`${digits.length} of ${length} digits entered`}>
+        {Array.from({ length }, (_, n) => (
+          <i key={n} className={n === 3 ? "gap" : undefined}>
+            {digits[n] ?? ""}
+          </i>
+        ))}
+      </div>
+      <p className="pin__note" role="alert">
+        {busy ? "Linking…" : digits ? " " : (note ?? " ")}
+      </p>
+      <div className="pin__pad">
+        {["1", "2", "3", "4", "5", "6", "7", "8", "9"].map((d) => (
+          <button key={d} className="pin__key" data-focus data-autofocus={d === "5" ? "" : undefined} data-fid={`code:${d}`} onClick={() => press(d)}>
+            {d}
+          </button>
+        ))}
+        <span />
+        <button className="pin__key" data-focus data-fid="code:0" onClick={() => press("0")}>
+          0
+        </button>
+        <button className="pin__key" data-focus data-fid="code:del" aria-label="Delete" onClick={() => !busyRef.current && show(entry.current.slice(0, -1))}>
+          ⌫
+        </button>
+      </div>
+    </div>
+  );
+}

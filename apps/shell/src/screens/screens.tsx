@@ -11,6 +11,8 @@ export type Ctx = {
   notify: (text: string) => void;
   /** Start a game from one of the places it is installed. */
   play: (gameId: string, place: string) => void;
+  /** Ask the desktops again how they are. */
+  refreshHosts: () => void;
 };
 
 const byRecent = (a: Game, b: Game) => (b.lastPlayed ?? "").localeCompare(a.lastPlayed ?? "");
@@ -111,7 +113,7 @@ export function Games(ctx: Ctx) {
 }
 
 export function Desktops(ctx: Ctx) {
-  if (ctx.hosts.length === 0) return <Empty>No desktops are set up yet. Streaming arrives in a later build.</Empty>;
+  if (ctx.hosts.length === 0) return <Empty>No desktops are linked yet. Link one under Settings, then Desktops.</Empty>;
   return (
     <div className="hosts">
       {ctx.hosts.map((h) => (
@@ -125,21 +127,29 @@ export function HostView({ hostId, ...ctx }: Ctx & { hostId: string }) {
   const host = ctx.hosts.find((h) => h.id === hostId);
   if (!host) return <Empty>This desktop is no longer set up.</Empty>;
   const list = ctx.games.filter((g) => g.places.includes(hostId)).sort((a, b) => a.title.localeCompare(b.title));
+  const games = `${list.length} ${list.length === 1 ? "game" : "games"}`;
+  const line: Record<Host["state"], string> = {
+    ready: `${games} ready to stream`,
+    busy: host.playing ? `Playing ${host.playing}` : "A game is running there",
+    not_ready: host.problem ?? "Streaming is not working on this desktop.",
+    unreachable: `Not answering. It may be off or asleep. Last seen ${host.lastSeen}.`,
+    asleep: `Asleep. Last seen ${host.lastSeen}.`,
+    off: `Off. Last seen ${host.lastSeen}.`,
+    unknown: "Checking…",
+  };
   const awake = host.state === "ready" || host.state === "busy";
   return (
     <>
       <div className="pagehead">
         <h1>{host.name}</h1>
-        <p>
-          {awake ? `${list.length} games ready to stream` : `Last seen ${host.lastSeen}`}
-        </p>
+        <p>{line[host.state]}</p>
         {!awake && (
-          <button className="pill pill--primary" data-focus data-autofocus onClick={() => ctx.notify("Waking desktops arrives with streaming.")}>
-            Wake {host.name}
+          <button className="pill pill--primary" data-focus data-autofocus data-fid="host:check" onClick={ctx.refreshHosts}>
+            Check again
           </button>
         )}
       </div>
-      <Grid>{cards(list, ctx)}</Grid>
+      {list.length ? <Grid>{cards(list, ctx)}</Grid> : <Empty>No games were found on this desktop yet.</Empty>}
     </>
   );
 }
@@ -193,6 +203,8 @@ export function Settings({
   onTheme,
   onCleanup,
   onManage,
+  onDesktops,
+  hostCount,
   onRefresh,
   refreshing,
   gameCount,
@@ -200,6 +212,8 @@ export function Settings({
   version,
 }: {
   onManage: () => void;
+  onDesktops: () => void;
+  hostCount: number;
   onRefresh: () => void;
   refreshing: boolean;
   gameCount: number;
@@ -222,6 +236,10 @@ export function Settings({
       <button className="setting" data-focus data-fid="set:manage" onClick={onManage}>
         <span>Manage games</span>
         <span className="setting__value">Administrator only</span>
+      </button>
+      <button className="setting" data-focus data-fid="set:desktops" onClick={onDesktops}>
+        <span>Desktops</span>
+        <span className="setting__value">{hostCount ? `${hostCount} linked · ` : ""}Administrator only</span>
       </button>
       <button className="setting" data-focus data-fid="set:cleanup" onClick={onCleanup}>
         <span>Clean up Windows</span>
@@ -251,7 +269,7 @@ export function GameDetail({ gameId, onToggleFavourite, ...ctx }: Ctx & { gameId
         <div className="detail__actions">
           {game.places.map((place, i) => {
             const host = ctx.hosts.find((h) => h.id === place);
-            const asleep = host && host.state !== "ready" && host.state !== "busy";
+            const away = host && host.state !== "ready" && host.state !== "busy" && host.state !== "unknown";
             const label = place === "local" ? "Play" : `Stream from ${placeLabel(place, ctx.hosts)}`;
             return (
               <button
@@ -263,7 +281,7 @@ export function GameDetail({ gameId, onToggleFavourite, ...ctx }: Ctx & { gameId
                 onClick={() => ctx.play(game.id, place)}
               >
                 {label}
-                {asleep ? " (asleep)" : ""}
+                {away ? (host.state === "not_ready" ? " (needs attention)" : " (not answering)") : ""}
               </button>
             );
           })}

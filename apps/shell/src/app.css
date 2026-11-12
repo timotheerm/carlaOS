@@ -674,6 +674,28 @@ button {
   background: var(--accent);
 }
 
+.pin__code {
+  display: flex;
+  gap: 0.6rem;
+  margin-top: 1rem;
+}
+
+.pin__code i {
+  width: 3.4rem;
+  height: 4.4rem;
+  border-radius: 0.9rem;
+  border: 0.2rem solid var(--accent);
+  display: grid;
+  place-items: center;
+  font-style: normal;
+  font-size: 2.4rem;
+  font-weight: 800;
+}
+
+.pin__code i.gap {
+  margin-left: 1rem;
+}
+
 .pin__note {
   margin: 0;
   color: var(--warn);

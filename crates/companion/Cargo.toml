@@ -7,4 +7,11 @@ license.workspace = true
 
 [dependencies]
 carla-core = { path = "../core" }
+serde.workspace = true
 serde_json.workspace = true
+tiny_http = "0.12"
+ureq = "3.5"
+sysinfo = { version = "0.40", default-features = false, features = ["system"] }
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.56"
