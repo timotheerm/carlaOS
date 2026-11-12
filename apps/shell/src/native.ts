@@ -10,7 +10,7 @@ export type AppInfo = {
   arch: string;
 };
 
-const inTauri = "__TAURI_INTERNALS__" in window;
+export const inTauri = "__TAURI_INTERNALS__" in window;
 
 export async function appInfo(): Promise<AppInfo> {
   if (!inTauri) {

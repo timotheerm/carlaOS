@@ -1,0 +1,120 @@
+// Turns keyboard and gamepad input into a small set of actions.
+//
+// Gamepad polling uses the browser Gamepad API for now. It only sees the
+// controller while the shell is focused, which is what we want here; the native
+// Rust reader planned for later replaces it without changing the actions.
+
+import { move, type Dir } from "./focus";
+
+export type Action = "back" | "prev" | "next" | "favourite" | "options" | "search";
+
+type Handler = (action: Action) => void;
+
+const KEY_DIR: Record<string, Dir> = {
+  ArrowUp: "up",
+  ArrowDown: "down",
+  ArrowLeft: "left",
+  ArrowRight: "right",
+};
+
+const KEY_ACTION: Record<string, Action> = {
+  Escape: "back",
+  Backspace: "back",
+  q: "prev",
+  e: "next",
+  f: "favourite",
+  m: "options",
+  "/": "search",
+};
+
+// Standard gamepad mapping indices.
+const PAD_ACTION: Record<number, Action> = {
+  1: "back", // B
+  2: "favourite", // X
+  3: "search", // Y
+  4: "prev", // LB
+  5: "next", // RB
+  9: "options", // Menu
+};
+const PAD_DIR: Record<number, Dir> = { 12: "up", 13: "down", 14: "left", 15: "right" };
+
+const FIRST_REPEAT_MS = 380;
+const REPEAT_MS = 130;
+const STICK_THRESHOLD = 0.55;
+
+export function installInput(onAction: Handler): () => void {
+  const onKey = (e: KeyboardEvent) => {
+    const dir = KEY_DIR[e.key];
+    if (dir) {
+      e.preventDefault();
+      move(dir);
+      return;
+    }
+    const action = KEY_ACTION[e.key];
+    if (action) {
+      e.preventDefault();
+      onAction(action);
+    }
+  };
+  window.addEventListener("keydown", onKey);
+
+  let raf = 0;
+  let heldDir: Dir | null = null;
+  let nextRepeat = 0;
+  const wasDown = new Set<number>();
+
+  const poll = (now: number) => {
+    raf = requestAnimationFrame(poll);
+    const pad = navigator.getGamepads?.().find((p) => p && p.connected);
+    if (!pad) return;
+
+    let dir: Dir | null = null;
+    for (const [index, d] of Object.entries(PAD_DIR)) {
+      if (pad.buttons[Number(index)]?.pressed) dir = d;
+    }
+    if (!dir) {
+      const [x = 0, y = 0] = pad.axes;
+      if (Math.abs(x) > Math.abs(y)) {
+        if (x > STICK_THRESHOLD) dir = "right";
+        else if (x < -STICK_THRESHOLD) dir = "left";
+      } else if (y > STICK_THRESHOLD) dir = "down";
+      else if (y < -STICK_THRESHOLD) dir = "up";
+    }
+    if (dir !== heldDir) {
+      heldDir = dir;
+      if (dir) {
+        move(dir);
+        nextRepeat = now + FIRST_REPEAT_MS;
+      }
+    } else if (dir && now >= nextRepeat) {
+      move(dir);
+      nextRepeat = now + REPEAT_MS;
+    }
+
+    // A acts on the focused element, exactly like a tap.
+    const press = (index: number, fire: () => void) => {
+      const down = !!pad.buttons[index]?.pressed;
+      if (down && !wasDown.has(index)) fire();
+      if (down) wasDown.add(index);
+      else wasDown.delete(index);
+    };
+    press(0, () => (document.activeElement as HTMLElement | null)?.click());
+    for (const [index, action] of Object.entries(PAD_ACTION)) {
+      press(Number(index), () => onAction(action));
+    }
+  };
+
+  // No polling while hidden, so the shell costs nothing behind a game.
+  const onVisibility = () => {
+    cancelAnimationFrame(raf);
+    if (!document.hidden) raf = requestAnimationFrame(poll);
+  };
+  document.addEventListener("visibilitychange", onVisibility);
+  onVisibility();
+
+  return () => {
+    window.removeEventListener("keydown", onKey);
+    document.removeEventListener("visibilitychange", onVisibility);
+    cancelAnimationFrame(raf);
+  };
+}

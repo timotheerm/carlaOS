@@ -41,7 +41,7 @@ This split drives several decisions:
 - No background service on the Ally beyond the shell itself, Tailscale and what
   ASUS and Windows need.
 - Windows tuning is recorded change by change with the previous value, and can
-  be undone from Settings.
+  be undone from Settings. See [CLEANUP.md](CLEANUP.md).
 
 ## Catalogue
 
