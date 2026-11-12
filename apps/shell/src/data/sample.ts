@@ -19,6 +19,7 @@ export const hosts: Host[] = [
     latencyMs: null,
     hardware: "Not reported yet",
     lastSeen: "yesterday, 22:14",
+    canWake: true,
   },
 ];
 

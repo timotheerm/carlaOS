@@ -22,7 +22,8 @@ const POLL: Duration = Duration::from_secs(2);
 pub struct SessionView {
     game_id: String,
     title: String,
-    /// "starting" until the game's program has been seen, then "running".
+    /// "waking" while a sleeping desktop comes up, "starting" until the game's
+    /// program (or the stream) has been seen, then "running".
     phase: &'static str,
     /// Streamed from a desktop, not running on this Ally.
     stream: bool,
@@ -154,33 +155,64 @@ impl Running {
     }
 }
 
-#[tauri::command(async)]
-pub fn library_launch(app: AppHandle, library: State<'_, Library>, game_id: String, place: String) -> Result<SessionView, String> {
-    if let Some(current) = locked(&library.0.active).as_ref() {
-        return Err(format!("{} is still running.", current.view.title));
-    }
-    let install = library.store().install(&game_id, &place)?;
-    let mut running = if place == LOCAL {
-        let steam_root = locked(&library.0.steam_root).clone();
-        let child = launch::start(&install, steam_root.as_deref())
-            .map_err(|e| format!("{} could not be started: {e}.", install.title))?;
-        Running::Game(Watch::new(&install, child))
-    } else {
-        // Asking the desktop can take a few seconds; nothing is locked meanwhile.
-        Running::Stream { moonlight: crate::hosts::start_stream(&library, &game_id, &place)?, since: Instant::now() }
-    };
+/// Take the one "now playing" slot, or say what holds it.
+fn claim(library: &Library, view: &SessionView) -> Result<(), String> {
     let mut active = locked(&library.0.active);
     if let Some(current) = active.as_ref() {
-        // Two presses raced; the first one won.
-        running.stop();
         return Err(format!("{} is still running.", current.view.title));
     }
-    let started = now();
-    let session = library.store().start_session(&game_id, &place, started)?;
-    let view = SessionView { game_id, title: install.title.clone(), phase: "starting", stream: place != LOCAL };
     *active = Some(Active { view: view.clone(), stop: false });
-    drop(active);
+    Ok(())
+}
+
+#[tauri::command(async)]
+pub fn library_launch(app: AppHandle, library: State<'_, Library>, game_id: String, place: String) -> Result<SessionView, String> {
+    let install = library.store().install(&game_id, &place)?;
+    let view = SessionView { game_id: game_id.clone(), title: install.title.clone(), phase: "starting", stream: place != LOCAL };
+    // Claimed before anything slow happens, so a second press cannot start a
+    // second game, and the player sees at once that something is happening.
+    claim(&library, &view)?;
     let _ = app.emit(SESSION_EVENT, Some(view.clone()));
+    let started_running = if place == LOCAL {
+        let steam_root = locked(&library.0.steam_root).clone();
+        launch::start(&install, steam_root.as_deref())
+            .map(|child| Running::Game(Watch::new(&install, child)))
+            .map_err(|e| format!("{} could not be started: {e}.", install.title))
+    } else {
+        let waking = || {
+            if let Some(current) = locked(&library.0.active).as_mut() {
+                current.view.phase = "waking";
+                let _ = app.emit(SESSION_EVENT, Some(current.view.clone()));
+            }
+        };
+        let stopped = || locked(&library.0.active).as_ref().is_none_or(|a| a.stop);
+        crate::hosts::start_stream(&library, &game_id, &place, &waking, &stopped).map(|moonlight| Running::Stream { moonlight, since: Instant::now() })
+    };
+    let mut running = match started_running {
+        Ok(running) => running,
+        Err(e) => {
+            *locked(&library.0.active) = None;
+            let _ = app.emit(SESSION_EVENT, None::<SessionView>);
+            return Err(e);
+        }
+    };
+    let view = {
+        let mut active = locked(&library.0.active);
+        let current = active.as_mut().expect("claimed above and only released by this command or its watcher");
+        current.view.phase = "starting";
+        current.view.clone()
+    };
+    let _ = app.emit(SESSION_EVENT, Some(view.clone()));
+    let started = now();
+    let session = match library.store().start_session(&game_id, &place, started) {
+        Ok(session) => session,
+        Err(e) => {
+            running.stop();
+            *locked(&library.0.active) = None;
+            let _ = app.emit(SESSION_EVENT, None::<SessionView>);
+            return Err(e);
+        }
+    };
 
     let library = library.inner().clone();
     std::thread::spawn(move || {

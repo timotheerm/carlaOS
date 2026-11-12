@@ -12,7 +12,7 @@ use carla_core::library::{HostRow, Scanned};
 use carla_core::link::client::{self, Error, Link};
 use carla_core::link::discover::{self, Found};
 use carla_core::link::moonlight::{self, Picture};
-use carla_core::link::{State as HostState, PORT};
+use carla_core::link::{wake, State as HostState, Status, PORT};
 use carla_core::secret;
 use serde::Serialize;
 use tauri::{AppHandle, State};
@@ -37,6 +37,10 @@ pub struct HostView {
     /// Unix seconds of the last answer.
     last_seen: Option<i64>,
     address: String,
+    /// "local" on the home network, "remote" through Tailscale.
+    route: Option<&'static str>,
+    /// The desktop told us how to wake it.
+    can_wake: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -66,6 +70,8 @@ fn view(host: &HostRow) -> HostView {
         hardware: host.hardware.clone(),
         last_seen: host.last_seen,
         address: host.address.clone(),
+        route: None,
+        can_wake: !host.macs.is_empty(),
     }
 }
 
@@ -117,43 +123,77 @@ fn sync_due(host_id: &str) -> bool {
     true
 }
 
+/// Find the address a desktop answers at. Every known address is asked at
+/// once, so a desktop that has moved (home network to Tailscale, or a new
+/// address from the router) costs no extra waiting. The home network wins
+/// when several answer.
+fn reach(host: &HostRow) -> Result<(Link, Status, u64), Error> {
+    let base = link_of(host).map_err(Error::Host)?;
+    let asking: Vec<_> = wake::candidates(&host.address, &host.addresses)
+        .into_iter()
+        .map(|address| {
+            let link = Link { address, ..base.clone() };
+            std::thread::spawn(move || {
+                let asked = Instant::now();
+                link.status().map(|status| (link, status, asked.elapsed().as_millis() as u64))
+            })
+        })
+        .collect();
+    let mut answers: Vec<_> = asking.into_iter().filter_map(|t| t.join().ok()).collect();
+    // Candidates are in order of preference, except that a Tailscale address
+    // that worked last time must not beat a home address that works now.
+    answers.sort_by_key(|a| a.as_ref().map(|(link, ..)| wake::is_tailscale(&link.address)).unwrap_or(true));
+    let mut problem = Error::Unreachable;
+    for answer in answers {
+        match answer {
+            Ok(found) => return Ok(found),
+            // "Refused" or a problem in the desktop's words says more than silence.
+            Err(e) if problem == Error::Unreachable => problem = e,
+            Err(_) => {}
+        }
+    }
+    Err(problem)
+}
+
+/// Record what a desktop said, including where it answered.
+fn seen(library: &Library, host: &HostRow, link: &Link, status: &Status) -> HostRow {
+    let now_known = HostRow {
+        name: status.name.clone(),
+        hardware: status.hardware.clone(),
+        address: link.address.clone(),
+        // An older companion reports neither; keep what we had.
+        addresses: if status.addresses.is_empty() { host.addresses.clone() } else { status.addresses.clone() },
+        macs: if status.macs.is_empty() { host.macs.clone() } else { status.macs.clone() },
+        last_seen: Some(now()),
+        ..host.clone()
+    };
+    let _ = library.store().host_seen(&now_known, now());
+    now_known
+}
+
 /// Ask one desktop how it is, and mirror its games while it is awake.
 fn refresh(library: &Library, host: &HostRow) -> HostView {
-    let mut out = view(host);
-    let link = match link_of(host) {
-        Ok(link) => link,
-        Err(e) => {
-            out.state = "not_ready";
-            out.problem = Some(e);
-            return out;
-        }
-    };
-    let asked = Instant::now();
-    match link.status() {
-        Ok(status) => {
-            out.latency_ms = Some(asked.elapsed().as_millis() as u64);
+    match reach(host) {
+        Ok((link, status, latency)) => {
+            let host = seen(library, host, &link, &status);
+            let mut out = view(&host);
+            out.latency_ms = Some(latency);
+            out.route = Some(if wake::is_tailscale(&link.address) { "remote" } else { "local" });
             out.state = match status.state {
                 HostState::Ready => "ready",
                 HostState::Busy => "busy",
                 HostState::NotReady => "not_ready",
             };
-            out.name = status.name.clone();
-            out.hardware = status.hardware.clone();
             out.playing = status.playing;
             out.problem = status.problem;
-            out.last_seen = Some(now());
-            let _ = library.store().host_seen(&host.id, &status.name, &status.hardware, now());
             if sync_due(&host.id) {
-                let _ = sync_games(library, host, &link);
+                let _ = sync_games(library, &host, &link);
             }
+            out
         }
-        Err(Error::Unreachable) => out.state = "unreachable",
-        Err(e) => {
-            out.state = "not_ready";
-            out.problem = Some(e.to_string());
-        }
+        Err(Error::Unreachable) => HostView { state: "unreachable", ..view(host) },
+        Err(e) => HostView { state: "not_ready", problem: Some(e.to_string()), ..view(host) },
     }
-    out
 }
 
 /// Linked desktops as last known, without asking them. Instant.
@@ -229,6 +269,8 @@ pub fn hosts_link(app: AppHandle, admin: State<'_, Admin>, library: State<'_, Li
         key: secret::seal(&link.key)?,
         hardware: String::new(),
         last_seen: Some(now()),
+        addresses: Vec::new(),
+        macs: Vec::new(),
     };
     library.store().save_host(&host, now())?;
     let warning = pair_moonlight(&link).err();
@@ -243,14 +285,71 @@ pub fn hosts_remove(admin: State<'_, Admin>, library: State<'_, Library>, id: St
     library.store().remove_host(&id)
 }
 
-/// Tell the desktop which game is wanted and start Moonlight on it.
-pub(crate) fn start_stream(library: &Library, game_id: &str, place: &str) -> Result<Child, String> {
+/// Send the wake-up packet to a desktop. Anyone may: it only turns on a
+/// computer the administrator linked. Says whether there was anything to send.
+#[tauri::command(async)]
+pub fn hosts_wake(library: State<'_, Library>, id: String) -> Result<(), String> {
+    let host = library.store().hosts()?.into_iter().find(|h| h.id == id).ok_or("That desktop is no longer set up.")?;
+    if wake::wake(&host.macs) == 0 {
+        return Err(format!("{} has not said how it can be woken yet. Turn it on by hand once.", host.name));
+    }
+    Ok(())
+}
+
+/// How long a desktop gets to wake up before we say it did not.
+const WAKE_LIMIT: Duration = Duration::from_secs(90);
+
+/// Wake a desktop and wait until it answers. `stopped` lets the player give up.
+fn wake_and_wait(host: &HostRow, stopped: &dyn Fn() -> bool) -> Result<(Link, Status, u64), String> {
+    let started = Instant::now();
+    let mut shouted = None::<Instant>;
+    while started.elapsed() < WAKE_LIMIT {
+        // Again every so often: the first packet can arrive before the
+        // adapter is listening.
+        if shouted.is_none_or(|t| t.elapsed() >= Duration::from_secs(10)) {
+            wake::wake(&host.macs);
+            shouted = Some(Instant::now());
+        }
+        std::thread::sleep(Duration::from_secs(2));
+        if stopped() {
+            return Err("Stopped.".to_string());
+        }
+        match reach(host) {
+            Ok(found) => return Ok(found),
+            Err(Error::Unreachable) => {}
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+    Err(format!("{} did not wake up. It may be switched off at the wall, or waking is not turned on for it.", host.name))
+}
+
+/// Tell the desktop which game is wanted and start Moonlight on it. A desktop
+/// that does not answer is woken first; `waking` is called when that starts.
+pub(crate) fn start_stream(library: &Library, game_id: &str, place: &str, waking: &dyn Fn(), stopped: &dyn Fn() -> bool) -> Result<Child, String> {
     let host = library.store().hosts()?.into_iter().find(|h| h.id == place).ok_or("That desktop is no longer set up.")?;
     let exe = moonlight::find().ok_or("Moonlight is not installed on this Ally.")?;
-    let link = link_of(&host)?;
-    link.prepare(game_id).map_err(|e| match e {
-        Error::Unreachable => format!("{} did not answer. It may be off or asleep.", host.name),
-        other => other.to_string(),
-    })?;
-    moonlight::stream(&exe, &host.address, Picture::default()).map_err(|e| format!("Moonlight could not be started: {e}."))
+    let (link, status, _) = match reach(&host) {
+        Ok(found) => found,
+        Err(Error::Unreachable) if !host.macs.is_empty() => {
+            waking();
+            wake_and_wait(&host, stopped)?
+        }
+        Err(Error::Unreachable) => return Err(format!("{} did not answer. It may be off or asleep.", host.name)),
+        Err(e) => return Err(e.to_string()),
+    };
+    seen(library, &host, &link, &status);
+    // A desktop that has just woken may need a moment before Sunshine is up.
+    let mut tries = 0;
+    loop {
+        match link.prepare(game_id) {
+            Ok(_) => break,
+            Err(Error::Host(text)) if text.contains("Sunshine is not running") && tries < 10 && !stopped() => {
+                tries += 1;
+                std::thread::sleep(Duration::from_secs(3));
+            }
+            Err(Error::Unreachable) => return Err(format!("{} stopped answering.", host.name)),
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+    moonlight::stream(&exe, &link.address, Picture::default()).map_err(|e| format!("Moonlight could not be started: {e}."))
 }

@@ -38,6 +38,8 @@ type HostView = {
   hardware: string;
   last_seen: number | null;
   address: string;
+  route: "local" | "remote" | null;
+  can_wake: boolean;
 };
 type Linked = { host: HostView; games: number; warning: string | null };
 type Found = { address: string; hello: { name: string; id: string } };
@@ -89,13 +91,14 @@ const fromHost = (h: HostView): Host => ({
   id: h.id,
   name: h.name,
   state: h.state,
-  route: awake(h.state) ? "local" : null,
+  route: h.route,
   latencyMs: h.latency_ms,
   hardware: h.hardware,
   lastSeen: awake(h.state) ? "now" : when(h.last_seen),
   playing: h.playing,
   problem: h.problem,
   address: h.address,
+  canWake: h.can_wake,
 });
 
 // How often desktops are asked how they are while the library is on screen.
@@ -168,6 +171,24 @@ export const library = {
 
   refreshHosts,
 
+  /** Wake a sleeping desktop, then keep asking until it answers. */
+  async wake(id: string) {
+    if (inTauri) {
+      await invoke("hosts_wake", { id });
+      // Waking takes from a few seconds to a minute.
+      for (const after of [8_000, 16_000, 28_000, 45_000, 70_000]) {
+        setTimeout(() => {
+          const host = state.hosts.find((h) => h.id === id);
+          if (host && host.state !== "ready" && host.state !== "busy") void refreshHosts().catch(() => undefined);
+        }, after);
+      }
+      return;
+    }
+    setTimeout(() => {
+      set({ hosts: state.hosts.map((h) => (h.id === id ? { ...h, state: "ready", route: "local", latencyMs: 6, lastSeen: "now" } : h)) });
+    }, 1500);
+  },
+
   /** Look for desktops running the companion on this network. */
   async discover(): Promise<FoundHost[]> {
     if (!inTauri) {
@@ -225,11 +246,16 @@ export const library = {
       return;
     }
     const host = state.hosts.find((h) => h.id === place);
-    if (place !== "local" && host?.state !== "ready" && host?.state !== "busy") {
-      throw `${host?.name ?? "That desktop"} did not answer. It may be off or asleep.`;
-    }
     const game = state.games.find((g) => g.id === gameId);
-    if (game) set({ session: { gameId, title: game.title, phase: "running", stream: place !== "local" } });
+    if (!game) return;
+    if (place !== "local" && host?.state !== "ready" && host?.state !== "busy") {
+      if (!host?.canWake) throw `${host?.name ?? "That desktop"} did not answer. It may be off or asleep.`;
+      set({ session: { gameId, title: game.title, phase: "waking", stream: true } });
+      await new Promise((r) => setTimeout(r, 1500));
+      if (state.session === null) return; // the player gave up
+      set({ hosts: state.hosts.map((h) => (h.id === place ? { ...h, state: "ready", route: "local", lastSeen: "now" } : h)) });
+    }
+    set({ session: { gameId, title: game.title, phase: "running", stream: place !== "local" } });
   },
 
   /** The player says the game is over. */

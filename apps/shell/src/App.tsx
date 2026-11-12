@@ -129,9 +129,11 @@ export function App() {
     openHost: (id) => push({ kind: "host", id }),
     notify: setToast,
     play: (gameId, place) => {
-      // Asking a desktop for a game takes a moment; say so at once.
-      if (place !== "local") setToast("Connecting…");
       void library.launch(gameId, place).catch((e) => setToast(message(e)));
+    },
+    wakeHost: (id) => {
+      setToast("Waking it. This can take up to a minute.");
+      void library.wake(id).catch((e) => setToast(message(e)));
     },
     refreshHosts: () => {
       setToast("Checking…");

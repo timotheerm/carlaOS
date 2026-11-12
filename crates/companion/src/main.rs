@@ -16,7 +16,7 @@ use std::net::{Ipv4Addr, UdpSocket};
 use std::sync::Arc;
 
 use carla_core::library::steam;
-use carla_core::link::{discover, enrol, SUNSHINE_APP};
+use carla_core::link::{discover, enrol, wake, SUNSHINE_APP};
 use carla_core::{AppInfo, Role};
 
 use files::{Config, Files};
@@ -70,6 +70,31 @@ fn hardware() -> String {
         (false, 0) => cpu,
         (false, gb) => format!("{cpu} · {gb} GB"),
     }
+}
+
+/// Addresses other machines can reach this desktop at, and the hardware
+/// addresses of the adapters that carry a home-network address (the ones a
+/// wake-up packet can reach).
+fn network() -> (Vec<String>, Vec<String>) {
+    let Ok(networks) = sysinfo::Networks::new_with_refreshed_list() else { return (Vec::new(), Vec::new()) };
+    let (mut addresses, mut macs) = (Vec::new(), Vec::new());
+    for (_, adapter) in &networks {
+        let mut home = false;
+        for ip in adapter.ip_networks() {
+            let address = ip.addr.to_string();
+            if wake::usable(&address) && !addresses.contains(&address) {
+                home |= !wake::is_tailscale(&address);
+                addresses.push(address);
+            }
+        }
+        let mac = adapter.mac_address().to_string().to_lowercase();
+        if home && wake::parse_mac(&mac).is_some() && !macs.contains(&mac) {
+            macs.push(mac);
+        }
+    }
+    addresses.sort();
+    macs.sort();
+    (addresses, macs)
 }
 
 /// The command Sunshine runs for a stream: this program, wherever it is.
@@ -161,7 +186,7 @@ fn show_code(files: &Files) -> Result<(), String> {
 fn build(files: &Files, config: Config) -> Server {
     let streamer = streamer(&config).ok().map(|s| Box::new(s) as Box<dyn Streamer>);
     let scan = Box::new(|| steam::find_root().as_deref().map(steam::scan).unwrap_or_default());
-    Server::new(files.clone(), config, streamer, scan, launcher_command(), hardware())
+    Server::new(files.clone(), config, streamer, scan, launcher_command(), hardware(), network)
 }
 
 /// Run the API. `Err` when the port is taken, which means it already runs.
@@ -233,6 +258,9 @@ fn run(args: &[String]) -> Result<i32, String> {
             println!("Linked devices:   {}", files.devices().len());
             let games = steam::find_root().as_deref().map(steam::scan).unwrap_or_default();
             println!("Steam games:      {}", games.len());
+            let (addresses, macs) = network();
+            println!("Addresses:        {}", if addresses.is_empty() { "none found".to_string() } else { addresses.join(", ") });
+            println!("Wake-up adapters: {}", if macs.is_empty() { "none found".to_string() } else { macs.join(", ") });
             match streamer(&config).and_then(|s| s.ensure_app(&launcher_command())) {
                 Ok(()) => println!("Sunshine:         ready"),
                 Err(e) => println!("Sunshine:         {e}"),

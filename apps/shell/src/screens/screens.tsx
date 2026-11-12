@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useLayoutEffect, useState } from "react";
+import { focusFirst } from "../nav/focus";
 import type { CloudService, Game, Host } from "../data/types";
 import { Cover, Empty, GameCard, Grid, HostCard, Row, placeLabel, playtime } from "../ui/parts";
 
@@ -13,6 +14,8 @@ export type Ctx = {
   play: (gameId: string, place: string) => void;
   /** Ask the desktops again how they are. */
   refreshHosts: () => void;
+  /** Wake a sleeping desktop. */
+  wakeHost: (id: string) => void;
 };
 
 const byRecent = (a: Game, b: Game) => (b.lastPlayed ?? "").localeCompare(a.lastPlayed ?? "");
@@ -125,6 +128,14 @@ export function Desktops(ctx: Ctx) {
 
 export function HostView({ hostId, ...ctx }: Ctx & { hostId: string }) {
   const host = ctx.hosts.find((h) => h.id === hostId);
+  // The Wake and Check buttons disappear when the desktop answers. Put focus
+  // back on something so A always does something.
+  useLayoutEffect(() => {
+    const active = document.activeElement;
+    if (active instanceof HTMLElement && active.isConnected && active.matches("[data-focus]")) return;
+    const main = document.querySelector("main");
+    if (main) focusFirst(main);
+  }, [host?.state]);
   if (!host) return <Empty>This desktop is no longer set up.</Empty>;
   const list = ctx.games.filter((g) => g.places.includes(hostId)).sort((a, b) => a.title.localeCompare(b.title));
   const games = `${list.length} ${list.length === 1 ? "game" : "games"}`;
@@ -143,8 +154,19 @@ export function HostView({ hostId, ...ctx }: Ctx & { hostId: string }) {
       <div className="pagehead">
         <h1>{host.name}</h1>
         <p>{line[host.state]}</p>
+        {!awake && host.canWake && host.state !== "not_ready" && (
+          <button className="pill pill--primary" data-focus data-autofocus data-fid="host:wake" onClick={() => ctx.wakeHost(host.id)}>
+            Wake {host.name}
+          </button>
+        )}
         {!awake && (
-          <button className="pill pill--primary" data-focus data-autofocus data-fid="host:check" onClick={ctx.refreshHosts}>
+          <button
+            className={host.canWake && host.state !== "not_ready" ? "pill" : "pill pill--primary"}
+            data-focus
+            data-autofocus={host.canWake && host.state !== "not_ready" ? undefined : ""}
+            data-fid="host:check"
+            onClick={ctx.refreshHosts}
+          >
             Check again
           </button>
         )}
@@ -281,7 +303,7 @@ export function GameDetail({ gameId, onToggleFavourite, ...ctx }: Ctx & { gameId
                 onClick={() => ctx.play(game.id, place)}
               >
                 {label}
-                {away ? (host.state === "not_ready" ? " (needs attention)" : " (not answering)") : ""}
+                {away ? (host.state === "not_ready" ? " (needs attention)" : host.canWake ? " (wakes it first)" : " (not answering)") : ""}
               </button>
             );
           })}
