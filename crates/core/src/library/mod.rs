@@ -22,6 +22,9 @@ pub mod bvdf;
 pub mod saves;
 pub mod sync;
 pub mod meta;
+pub mod art;
+pub mod ports;
+pub mod shortcut;
 
 pub use store::Store;
 
@@ -112,6 +115,9 @@ pub struct ManualGame {
     /// A sentence or two about the game, for its page.
     #[serde(default)]
     pub description: String,
+    /// The console the game first came out on, for a port: "Nintendo 64".
+    #[serde(default)]
+    pub origin: String,
 }
 
 /// One title as the interface shows it.
@@ -134,6 +140,10 @@ pub struct GameView {
     pub hero: Option<String>,
     /// Added by hand, so the administrator can remove it.
     pub manual: bool,
+    /// The console a port first came out on; empty for anything else.
+    pub origin: String,
+    /// The administrator chose its pictures, so they can be given back.
+    pub own_art: bool,
 }
 
 /// How to start one install.

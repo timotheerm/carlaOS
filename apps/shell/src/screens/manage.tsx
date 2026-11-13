@@ -3,11 +3,12 @@
 import { useEffect, useLayoutEffect, useState } from "react";
 import { backend } from "../cleanup/backend";
 import type { AdminStatus } from "../cleanup/types";
-import type { Game, Kind, Match, NewGame, Saves } from "../data/types";
+import type { Game, Inspected, Kind, Match, NewGame, Saves } from "../data/types";
 import { library, message } from "../library/store";
 import { focusFirst, keepFocus } from "../nav/focus";
 import { size, when } from "../ui/parts";
 import { PinPad } from "../ui/pin";
+import { ArtList, ArtPicker } from "./artwork";
 import { Consoles } from "./consoles";
 
 const KINDS: { id: Kind; label: string }[] = [
@@ -16,22 +17,14 @@ const KINDS: { id: Kind; label: string }[] = [
   { id: "homebrew", label: "Homebrew" },
 ];
 
-// "C:\Games\Paper Lanterns\lanterns.exe" suggests "Paper Lanterns".
-function suggestTitle(exe: string): string {
-  const parts = exe.split(/[\\/]/).filter(Boolean);
-  const file = (parts.pop() ?? "").replace(/\.[^.]+$/, "");
-  const folder = parts.pop() ?? "";
-  const generic = /^(game|launcher|start|play|bin|win64|x64|binaries)$/i;
-  // The folder usually carries the nicer spelling of the same name.
-  const squash = (t: string) => t.toLowerCase().replace(/[^a-z0-9]/g, "");
-  const pick = generic.test(file) || file.length < 3 || squash(file) === squash(folder) ? folder || file : file;
-  return pick.replace(/[_-]+/g, " ").trim();
-}
-
 const fileName = (path: string) => path.split(/[\\/]/).pop() ?? path;
 
-function AddForm({ exe, onDone, notify }: { exe: string; onDone: () => void; notify: (text: string) => void }) {
-  const [game, setGame] = useState<NewGame>({ title: suggestTitle(exe), exe, args: "", kind: "game", cover: null, description: "" });
+// Consoles a port is most often from, to pick with one press.
+const ORIGINS = ["Nintendo 64", "Super Nintendo", "GameCube", "Game Boy Advance", "PlayStation", "PlayStation 2", "Mega Drive"];
+
+function AddForm({ seen, onDone, notify }: { seen: Inspected; onDone: (added?: { id: string; needsPicture: boolean }) => void; notify: (text: string) => void }) {
+  const exe = seen.exe;
+  const [game, setGame] = useState<NewGame>({ title: seen.title, exe, args: seen.args, kind: seen.kind, cover: null, description: "", origin: seen.origin });
   const [saving, setSaving] = useState(false);
   // Looking the game up online: nothing yet, looking, the matches, or what was found.
   const [found, setFound] = useState<Match[] | "looking" | null>(null);
@@ -68,9 +61,9 @@ function AddForm({ exe, onDone, notify }: { exe: string; onDone: () => void; not
   const save = async () => {
     setSaving(true);
     try {
-      await library.addManual({ ...game, title: game.title.trim() });
-      notify(`${game.title.trim()} was added.`);
-      onDone();
+      const id = await library.addManual({ ...game, title: game.title.trim(), origin: game.kind === "port" ? game.origin.trim() : "" });
+      notify(game.cover ? `${game.title.trim()} was added.` : `${game.title.trim()} was added. Now choose its picture.`);
+      onDone({ id, needsPicture: !game.cover });
     } catch (e) {
       notify(message(e));
       setSaving(false);
@@ -81,7 +74,11 @@ function AddForm({ exe, onDone, notify }: { exe: string; onDone: () => void; not
     <div className="form">
       <div className="pagehead">
         <h1>Add a game</h1>
-        <p>{fileName(exe)}</p>
+        <p>
+          {fileName(exe)}
+          {seen.shortcut ? " · the program behind the shortcut you chose" : ""}
+          {seen.port ? ` · recognised as ${seen.port}, a native port` : ""}
+        </p>
       </div>
       <label className="form__row">
         <span>Name</span>
@@ -111,6 +108,27 @@ function AddForm({ exe, onDone, notify }: { exe: string; onDone: () => void; not
           ))}
         </div>
       </div>
+      {game.kind === "port" && (
+        <div className="form__row">
+          <span>First came out on</span>
+          <div className="chips">
+            <input
+              className="field field--short"
+              data-focus
+              data-fid="add:origin"
+              value={game.origin}
+              maxLength={40}
+              placeholder="A console, or empty"
+              onChange={(e) => setGame({ ...game, origin: e.target.value })}
+            />
+            {ORIGINS.filter((o) => o !== game.origin).slice(0, 5).map((o) => (
+              <button key={o} className="chip" data-focus data-fid={`add:origin:${o}`} onClick={() => setGame({ ...game, origin: o })}>
+                {o}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
       <label className="form__row">
         <span>Launch options</span>
         <input
@@ -129,6 +147,7 @@ function AddForm({ exe, onDone, notify }: { exe: string; onDone: () => void; not
             found.map((m) => (
               <button key={m.id} className="chip" data-focus data-fid={`add:match:${m.id}`} onClick={() => void use(m)}>
                 {m.name}
+                <small>{m.from}</small>
               </button>
             ))
           ) : (
@@ -170,7 +189,7 @@ function AddForm({ exe, onDone, notify }: { exe: string; onDone: () => void; not
         <button className="pill pill--primary" data-focus data-fid="add:save" disabled={saving || !game.title.trim()} onClick={() => void save()}>
           Add to library
         </button>
-        <button className="pill" data-focus data-fid="add:cancel" onClick={onDone}>
+        <button className="pill" data-focus data-fid="add:cancel" onClick={() => onDone()}>
           Cancel
         </button>
         </div>
@@ -275,7 +294,8 @@ function SavesAdmin({ game, onDone, notify }: { game: Game; onDone: () => void; 
 
 export function Manage({ games, notify }: { games: Game[]; notify: (text: string) => void }) {
   const [admin, setAdmin] = useState<AdminStatus | null>(null);
-  const [adding, setAdding] = useState<string | null>(null); // program being added
+  const [adding, setAdding] = useState<Inspected | null>(null); // program being added
+  const [art, setArt] = useState<string | "list" | null>(null); // game whose pictures are open
   const [saves, setSaves] = useState<string | "list" | null>(null); // game whose saves are open
   const [consoles, setConsoles] = useState(false);
 
@@ -291,7 +311,7 @@ export function Manage({ games, notify }: { games: Game[]; notify: (text: string
     if (active instanceof HTMLElement && active.matches("[data-focus]") && active.isConnected) return;
     const main = document.querySelector("main");
     if (main) focusFirst(main);
-  }, [admin?.unlocked, adding, saves, consoles, manual.length]);
+  }, [admin?.unlocked, adding, saves, consoles, art, manual.length]);
 
   if (!admin) return null;
   if (!admin.unlocked) {
@@ -311,7 +331,22 @@ export function Manage({ games, notify }: { games: Game[]; notify: (text: string
       />
     );
   }
-  if (adding) return <AddForm exe={adding} onDone={() => setAdding(null)} notify={notify} />;
+  if (adding) {
+    return (
+      <AddForm
+        seen={adding}
+        onDone={(added) => {
+          setAdding(null);
+          // Straight on to its picture, which is the next thing it needs.
+          if (added?.needsPicture) setArt(added.id);
+        }}
+        notify={notify}
+      />
+    );
+  }
+  const pictured = games.find((g) => g.id === art);
+  if (pictured) return <ArtPicker game={pictured} onDone={() => setArt("list")} notify={notify} />;
+  if (art === "list") return <ArtList games={games} onOpen={setArt} onDone={() => setArt(null)} />;
   if (consoles) return <Consoles onDone={() => setConsoles(false)} notify={notify} />;
   const onAlly = games.filter((g) => g.places.includes("local")).sort((a, b) => a.title.localeCompare(b.title));
   const open = onAlly.find((g) => g.id === saves);
@@ -341,7 +376,7 @@ export function Manage({ games, notify }: { games: Game[]; notify: (text: string
     <div className="settings">
       <div className="pagehead">
         <h1>Manage games</h1>
-        <p>Steam games appear by themselves. Add anything else here.</p>
+        <p>Games from Steam, Epic and GOG appear by themselves. Add anything else here.</p>
       </div>
       <button
         className="setting"
@@ -350,15 +385,22 @@ export function Manage({ games, notify }: { games: Game[]; notify: (text: string
         data-fid="manage:add"
         onClick={async () => {
           try {
-            const exe = await library.pick("program");
-            if (exe) setAdding(exe);
+            const chosen = await library.pick("program");
+            // A shortcut is followed to its program, and a port CarlaOS knows gets its real name.
+            if (chosen) setAdding(await library.inspect(chosen));
           } catch (e) {
             notify(message(e));
           }
         }}
       >
         <span>Add a game</span>
-        <span className="setting__value">Choose its program</span>
+        <span className="setting__value">Choose its program, or a shortcut to it</span>
+      </button>
+      <button className="setting" data-focus data-fid="manage:art" onClick={() => setArt("list")}>
+        <span>Game artwork</span>
+        <span className="setting__value">
+          {games.some((g) => !(g.cover ?? g.hero)) ? `${games.filter((g) => !(g.cover ?? g.hero)).length} without a picture · ` : ""}Find pictures and choose between them
+        </span>
       </button>
       <button className="setting" data-focus data-fid="manage:consoles" onClick={() => setConsoles(true)}>
         <span>Consoles and emulators</span>

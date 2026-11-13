@@ -35,7 +35,8 @@ const HELP: &str = "CarlaOS desktop companion
   carla-companion games      list the games added by hand
   carla-companion add NAME PROGRAM [--args OPTIONS] [--cover PICTURE]
                              add a game that Steam does not list; put quotes
-                             around a name or path that has spaces
+                             around a name or path that has spaces. PROGRAM
+                             may be a shortcut: it is followed to its program
   carla-companion drop KEY   take a game added by hand off the list
   carla-companion saves      list the games whose saves are kept in step with the Ally
   carla-companion saves set NAME FOLDER

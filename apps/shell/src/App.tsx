@@ -14,7 +14,9 @@ import { Startup } from "./screens/startup";
 import { GameDetail } from "./screens/pregame";
 import { Cloud, Desktops, Games, Home, HostView, Settings, type Ctx } from "./screens/screens";
 import { Updates } from "./screens/updates";
+import { Ambient } from "./ui/ambient";
 import { Hints, SECTIONS, TopBar, type Section } from "./ui/chrome";
+import { installSounds, play as cue, setSounds, soundsOn } from "./ui/sound";
 import { Splash } from "./ui/splash";
 
 type Page = { kind: "game"; id: string } | { kind: "host"; id: string } | { kind: "cleanup"; id: CleanupView }
@@ -31,6 +33,12 @@ function load<T>(key: string, fallback: T): T {
   } catch {
     return fallback;
   }
+}
+
+// The desktop a stream comes from, when the game is on only one.
+function streamFrom(places: string[], hosts: { id: string; name: string }[]): string | undefined {
+  const away = places.filter((p) => p !== "local");
+  return away.length === 1 ? hosts.find((h) => h.id === away[0])?.name : undefined;
 }
 
 export function App() {
@@ -64,7 +72,9 @@ export function App() {
 
   useEffect(() => {
     void library.start();
+    return installSounds();
   }, []);
+  const [sounds, setSoundsOn] = useState(soundsOn);
 
   useEffect(() => {
     appInfo().then((i) => setVersion(i.version)).catch(() => undefined);
@@ -114,14 +124,20 @@ export function App() {
   useEffect(() => {
     handler.current = (action: Action) => {
       if (playing || splash) return; // only the one button on the playing screen works
-      if (action === "back") back();
-      else if (action === "prev" || action === "next") {
+      if (action === "back") {
+        cue("back");
+        back();
+      } else if (action === "prev" || action === "next") {
+        cue("section");
         const i = SECTIONS.findIndex((s) => s.id === section);
         const n = (i + (action === "next" ? 1 : -1) + SECTIONS.length) % SECTIONS.length;
         go(SECTIONS[n].id);
       } else if (action === "favourite") {
         const id = (document.activeElement as HTMLElement | null)?.closest<HTMLElement>("[data-game]")?.dataset.game;
-        if (id) toggleFavourite(id);
+        if (id) {
+          if (!favourites.has(id)) cue("favourite");
+          toggleFavourite(id);
+        }
       } else if (action === "search") {
         // Once is enough: Y on the search page itself does nothing.
         if (!searching) {
@@ -157,6 +173,7 @@ export function App() {
     openHost: (id) => push({ kind: "host", id }),
     notify: setToast,
     play: (gameId, place) => {
+      cue("launch");
       void library.launch(gameId, place).catch((e) => setToast(message(e)));
     },
     wakeHost: (id) => {
@@ -192,6 +209,11 @@ export function App() {
         onDesktops={() => push({ kind: "desktops", id: "home" })}
         onUpdates={() => push({ kind: "updates", id: "home" })}
         onStartup={() => push({ kind: "startup", id: "home" })}
+        sounds={sounds}
+        onSounds={() => {
+          setSounds(!sounds);
+          setSoundsOn(!sounds);
+        }}
         hostCount={hosts.length}
         onRefresh={() => void library.scan().catch((e) => setToast(message(e)))}
         refreshing={scanning}
@@ -204,8 +226,14 @@ export function App() {
   if (session) {
     return (
       <div className="shell shell--playing">
+        <Ambient games={games} fixed={games.find((g) => g.id === session.gameId) ?? null} />
         <main className="main" ref={main} key={pageKey}>
-          <Playing session={session} onEnd={() => void library.endSession()} />
+          <Playing
+            session={session}
+            game={games.find((g) => g.id === session.gameId)}
+            from={streamFrom(games.find((g) => g.id === session.gameId)?.places ?? [], hosts)}
+            onEnd={() => void library.endSession()}
+          />
         </main>
         {toast && (
           <div className="toast" role="status">
@@ -218,6 +246,7 @@ export function App() {
 
   return (
     <div className="shell">
+      <Ambient games={games} />
       <TopBar section={section} onSelect={go} />
       <main className="main" ref={main} key={pageKey}>
         {page}

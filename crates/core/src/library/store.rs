@@ -70,6 +70,10 @@ CREATE TABLE IF NOT EXISTS save_sync (
     problem      TEXT,
     PRIMARY KEY (game_id, host_id)
 );
+CREATE TABLE IF NOT EXISTS settings (
+    name  TEXT PRIMARY KEY,
+    value BLOB NOT NULL
+);
 CREATE TABLE IF NOT EXISTS hosts (
     id        TEXT PRIMARY KEY,
     name      TEXT NOT NULL,
@@ -121,7 +125,13 @@ impl Store {
         db.execute_batch(SCHEMA).map_err(err)?;
         // Columns added after the first release. SQLite has no "add column if
         // missing", so look first.
-        let added = [("hosts", "addresses", "TEXT NOT NULL DEFAULT '[]'"), ("hosts", "macs", "TEXT NOT NULL DEFAULT '[]'"), ("games", "save_path", "TEXT"), ("hosts", "admin", "INTEGER NOT NULL DEFAULT 0"), ("hosts", "quality", "TEXT NOT NULL DEFAULT 'auto'"), ("hosts", "streamed", "TEXT")];
+        let added = [("hosts", "addresses", "TEXT NOT NULL DEFAULT '[]'"), ("hosts", "macs", "TEXT NOT NULL DEFAULT '[]'"), ("games", "save_path", "TEXT"), ("hosts", "admin", "INTEGER NOT NULL DEFAULT 0"), ("hosts", "quality", "TEXT NOT NULL DEFAULT 'auto'"), ("hosts", "streamed", "TEXT"),
+            // Pictures the administrator chose. They win over what a store or a
+            // desktop offers, and a look through the library leaves them alone.
+            ("games", "cover_own", "TEXT"),
+            ("games", "hero_own", "TEXT"),
+            ("games", "origin", "TEXT NOT NULL DEFAULT ''"),
+        ];
         for (table, column, kind) in added {
             let has: bool = db
                 .query_row("SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name = ?2", params![table, column], |r| r.get::<_, i64>(0))
@@ -178,10 +188,10 @@ impl Store {
         let dir = game.exe.parent().map(text).unwrap_or_default();
         let tx = self.db.transaction().map_err(err)?;
         tx.execute(
-            "INSERT INTO games (id, title, kind, platform, added, cover, description) VALUES (?1, ?2, ?3, 'Standalone', ?4, ?5, ?6)
+            "INSERT INTO games (id, title, kind, platform, added, cover, description, origin) VALUES (?1, ?2, ?3, 'Standalone', ?4, ?5, ?6, ?7)
              ON CONFLICT (id) DO UPDATE SET title = ?2, kind = ?3, cover = COALESCE(?5, cover),
-                description = CASE WHEN ?6 = '' THEN description ELSE ?6 END",
-            params![id, title, game.kind.as_str(), now, game.cover.as_deref().map(text), game.description.trim()],
+                description = CASE WHEN ?6 = '' THEN description ELSE ?6 END, origin = ?7",
+            params![id, title, game.kind.as_str(), now, game.cover.as_deref().map(text), game.description.trim(), game.origin.trim()],
         )
         .map_err(err)?;
         tx.execute(
@@ -216,9 +226,11 @@ impl Store {
         let mut games = self
             .db
             .prepare(
-                "SELECT g.id, g.title, g.description, g.platform, g.kind, g.favourite, g.added, g.cover, g.hero,
+                "SELECT g.id, g.title, g.description, g.platform, g.kind, g.favourite, g.added,
+                        COALESCE(g.cover_own, g.cover), COALESCE(g.hero_own, g.hero),
                         (SELECT COALESCE(SUM(ended - started), 0) FROM play_sessions p WHERE p.game_id = g.id AND p.ended IS NOT NULL),
-                        (SELECT MAX(started) FROM play_sessions p WHERE p.game_id = g.id)
+                        (SELECT MAX(started) FROM play_sessions p WHERE p.game_id = g.id),
+                        g.origin, g.cover_own IS NOT NULL OR g.hero_own IS NOT NULL
                  FROM games g
                  WHERE EXISTS (SELECT 1 FROM installs i WHERE i.game_id = g.id)
                  ORDER BY g.title COLLATE NOCASE",
@@ -244,6 +256,8 @@ impl Store {
                     last_played: r.get(10)?,
                     places: Vec::new(),
                     manual: false,
+                    origin: r.get(11)?,
+                    own_art: r.get(12)?,
                 })
             })
             .map_err(err)?
@@ -286,6 +300,59 @@ impl Store {
             .optional()
             .map_err(err)?
             .ok_or_else(|| "That game is not installed there any more.".to_string())
+    }
+
+    /// The pictures the administrator chose for a game: (cover, wide picture).
+    pub fn own_art(&self, game_id: &str) -> Result<(Option<PathBuf>, Option<PathBuf>)> {
+        let row: Option<(Option<String>, Option<String>)> =
+            self.db.query_row("SELECT cover_own, hero_own FROM games WHERE id = ?1", params![game_id], |r| Ok((r.get(0)?, r.get(1)?))).optional().map_err(err)?;
+        let (cover, hero) = row.ok_or("That game is not in the library any more.")?;
+        Ok((cover.map(PathBuf::from), hero.map(PathBuf::from)))
+    }
+
+    /// Choose a game's cover (`wide` false) or its wide picture. `None` gives
+    /// back the one it had by itself. Returns the file that was replaced,
+    /// which nothing shows any more.
+    pub fn set_own_art(&mut self, game_id: &str, wide: bool, picture: Option<&Path>) -> Result<Option<PathBuf>> {
+        let (cover, hero) = self.own_art(game_id)?;
+        let column = if wide { "hero_own" } else { "cover_own" };
+        self.db.execute(&format!("UPDATE games SET {column} = ?2 WHERE id = ?1"), params![game_id, picture.map(text)]).map_err(err)?;
+        Ok(if wide { hero } else { cover }.filter(|old| Some(old.as_path()) != picture))
+    }
+
+    /// Something CarlaOS remembers that belongs to no game or desktop.
+    pub fn setting(&self, name: &str) -> Result<Option<Vec<u8>>> {
+        self.db.query_row("SELECT value FROM settings WHERE name = ?1", params![name], |r| r.get(0)).optional().map_err(err)
+    }
+
+    pub fn set_setting(&mut self, name: &str, value: Option<&[u8]>) -> Result<()> {
+        match value {
+            Some(value) => self.db.execute("INSERT INTO settings (name, value) VALUES (?1, ?2) ON CONFLICT (name) DO UPDATE SET value = ?2", params![name, value]),
+            None => self.db.execute("DELETE FROM settings WHERE name = ?1", params![name]),
+        }
+        .map_err(err)?;
+        Ok(())
+    }
+
+    /// Games that were added as a shortcut before CarlaOS could follow one:
+    /// each is pointed at the program behind its shortcut, so that it starts.
+    /// Says how many were mended.
+    pub fn mend_shortcuts(&mut self) -> Result<usize> {
+        let rows: Vec<(i64, String, String)> = {
+            let mut query = self.db.prepare("SELECT id, exe, args FROM installs WHERE source = 'manual' AND place = ?1 AND lower(exe) LIKE '%.lnk'").map_err(err)?;
+            let rows = query.query_map(params![LOCAL], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).map_err(err)?.collect::<rusqlite::Result<_>>().map_err(err)?;
+            rows
+        };
+        let mut mended = 0;
+        for (row, exe, args) in rows {
+            let Ok(seen) = super::ports::inspect(Path::new(&exe)) else { continue };
+            let dir = seen.exe.parent().map(text).unwrap_or_default();
+            // Options the administrator typed win over the shortcut's own.
+            let args = if args.trim().is_empty() { seen.args } else { args };
+            self.db.execute("UPDATE installs SET exe = ?2, install_path = ?3, args = ?4 WHERE id = ?1", params![row, text(&seen.exe), dir, args]).map_err(err)?;
+            mended += 1;
+        }
+        Ok(mended)
     }
 
     /// Consoles, in the order they were added.
@@ -575,6 +642,7 @@ mod tests {
             kind: Kind::Homebrew,
             cover: None,
             description: "A berry who wants to fly.".into(),
+            origin: String::new(),
         };
         let id = store.add_manual(&game, 10).unwrap();
         // Adding it again without a description keeps the one it had.
@@ -618,6 +686,68 @@ mod tests {
         store.remove_manual(&id).unwrap();
         assert!(store.list().unwrap().is_empty());
         assert!(store.add_manual(&ManualGame { title: "  ".into(), ..game }, 30).is_err());
+    }
+
+    #[test]
+    fn pictures_the_administrator_chose_win_and_survive_a_look_through_the_library() {
+        let mut store = Store::in_memory().unwrap();
+        let from_store = Scanned { cover: Some(PathBuf::from("/steam/cover.jpg")), hero: Some(PathBuf::from("/steam/hero.jpg")), ..scanned("1", "Alpha") };
+        store.sync(LOCAL, "steam", std::slice::from_ref(&from_store), 1).unwrap();
+        let shown = |store: &Store| {
+            let g = store.list().unwrap().remove(0);
+            (g.cover, g.hero, g.own_art)
+        };
+        assert_eq!(shown(&store), (Some("/steam/cover.jpg".into()), Some("/steam/hero.jpg".into()), false));
+
+        assert_eq!(store.set_own_art("steam:1", false, Some(Path::new("/art/a.png"))).unwrap(), None);
+        store.sync(LOCAL, "steam", std::slice::from_ref(&from_store), 2).unwrap();
+        assert_eq!(shown(&store), (Some("/art/a.png".into()), Some("/steam/hero.jpg".into()), true));
+        // Choosing another says which file is no longer shown.
+        assert_eq!(store.set_own_art("steam:1", false, Some(Path::new("/art/b.png"))).unwrap(), Some(PathBuf::from("/art/a.png")));
+        assert_eq!(store.set_own_art("steam:1", true, Some(Path::new("/art/wide.jpg"))).unwrap(), None);
+        assert_eq!(store.own_art("steam:1").unwrap(), (Some("/art/b.png".into()), Some("/art/wide.jpg".into())));
+        // Giving them back shows the store's own again.
+        assert_eq!(store.set_own_art("steam:1", false, None).unwrap(), Some(PathBuf::from("/art/b.png")));
+        assert_eq!(store.set_own_art("steam:1", true, None).unwrap(), Some(PathBuf::from("/art/wide.jpg")));
+        assert_eq!(shown(&store), (Some("/steam/cover.jpg".into()), Some("/steam/hero.jpg".into()), false));
+        assert!(store.set_own_art("steam:404", false, None).is_err());
+
+        // Settings, and the console a port is from.
+        assert_eq!(store.setting("key").unwrap(), None);
+        store.set_setting("key", Some(b"one")).unwrap();
+        store.set_setting("key", Some(b"two")).unwrap();
+        assert_eq!(store.setting("key").unwrap().as_deref(), Some(&b"two"[..]));
+        store.set_setting("key", None).unwrap();
+        assert_eq!(store.setting("key").unwrap(), None);
+        let port = ManualGame { title: "Ocarina".into(), exe: PathBuf::from("/games/soh/soh.exe"), args: String::new(), kind: Kind::Port, cover: None, description: String::new(), origin: " Nintendo 64 ".into() };
+        let id = store.add_manual(&port, 5).unwrap();
+        assert_eq!(store.list().unwrap().into_iter().find(|g| g.id == id).unwrap().origin, "Nintendo 64");
+    }
+
+    #[test]
+    fn a_game_added_as_a_shortcut_is_pointed_at_its_program() {
+        let dir = std::env::temp_dir().join(format!("carla-mend-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let game = dir.join("Hookshot");
+        std::fs::create_dir_all(&game).unwrap();
+        let exe = game.join("hookshot.exe");
+        std::fs::write(&exe, b"program").unwrap();
+        let link = dir.join("Hookshot.lnk");
+        std::fs::write(&link, crate::library::shortcut::sample(&exe.to_string_lossy(), "--fullscreen", "", true)).unwrap();
+        let broken = dir.join("Gone.lnk");
+        std::fs::write(&broken, crate::library::shortcut::sample(&dir.join("gone.exe").to_string_lossy(), "", "", true)).unwrap();
+
+        let mut store = Store::in_memory().unwrap();
+        let added = |exe: &Path| ManualGame { title: "A".into(), exe: exe.to_path_buf(), args: String::new(), kind: Kind::Game, cover: None, description: String::new(), origin: String::new() };
+        let id = store.add_manual(&added(&link), 1).unwrap();
+        let gone = store.add_manual(&added(&broken), 1).unwrap();
+        assert_eq!(store.mend_shortcuts().unwrap(), 1);
+        let install = store.install(&id, LOCAL).unwrap();
+        assert_eq!((install.exe.as_deref(), install.install_path.as_path(), install.args.as_str()), (Some(exe.as_path()), game.as_path(), "--fullscreen"));
+        // One that leads nowhere is left as it was, and nothing is mended twice.
+        assert_eq!(store.install(&gone, LOCAL).unwrap().exe.as_deref(), Some(broken.as_path()));
+        assert_eq!(store.mend_shortcuts().unwrap(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
