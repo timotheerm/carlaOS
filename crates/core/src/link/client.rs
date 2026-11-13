@@ -194,6 +194,12 @@ impl Link {
         self.post::<serde_json::Value>("/v1/power/sleep", &serde_json::json!({}), QUICK).map(|_| ())
     }
 
+    /// Close the game that is running on the desktop. Says whether one was.
+    pub fn end_game(&self) -> Result<bool> {
+        let done: serde_json::Value = self.post("/v1/stream/end", &serde_json::json!({}), QUICK)?;
+        Ok(done["ended"].as_bool().unwrap_or(false))
+    }
+
     /// Tell the desktop which game the stream that is about to start is for.
     pub fn prepare(&self, game_id: &str) -> Result<Status> {
         self.post("/v1/stream/prepare", &Prepare { game_id: game_id.to_string() }, QUICK * 2)

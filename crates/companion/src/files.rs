@@ -342,6 +342,18 @@ impl Files {
         }
     }
 
+    /// Ask the launcher to close the game it is watching.
+    pub fn ask_end(&self, now: i64) -> Result<(), String> {
+        self.write("end.json", &now)
+    }
+
+    /// Whether the game was asked to close a moment ago. Asked once, closed once.
+    pub fn take_end(&self, now: i64) -> bool {
+        let asked: Option<i64> = self.read("end.json");
+        self.remove("end.json");
+        asked.is_some_and(|at| now - at <= PLAYING_BEAT * 2)
+    }
+
     pub fn playing(&self, now: i64) -> Option<Playing> {
         let playing: Playing = self.read("playing.json")?;
         (now - playing.at <= PLAYING_BEAT * 2).then_some(playing)
