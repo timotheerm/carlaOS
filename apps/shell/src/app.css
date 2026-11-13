@@ -1313,3 +1313,22 @@ button {
   grid-template-columns: repeat(3, 1fr);
   margin-top: 0;
 }
+
+/* ---------- a row with a small button beside it ---------- */
+.setting-pair {
+  display: flex;
+  gap: 0.75rem;
+}
+
+.setting-pair > .setting:first-child {
+  flex: 1;
+}
+
+.setting--side {
+  flex: none;
+  width: auto;
+  justify-content: center;
+  min-width: 11rem;
+  color: var(--text-quiet);
+  font-weight: 800;
+}

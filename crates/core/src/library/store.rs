@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::{params, Connection, OptionalExtension};
 
+use super::emulation::Console;
 use super::{GameView, HostRow, Install, Kind, ManualGame, Scanned, LOCAL};
 
 type Result<T> = std::result::Result<T, String>;
@@ -47,6 +48,15 @@ CREATE TABLE IF NOT EXISTS achievement_cache (
     game_id TEXT PRIMARY KEY,
     json    TEXT NOT NULL,
     at      INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS consoles (
+    id       TEXT PRIMARY KEY,
+    name     TEXT NOT NULL,
+    emulator TEXT NOT NULL,
+    options  TEXT NOT NULL,
+    folder   TEXT NOT NULL,
+    endings  TEXT NOT NULL,
+    added    INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS hosts (
     id        TEXT PRIMARY KEY,
@@ -121,9 +131,17 @@ impl Store {
         for s in found {
             let id = format!("{source}:{}", s.source_id);
             tx.execute(
-                "INSERT INTO games (id, title, platform, added, cover, hero) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-                 ON CONFLICT (id) DO UPDATE SET title = ?2, cover = COALESCE(?5, cover), hero = COALESCE(?6, hero)",
-                params![id, s.title, platform(source), now, s.cover.as_deref().map(text), s.hero.as_deref().map(text)],
+                "INSERT INTO games (id, title, platform, added, cover, hero, kind) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 ON CONFLICT (id) DO UPDATE SET title = ?2, platform = ?3, cover = COALESCE(?5, cover), hero = COALESCE(?6, hero)",
+                params![
+                    id,
+                    s.title,
+                    if s.platform.is_empty() { platform(source) } else { &s.platform },
+                    now,
+                    s.cover.as_deref().map(text),
+                    s.hero.as_deref().map(text),
+                    if s.emulated { Kind::Emulated } else { Kind::Game }.as_str(),
+                ],
             )
             .map_err(err)?;
             tx.execute(
@@ -256,6 +274,50 @@ impl Store {
             .optional()
             .map_err(err)?
             .ok_or_else(|| "That game is not installed there any more.".to_string())
+    }
+
+    /// Consoles, in the order they were added.
+    pub fn consoles(&self) -> Result<Vec<Console>> {
+        let mut query = self.db.prepare("SELECT id, name, emulator, options, folder, endings FROM consoles ORDER BY added, name").map_err(err)?;
+        let rows = query
+            .query_map([], |r| {
+                Ok(Console {
+                    id: r.get(0)?,
+                    name: r.get(1)?,
+                    emulator: PathBuf::from(r.get::<_, String>(2)?),
+                    options: r.get(3)?,
+                    folder: PathBuf::from(r.get::<_, String>(4)?),
+                    endings: list(&r.get::<_, String>(5)?),
+                })
+            })
+            .map_err(err)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(err)?;
+        Ok(rows)
+    }
+
+    /// Add a console, or change one. Returns it with its id.
+    pub fn save_console(&mut self, console: &Console, now: i64) -> Result<Console> {
+        let mut console = console.clone();
+        if console.id.is_empty() {
+            console.id = format!("c{:x}", now.max(0)) + &self.consoles()?.len().to_string();
+        }
+        let endings = serde_json::to_string(&console.endings).map_err(err)?;
+        self.db
+            .execute(
+                "INSERT INTO consoles (id, name, emulator, options, folder, endings, added) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 ON CONFLICT (id) DO UPDATE SET name = ?2, emulator = ?3, options = ?4, folder = ?5, endings = ?6",
+                params![console.id, console.name, text(&console.emulator), console.options, text(&console.folder), endings, now],
+            )
+            .map_err(err)?;
+        Ok(console)
+    }
+
+    /// Forget a console. Its game files are not touched; their cards go at
+    /// the next look through the library.
+    pub fn remove_console(&mut self, id: &str) -> Result<()> {
+        self.db.execute("DELETE FROM consoles WHERE id = ?1", params![id]).map_err(err)?;
+        Ok(())
     }
 
     /// Remember a linked desktop. Linking the same desktop again replaces it.
@@ -528,6 +590,29 @@ mod tests {
         let games = store.list().unwrap();
         assert_eq!(games.len(), 1, "a game that was only on the desktop is no longer offered");
         assert_eq!(games[0].places, ["local"]);
+    }
+
+    #[test]
+    fn consoles_are_kept_and_their_games_are_marked_as_emulated() {
+        let mut store = Store::in_memory().unwrap();
+        let typed = Console { id: String::new(), name: "GameCube".into(), emulator: PathBuf::from("/emu/dolphin"), options: "-b -e \"{game}\"".into(), folder: PathBuf::from("/roms/gc"), endings: vec!["iso".into(), "rvz".into()] };
+        let saved = store.save_console(&typed, 100).unwrap();
+        assert!(!saved.id.is_empty());
+        let second = store.save_console(&Console { name: "PlayStation 2".into(), ..typed.clone() }, 100).unwrap();
+        assert_ne!(saved.id, second.id, "two consoles added in the same second are still two");
+        store.save_console(&Console { name: "GameCube and Wii".into(), ..saved.clone() }, 200).unwrap();
+        let consoles = store.consoles().unwrap();
+        assert_eq!(consoles.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["GameCube and Wii", "PlayStation 2"]);
+        assert_eq!(consoles[0].endings, ["iso", "rvz"]);
+
+        let knight = Scanned { exe: Some(PathBuf::from("/emu/dolphin")), args: "-b -e \"/roms/gc/Tin Knight.iso\"".into(), platform: "GameCube and Wii".into(), emulated: true, ..scanned(&format!("{}-abc", saved.id), "Tin Knight") };
+        store.sync(LOCAL, "emu", &[knight], 300).unwrap();
+        let games = store.list().unwrap();
+        assert_eq!((games[0].platform.as_str(), games[0].kind, games[0].manual), ("GameCube and Wii", Kind::Emulated, false));
+        assert_eq!(store.install(&games[0].id, LOCAL).unwrap().exe.as_deref(), Some(Path::new("/emu/dolphin")));
+
+        store.remove_console(&saved.id).unwrap();
+        assert_eq!(store.consoles().unwrap().len(), 1);
     }
 
     #[test]
