@@ -24,6 +24,13 @@ pub use store::Store;
 /// The place name for "installed on this machine".
 pub const LOCAL: &str = "local";
 
+/// The stable name of a game added by hand, from its program's path. The same
+/// on every machine, so the catalogue id is `manual:<this>` everywhere.
+pub fn manual_key(exe: &str) -> String {
+    let hash = exe.to_lowercase().bytes().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3));
+    format!("{hash:016x}")
+}
+
 /// Which section of the interface a title belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

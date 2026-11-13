@@ -30,6 +30,12 @@ const HELP: &str = "CarlaOS desktop companion
   carla-companion code       show a new code for linking an Ally
   carla-companion devices    list the linked devices
   carla-companion forget ID  stop accepting a linked device
+  carla-companion games      list the games added by hand
+  carla-companion add NAME PROGRAM [--args OPTIONS] [--cover PICTURE]
+                             add a game that Steam does not list; put quotes
+                             around a name or path that has spaces
+  carla-companion drop KEY   take a game added by hand off the list
+  carla-companion sleep-test put this desktop to sleep now, the way the Ally would
   carla-companion status     show whether everything is ready
   carla-companion serve      run quietly (what happens when Windows starts)
   carla-companion remove     stop starting with Windows
@@ -183,12 +189,50 @@ fn show_code(files: &Files) -> Result<(), String> {
     Ok(())
 }
 
+/// Put this desktop to sleep in a moment, so the reply to the Ally still
+/// leaves first.
+fn sleep_soon() -> Result<(), String> {
+    std::thread::spawn(|| {
+        std::thread::sleep(std::time::Duration::from_secs(3));
+        power::sleep();
+    });
+    Ok(())
+}
+
+#[cfg(windows)]
+mod power {
+    #[link(name = "powrprof")]
+    extern "system" {
+        fn SetSuspendState(hibernate: u8, force: u8, wake_up_events_disabled: u8) -> u8;
+    }
+
+    /// Sleep, not hibernate, and leave wake-up events on so the Ally can wake
+    /// it again.
+    pub fn sleep() {
+        // SAFETY: plain call with constant arguments; returns when the machine wakes.
+        unsafe { SetSuspendState(0, 0, 0) };
+    }
+}
+
+#[cfg(not(windows))]
+mod power {
+    pub fn sleep() {}
+}
+
 fn build(files: &Files, config: Config) -> Server {
     let streamer = streamer(&config).ok().map(|s| Box::new(s) as Box<dyn Streamer>);
     let scan = Box::new(|| steam::find_root().as_deref().map(steam::scan).unwrap_or_default());
-    Server::new(files.clone(), config, streamer, scan, launcher_command(), hardware(), network, |app_id| {
-        steam::find_root().and_then(|root| achievements::steam(&root, app_id)).unwrap_or_default()
-    })
+    Server::new(
+        files.clone(),
+        config,
+        streamer,
+        scan,
+        launcher_command(),
+        hardware(),
+        network,
+        |app_id| steam::find_root().and_then(|root| achievements::steam(&root, app_id)).unwrap_or_default(),
+        sleep_soon,
+    )
 }
 
 /// Run the API. `Err` when the port is taken, which means it already runs.
@@ -260,6 +304,7 @@ fn run(args: &[String]) -> Result<i32, String> {
             println!("Linked devices:   {}", files.devices().len());
             let games = steam::find_root().as_deref().map(steam::scan).unwrap_or_default();
             println!("Steam games:      {}", games.len());
+            println!("Added by hand:    {}", files.extras().len());
             let (addresses, macs) = network();
             println!("Addresses:        {}", if addresses.is_empty() { "none found".to_string() } else { addresses.join(", ") });
             println!("Wake-up adapters: {}", if macs.is_empty() { "none found".to_string() } else { macs.join(", ") });
@@ -267,6 +312,50 @@ fn run(args: &[String]) -> Result<i32, String> {
                 Ok(()) => println!("Sunshine:         ready"),
                 Err(e) => println!("Sunshine:         {e}"),
             }
+            Ok(0)
+        }
+        Some("games") => {
+            let extras = files.extras();
+            if extras.is_empty() {
+                println!("No game has been added by hand. Steam games are found by themselves.");
+            }
+            for e in extras {
+                let gone = if e.exe.is_file() { "" } else { "  (program not found, hidden from the Ally)" };
+                println!("{}  {}  {}{gone}", e.key, e.title, e.exe.display());
+            }
+            Ok(0)
+        }
+        Some("add") => {
+            let usage = "Say the name and the program: carla-companion add \"NAME\" \"C:\\path\\game.exe\" [--args \"...\"] [--cover \"C:\\path\\picture.jpg\"]";
+            let (title, exe) = (args.get(1).ok_or(usage)?, args.get(2).ok_or(usage)?);
+            let (mut game_args, mut cover) = (String::new(), None);
+            let mut rest = args[3..].iter();
+            while let Some(flag) = rest.next() {
+                let value = rest.next().ok_or(usage)?;
+                match flag.as_str() {
+                    "--args" => game_args = value.clone(),
+                    "--cover" => cover = Some(std::path::PathBuf::from(value)),
+                    _ => return Err(usage.to_string()),
+                }
+            }
+            let added = files.add_extra(title, std::path::Path::new(exe), &game_args, cover.as_deref())?;
+            println!("{} was added. It appears on the Ally within five minutes, or at once after \"Look for games again\" there.", added.title);
+            Ok(0)
+        }
+        Some("drop") => {
+            let key = args.get(1).ok_or("Say which game: carla-companion drop KEY (see carla-companion games).")?;
+            match files.drop_extra(key)? {
+                Some(title) => {
+                    println!("{title} was taken off the list. Nothing was deleted from the disk.");
+                    Ok(0)
+                }
+                None => Err("No game added by hand has that key.".to_string()),
+            }
+        }
+        Some("sleep-test") => {
+            println!("Going to sleep in three seconds. Wake it from the Ally to check that waking works.");
+            sleep_soon()?;
+            std::thread::sleep(std::time::Duration::from_secs(5));
             Ok(0)
         }
         Some("serve") => {

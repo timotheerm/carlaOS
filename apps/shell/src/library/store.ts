@@ -226,6 +226,29 @@ export const library = {
     set({ hosts: state.hosts.filter((h) => h.id !== id) });
   },
 
+  /** Look through one desktop's games again now. Resolves with how many it has. */
+  async rescanHost(id: string): Promise<number> {
+    if (!inTauri) {
+      await new Promise((r) => setTimeout(r, 400));
+      return state.games.filter((g) => g.places.includes(id)).length;
+    }
+    const games = await invoke<number>("hosts_rescan", { id });
+    await reload();
+    return games;
+  },
+
+  /** Send a desktop to sleep. */
+  async sleepHost(id: string) {
+    if (inTauri) {
+      await invoke("hosts_sleep", { id });
+      setTimeout(() => void refreshHosts().catch(() => undefined), 8_000);
+      return;
+    }
+    setTimeout(() => {
+      set({ hosts: state.hosts.map((h) => (h.id === id ? { ...h, state: "asleep", route: null, latencyMs: null, lastSeen: "today" } : h)) });
+    }, 800);
+  },
+
   /** Look again at what is installed. */
   async scan() {
     if (!inTauri) return;

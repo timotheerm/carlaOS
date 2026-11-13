@@ -26,8 +26,8 @@ pub fn run(files: &Files) -> i32 {
         source: pending.source,
         source_id: pending.source_id,
         install_path: pending.install_path,
-        exe: None,
-        args: String::new(),
+        exe: pending.exe,
+        args: pending.args,
     };
     let child = match launch::start(&install, steam::find_root().as_deref()) {
         Ok(child) => child,

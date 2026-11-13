@@ -187,6 +187,11 @@ impl Link {
         parse(&self.ask("GET", &format!("/v1/achievements/{game_id}"), b"", QUICK)?)
     }
 
+    /// Ask the desktop to go to sleep. It refuses while a game runs there.
+    pub fn sleep(&self) -> Result<()> {
+        self.post::<serde_json::Value>("/v1/power/sleep", &serde_json::json!({}), QUICK).map(|_| ())
+    }
+
     /// Tell the desktop which game the stream that is about to start is for.
     pub fn prepare(&self, game_id: &str) -> Result<Status> {
         self.post("/v1/stream/prepare", &Prepare { game_id: game_id.to_string() }, QUICK * 2)

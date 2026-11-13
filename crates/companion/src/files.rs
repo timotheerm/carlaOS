@@ -98,6 +98,20 @@ pub struct Code {
     pub tries: u32,
 }
 
+/// A program the administrator added on this desktop: any game that Steam
+/// does not list.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Extra {
+    /// `carla_core::library::manual_key` of the program's path.
+    pub key: String,
+    pub title: String,
+    pub exe: PathBuf,
+    #[serde(default)]
+    pub args: String,
+    #[serde(default)]
+    pub cover: Option<PathBuf>,
+}
+
 /// The game the next stream is for.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Pending {
@@ -106,6 +120,11 @@ pub struct Pending {
     pub source: String,
     pub source_id: String,
     pub install_path: PathBuf,
+    /// The program to start, for a game that was added by hand.
+    #[serde(default)]
+    pub exe: Option<PathBuf>,
+    #[serde(default)]
+    pub args: String,
     pub at: i64,
 }
 
@@ -180,6 +199,47 @@ impl Files {
         devices.retain(|d| d.id != id);
         self.write("devices.json", &devices)?;
         Ok(devices.len() != before)
+    }
+
+    pub fn extras(&self) -> Vec<Extra> {
+        self.read("games.json").unwrap_or_default()
+    }
+
+    /// Add a program as a game. Adding the same program again updates it.
+    pub fn add_extra(&self, title: &str, exe: &Path, args: &str, cover: Option<&Path>) -> Result<Extra, String> {
+        let title = title.trim();
+        if title.is_empty() || title.len() > 80 {
+            return Err("The game needs a name of at most 80 letters.".to_string());
+        }
+        if !exe.is_absolute() || !exe.is_file() {
+            return Err(format!("{} is not a program on this desktop. Give its full path.", exe.display()));
+        }
+        if let Some(cover) = cover.filter(|c| !c.is_file()) {
+            return Err(format!("{} is not a picture on this desktop.", cover.display()));
+        }
+        let extra = Extra {
+            key: carla_core::library::manual_key(&exe.to_string_lossy()),
+            title: title.to_string(),
+            exe: exe.to_path_buf(),
+            args: args.trim().to_string(),
+            cover: cover.map(Path::to_path_buf),
+        };
+        let mut extras = self.extras();
+        extras.retain(|e| e.key != extra.key);
+        extras.push(extra.clone());
+        extras.sort_by_key(|e| e.title.to_lowercase());
+        self.write("games.json", &extras)?;
+        Ok(extra)
+    }
+
+    /// Take a game off the list. Returns its title when it was there.
+    pub fn drop_extra(&self, key: &str) -> Result<Option<String>, String> {
+        let mut extras = self.extras();
+        let found = extras.iter().position(|e| e.key == key).map(|i| extras.remove(i).title);
+        if found.is_some() {
+            self.write("games.json", &extras)?;
+        }
+        Ok(found)
     }
 
     /// Make a new code, replacing any earlier one.

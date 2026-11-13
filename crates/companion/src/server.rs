@@ -13,7 +13,7 @@ use carla_core::link::{self, EnrolDone, EnrolFinish, EnrolOffer, EnrolStart, Hel
 use carla_core::{API_VERSION, VERSION};
 use serde::Serialize;
 
-use crate::files::{Config, Files, Pending};
+use crate::files::{Config, Extra, Files, Pending};
 use crate::sunshine::Streamer;
 
 /// How long a scan of the installed games is reused.
@@ -63,6 +63,8 @@ pub struct Server {
     network: fn() -> (Vec<String>, Vec<String>),
     /// A Steam game's achievements on this desktop, by app id.
     achievements: fn(&str) -> Vec<Achievement>,
+    /// Puts this desktop to sleep, a moment after it is called.
+    sleep: fn() -> Result<(), String>,
     replay: Mutex<Replay>,
     exchanges: Mutex<HashMap<String, Waiting>>,
     games: Mutex<Option<(Instant, Vec<Scanned>)>>,
@@ -105,6 +107,7 @@ impl Server {
         hardware: String,
         network: fn() -> (Vec<String>, Vec<String>),
         achievements: fn(&str) -> Vec<Achievement>,
+        sleep: fn() -> Result<(), String>,
     ) -> Self {
         Self {
             files,
@@ -115,6 +118,7 @@ impl Server {
             hardware,
             network,
             achievements,
+            sleep,
             replay: Mutex::default(),
             exchanges: Mutex::default(),
             games: Mutex::default(),
@@ -142,6 +146,38 @@ impl Server {
         let wanted = |list: Vec<Scanned>| list.into_iter().find(|g| format!("steam:{}", g.source_id) == game_id);
         // A game installed a moment ago is not in an older scan.
         wanted(self.games(false)).or_else(|| wanted(self.games(true)))
+    }
+
+    /// A game the administrator added by hand, whose program is still there.
+    fn extra(&self, game_id: &str) -> Option<Extra> {
+        let key = game_id.strip_prefix("manual:")?;
+        self.files.extras().into_iter().find(|e| e.key == key && e.exe.is_file())
+    }
+
+    fn listed(&self) -> Vec<RemoteGame> {
+        let steam = self.games(true).into_iter().map(|g| RemoteGame {
+            id: format!("steam:{}", g.source_id),
+            source: "steam".to_string(),
+            source_id: g.source_id,
+            title: g.title,
+            has_cover: g.cover.is_some(),
+        });
+        let extras = self.files.extras().into_iter().filter(|e| e.exe.is_file()).map(|e| RemoteGame {
+            id: format!("manual:{}", e.key),
+            source: "manual".to_string(),
+            source_id: e.key,
+            title: e.title,
+            has_cover: e.cover.is_some_and(|c| c.is_file()),
+        });
+        steam.chain(extras).collect()
+    }
+
+    fn sleep(&self, now: i64) -> Answer {
+        if let Some(playing) = self.files.playing(now) {
+            return refuse(409, &format!("{} is still running on {}.", playing.title, self.config.name));
+        }
+        (self.sleep)().map_err(|e| (503, e))?;
+        json(&serde_json::json!({ "sleeping": true }))
     }
 
     fn streamer(&self) -> Result<&dyn Streamer, String> {
@@ -221,8 +257,28 @@ impl Server {
 
     fn prepare(&self, bytes: &[u8], now: i64) -> Answer {
         let prepare: Prepare = body(bytes)?;
-        let Some(game) = self.find(&prepare.game_id) else {
-            return refuse(404, &format!("That game is no longer installed on {}.", self.config.name));
+        let pending = match (self.extra(&prepare.game_id), self.find(&prepare.game_id)) {
+            (Some(extra), _) => Pending {
+                game_id: prepare.game_id.clone(),
+                title: extra.title,
+                source: "manual".to_string(),
+                source_id: extra.key,
+                install_path: extra.exe.parent().map(PathBuf::from).unwrap_or_default(),
+                exe: Some(extra.exe),
+                args: extra.args,
+                at: now,
+            },
+            (None, Some(game)) => Pending {
+                game_id: prepare.game_id.clone(),
+                title: game.title,
+                source: "steam".to_string(),
+                source_id: game.source_id,
+                install_path: game.install_path,
+                exe: None,
+                args: String::new(),
+                at: now,
+            },
+            (None, None) => return refuse(404, &format!("That game is no longer installed on {}.", self.config.name)),
         };
         if let Some(playing) = self.files.playing(now) {
             if playing.game_id != prepare.game_id {
@@ -232,16 +288,7 @@ impl Server {
             return json(&self.status(now));
         }
         self.streamer().and_then(|s| s.ensure_app(&self.launcher)).map_err(|e| (503, e))?;
-        self.files
-            .set_pending(&Pending {
-                game_id: prepare.game_id,
-                title: game.title,
-                source: "steam".to_string(),
-                source_id: game.source_id,
-                install_path: game.install_path,
-                at: now,
-            })
-            .map_err(|e| (500, e))?;
+        self.files.set_pending(&pending).map_err(|e| (500, e))?;
         json(&self.status(now))
     }
 
@@ -257,7 +304,10 @@ impl Server {
     }
 
     fn cover(&self, game_id: &str) -> Answer {
-        let cover: Option<PathBuf> = self.find(game_id).and_then(|g| g.cover);
+        let cover: Option<PathBuf> = match self.extra(game_id) {
+            Some(extra) => extra.cover,
+            None => self.find(game_id).and_then(|g| g.cover),
+        };
         match cover.and_then(|path| std::fs::read(&path).ok().map(|bytes| (bytes, picture_kind(&path)))) {
             Some(found) => Ok(found),
             None => refuse(404, "There is no picture for that game."),
@@ -267,19 +317,7 @@ impl Server {
     fn signed(&self, req: &Request, now: i64) -> Answer {
         match (req.method, req.path) {
             ("GET", "/v1/status") => json(&self.status(now)),
-            ("GET", "/v1/games") => json(
-                &self
-                    .games(true)
-                    .into_iter()
-                    .map(|g| RemoteGame {
-                        id: format!("steam:{}", g.source_id),
-                        source: "steam".to_string(),
-                        source_id: g.source_id,
-                        title: g.title,
-                        has_cover: g.cover.is_some(),
-                    })
-                    .collect::<Vec<_>>(),
-            ),
+            ("GET", "/v1/games") => json(&self.listed()),
             ("GET", path) if path.starts_with("/v1/cover/") => self.cover(&path["/v1/cover/".len()..]),
             ("GET", path) if path.starts_with("/v1/achievements/") => {
                 // Only for games that are really installed here, by their own id.
@@ -290,6 +328,7 @@ impl Server {
             }
             ("POST", "/v1/stream/prepare") => self.prepare(req.body, now),
             ("POST", "/v1/stream/pair") => self.pair(req.body, req.from),
+            ("POST", "/v1/power/sleep") => self.sleep(now),
             _ => refuse(404, "The companion does not know that request."),
         }
     }
@@ -422,6 +461,9 @@ mod tests {
         }
     }
 
+    /// How often any test desktop was put to sleep.
+    static SLEEPS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
     struct Desk {
         files: Files,
         calls: Arc<Mutex<Vec<String>>>,
@@ -444,9 +486,20 @@ mod tests {
                 Scanned { source_id: "20".into(), title: "Second Game".into(), install_path: dir.join("second"), cover: None, hero: None },
             ]
         });
-        let server = Arc::new(Server::new(files.clone(), config, Some(Box::new(sunshine)), scan, "companion launch".into(), "Test CPU · 64 GB".into(), || (vec!["192.168.1.20".into()], vec!["aa:bb:cc:dd:ee:ff".into()]), |app| {
-            vec![Achievement { id: format!("ACH_{app}"), name: "Winner".into(), description: String::new(), hidden: false, unlocked: Some(7) }]
-        }));
+        let server = Arc::new(Server::new(
+            files.clone(),
+            config,
+            Some(Box::new(sunshine)),
+            scan,
+            "companion launch".into(),
+            "Test CPU · 64 GB".into(),
+            || (vec!["192.168.1.20".into()], vec!["aa:bb:cc:dd:ee:ff".into()]),
+            |app| vec![Achievement { id: format!("ACH_{app}"), name: "Winner".into(), description: String::new(), hidden: false, unlocked: Some(7) }],
+            || {
+                SLEEPS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            },
+        ));
         let http = tiny_http::Server::http("127.0.0.1:0").unwrap();
         let port = http.server_addr().to_ip().unwrap().port();
         std::thread::spawn(move || serve(server, http));
@@ -534,7 +587,7 @@ mod tests {
         let desk = desk("replay", false);
         let link = linked(&desk);
         let files = desk.files.clone();
-        let server = Server::new(files, Config::new("HOME PC"), None, Box::new(Vec::new), String::new(), String::new(), || (Vec::new(), Vec::new()), |_| Vec::new());
+        let server = Server::new(files, Config::new("HOME PC"), None, Box::new(Vec::new), String::new(), String::new(), || (Vec::new(), Vec::new()), |_| Vec::new(), || Ok(()));
         let (now, nonce) = (1_000_000, "0123456789abcdef0123456789abcdef");
         let body = br#"{"game_id":"steam:10"}"#;
         let signature = sign::request(&link.key, "POST", "/v1/stream/prepare", now, nonce, body);
@@ -575,5 +628,52 @@ mod tests {
         let status = link.status().unwrap();
         assert_eq!((status.state, status.problem.as_deref()), (State::NotReady, Some("Sunshine is not running on this desktop.")));
         assert_eq!(link.prepare("steam:10").err(), Some(Error::Host("Sunshine is not running on this desktop.".into())));
+    }
+
+    #[test]
+    fn a_game_added_by_hand_is_listed_and_streamed_like_any_other() {
+        let desk = desk("extra", false);
+        let link = linked(&desk);
+        let exe = desk.files.dir().join("Lanterns.exe");
+        std::fs::write(&exe, b"program").unwrap();
+        let cover = desk.files.dir().join("cover.jpg");
+        assert!(desk.files.add_extra("Paper Lanterns", std::path::Path::new("relative.exe"), "", None).is_err());
+        assert!(desk.files.add_extra("  ", &exe, "", None).is_err());
+        let added = desk.files.add_extra("Paper Lanterns", &exe, "-fullscreen", Some(&cover)).unwrap();
+        // Adding the same program again renames it instead of listing it twice.
+        desk.files.add_extra("Paper Lanterns Deluxe", &exe, "-fullscreen", Some(&cover)).unwrap();
+        let id = format!("manual:{}", added.key);
+
+        let games = link.games().unwrap();
+        let listed: Vec<_> = games.iter().map(|g| (g.id.as_str(), g.source.as_str(), g.title.as_str(), g.has_cover)).collect();
+        assert_eq!(listed, [("steam:10", "steam", "First Game", true), ("steam:20", "steam", "Second Game", false), (id.as_str(), "manual", "Paper Lanterns Deluxe", true)]);
+        assert_eq!(link.cover(&id).unwrap(), b"picture bytes");
+
+        link.prepare(&id).unwrap();
+        let pending = desk.files.take_pending(now_for_tests()).unwrap();
+        assert_eq!((pending.source.as_str(), pending.exe.as_deref(), pending.args.as_str()), ("manual", Some(exe.as_path()), "-fullscreen"));
+        assert_eq!(pending.install_path, desk.files.dir());
+
+        // A program that has gone is no longer offered.
+        std::fs::remove_file(&exe).unwrap();
+        assert_eq!(link.games().unwrap().len(), 2);
+        assert!(matches!(link.prepare(&id), Err(Error::Host(_))));
+        assert_eq!(desk.files.drop_extra(&added.key).unwrap().as_deref(), Some("Paper Lanterns Deluxe"));
+        assert_eq!(desk.files.drop_extra(&added.key).unwrap(), None);
+    }
+
+    #[test]
+    fn a_linked_ally_can_send_the_desktop_to_sleep_unless_a_game_runs() {
+        let desk = desk("sleep", false);
+        let link = linked(&desk);
+        let stranger = Link { key: vec![7; 32], ..link.clone() };
+        let before = SLEEPS.load(std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(stranger.sleep().err(), Some(Error::Refused));
+        desk.files.set_playing(Some(&crate::files::Playing { game_id: "steam:10".into(), title: "First Game".into(), at: now_for_tests() }));
+        assert_eq!(link.sleep().err(), Some(Error::Host("First Game is still running on HOME PC.".into())));
+        assert_eq!(SLEEPS.load(std::sync::atomic::Ordering::SeqCst), before);
+        desk.files.set_playing(None);
+        link.sleep().unwrap();
+        assert_eq!(SLEEPS.load(std::sync::atomic::Ordering::SeqCst), before + 1);
     }
 }

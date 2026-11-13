@@ -129,7 +129,7 @@ enum Running {
     /// A game on this Ally.
     Game(Watch),
     /// Moonlight showing a game from a desktop.
-    Stream { moonlight: Child, since: Instant },
+    Stream { moonlight: Child, since: Instant, woke: bool },
 }
 
 /// A stream that ends this soon never showed a game.
@@ -139,7 +139,7 @@ impl Running {
     fn poll(&mut self) -> Phase {
         match self {
             Running::Game(watch) => watch.poll(),
-            Running::Stream { moonlight, since } => match moonlight.try_wait() {
+            Running::Stream { moonlight, since, .. } => match moonlight.try_wait() {
                 Ok(None) if since.elapsed() < STREAM_SETTLE => Phase::Starting,
                 Ok(None) => Phase::Running,
                 _ if since.elapsed() < STREAM_SETTLE => Phase::NeverStarted,
@@ -188,7 +188,7 @@ pub fn library_launch(app: AppHandle, library: State<'_, Library>, game_id: Stri
             }
         };
         let stopped = || locked(&library.0.active).as_ref().is_none_or(|a| a.stop);
-        crate::hosts::start_stream(&library, &game_id, &place, &waking, &stopped).map(|moonlight| Running::Stream { moonlight, since: Instant::now() })
+        crate::hosts::start_stream(&library, &game_id, &place, &waking, &stopped).map(|(moonlight, woke)| Running::Stream { moonlight, since: Instant::now(), woke })
     };
     let mut running = match started_running {
         Ok(running) => running,
@@ -244,11 +244,16 @@ pub fn library_launch(app: AppHandle, library: State<'_, Library>, game_id: Stri
         if played && place == LOCAL {
             crate::details::backup_after_play(&library, &game_id);
         }
+        // A desktop that was asleep before the stream may sleep again.
+        let sleep_again = played && matches!(running, Running::Stream { woke: true, .. });
         *locked(&library.0.active) = None;
         let _ = app.emit(SESSION_EVENT, None::<SessionView>);
         if let Some(window) = app.get_webview_window("main") {
             let _ = window.unminimize();
             let _ = window.set_focus();
+        }
+        if sleep_again {
+            crate::hosts::sleep_again(&library, &place);
         }
     });
     Ok(view)
