@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod admin;
+mod boot;
 mod consoles;
 mod details;
 mod device;
@@ -26,7 +27,15 @@ fn quit(app: tauri::AppHandle) {
 }
 
 fn main() {
+    let context = tauri::generate_context!();
+    // Before anything is shown: started by Windows, CarlaOS may decide to
+    // leave the desktop alone this time.
+    let guard = carla_core::boot::Guard::new(boot::record_path(&context.config().identifier));
+    if !boot::should_start(&guard) {
+        return;
+    }
     tauri::Builder::default()
+        .manage(boot::Boot(guard))
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let data_dir = app.path().app_local_data_dir()?;
@@ -74,6 +83,8 @@ fn main() {
             details::saves_pick_folder,
             details::saves_forget_folder,
             savesync::saves_sync,
+            boot::boot_ready,
+            boot::boot_set,
             remote::hosts_admin,
             remote::hosts_set_admin,
             quick::quick_state,
@@ -87,6 +98,6 @@ fn main() {
             updates::update_check,
             updates::update_install,
         ])
-        .run(tauri::generate_context!())
+        .run(context)
         .expect("failed to start the CarlaOS shell");
 }

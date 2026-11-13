@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { cloud } from "./data/sample";
 import { library, message, useLibrary } from "./library/store";
-import { appInfo, quit } from "./native";
+import { appInfo, boot, quit } from "./native";
 import { currentFocusId, focusById, focusFirst, installScrollIntoView } from "./nav/focus";
 import { installInput, type Action } from "./nav/input";
 import { cleanup } from "./cleanup/store";
@@ -10,6 +10,7 @@ import { LinkDesktops } from "./screens/link";
 import { Manage } from "./screens/manage";
 import { Playing } from "./screens/playing";
 import { Search } from "./screens/search";
+import { Startup } from "./screens/startup";
 import { GameDetail } from "./screens/pregame";
 import { Cloud, Desktops, Games, Home, HostView, Settings, type Ctx } from "./screens/screens";
 import { Updates } from "./screens/updates";
@@ -18,7 +19,7 @@ import { Splash } from "./ui/splash";
 
 type Page = { kind: "game"; id: string } | { kind: "host"; id: string } | { kind: "cleanup"; id: CleanupView }
   | { kind: "manage"; id: "home" } | { kind: "desktops"; id: "home" } | { kind: "search"; id: "home" }
-  | { kind: "updates"; id: "home" };
+  | { kind: "updates"; id: "home" } | { kind: "startup"; id: "home" };
 type Theme = "light" | "dark";
 
 const THEME_KEY = "carla.theme";
@@ -43,6 +44,11 @@ export function App() {
   const [splash, setSplash] = useState(true);
   const endSplash = useCallback(() => {
     setSplash(false);
+    // The library is on the screen: this start worked.
+    void boot.ready().then(
+      (s) => s.stood_down && setToast("CarlaOS failed to start twice, so it left the desktop alone once."),
+      () => undefined,
+    );
     if (main.current && !main.current.contains(document.activeElement)) focusFirst(main.current);
   }, []);
   const [version, setVersion] = useState("");
@@ -170,6 +176,7 @@ export function App() {
   else if (top?.kind === "manage") page = <Manage games={games} notify={setToast} />;
   else if (top?.kind === "desktops") page = <LinkDesktops hosts={hosts} notify={setToast} />;
   else if (top?.kind === "updates") page = <Updates hosts={hosts} notify={setToast} refreshHosts={() => void library.refreshHosts().catch(() => undefined)} />;
+  else if (top?.kind === "startup") page = <Startup notify={setToast} />;
   else if (top?.kind === "cleanup") page = <Cleanup view={top.id} open={(view) => push({ kind: "cleanup", id: view })} />;
   else if (section === "home") page = <Home {...ctx} />;
   else if (section === "games") page = <Games {...ctx} />;
@@ -184,6 +191,7 @@ export function App() {
         onManage={() => push({ kind: "manage", id: "home" })}
         onDesktops={() => push({ kind: "desktops", id: "home" })}
         onUpdates={() => push({ kind: "updates", id: "home" })}
+        onStartup={() => push({ kind: "startup", id: "home" })}
         hostCount={hosts.length}
         onRefresh={() => void library.scan().catch((e) => setToast(message(e)))}
         refreshing={scanning}
