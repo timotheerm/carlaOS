@@ -72,6 +72,8 @@ fn list(json: &str) -> Vec<String> {
 fn platform(source: &str) -> &'static str {
     match source {
         "steam" => "Steam",
+        "epic" => "Epic",
+        "gog" => "GOG",
         _ => "Standalone",
     }
 }
@@ -125,8 +127,8 @@ impl Store {
             )
             .map_err(err)?;
             tx.execute(
-                "INSERT INTO installs (game_id, place, source, source_id, install_path) VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![id, place, source, s.source_id, text(&s.install_path)],
+                "INSERT INTO installs (game_id, place, source, source_id, install_path, exe, args) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![id, place, source, s.source_id, text(&s.install_path), s.exe.as_deref().map(text), s.args],
             )
             .map_err(err)?;
         }
@@ -393,7 +395,7 @@ mod tests {
     use super::*;
 
     fn scanned(id: &str, title: &str) -> Scanned {
-        Scanned { source_id: id.into(), title: title.into(), install_path: PathBuf::from("/games").join(title), cover: None, hero: None }
+        Scanned { source_id: id.into(), title: title.into(), install_path: PathBuf::from("/games").join(title), ..Scanned::default() }
     }
 
     #[test]
@@ -526,6 +528,23 @@ mod tests {
         let games = store.list().unwrap();
         assert_eq!(games.len(), 1, "a game that was only on the desktop is no longer offered");
         assert_eq!(games[0].places, ["local"]);
+    }
+
+    #[test]
+    fn games_from_other_stores_keep_how_they_are_started() {
+        let mut store = Store::in_memory().unwrap();
+        let tides = Scanned { exe: Some(PathBuf::from("/games/Tides/tides.exe")), args: "-skipintro".into(), ..scanned("1207", "Hollow Tides") };
+        store.sync(LOCAL, "gog", &[tides], 1).unwrap();
+        store.sync(LOCAL, "epic", &[Scanned { args: "com.epicgames.launcher://apps/Jade?action=launch&silent=true".into(), ..scanned("Jade", "Velvet Circuit") }], 1).unwrap();
+        store.sync(LOCAL, "steam", &[scanned("10", "Neon Harbor")], 1).unwrap();
+        let games = store.list().unwrap();
+        assert_eq!(games.iter().map(|g| (g.id.as_str(), g.platform.as_str())).collect::<Vec<_>>(), [("gog:1207", "GOG"), ("steam:10", "Steam"), ("epic:Jade", "Epic")]);
+        let gog = store.install("gog:1207", LOCAL).unwrap();
+        assert_eq!((gog.exe.as_deref(), gog.args.as_str()), (Some(Path::new("/games/Tides/tides.exe")), "-skipintro"));
+        assert!(store.install("epic:Jade", LOCAL).unwrap().args.starts_with("com.epicgames.launcher://"));
+        // One store's scan never touches another store's games.
+        store.sync(LOCAL, "gog", &[], 2).unwrap();
+        assert_eq!(store.list().unwrap().len(), 2);
     }
 
     #[test]

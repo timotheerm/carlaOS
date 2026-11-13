@@ -103,14 +103,17 @@ fn sync_games(library: &Library, host: &HostRow, link: &Link) -> Result<usize, S
                     }
                 }
             }
-            Scanned { source_id: g.source_id.clone(), title: g.title.clone(), install_path: PathBuf::new(), cover, hero: None }
+            Scanned { source_id: g.source_id.clone(), title: g.title.clone(), cover, ..Scanned::default() }
         })
         .collect()
     };
-    let (steam, manual) = (from("steam"), from("manual"));
-    library.store().sync(&host.id, "steam", &steam, now())?;
-    library.store().sync(&host.id, "manual", &manual, now())?;
-    Ok(steam.len() + manual.len())
+    let mut total = 0;
+    for source in ["steam", "epic", "gog", "manual"] {
+        let found = from(source);
+        total += found.len();
+        library.store().sync(&host.id, source, &found, now())?;
+    }
+    Ok(total)
 }
 
 /// A desktop's game list changes rarely, and reading it makes the desktop

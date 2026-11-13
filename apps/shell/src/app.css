@@ -1241,3 +1241,75 @@ button {
     transform: scale(0.85) rotate(0deg);
   }
 }
+
+/* ---------- search ---------- */
+.search {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: start;
+  gap: 2.5rem;
+}
+
+.search__type {
+  display: grid;
+  gap: 1.25rem;
+  position: sticky;
+  top: 0;
+}
+
+.search .empty {
+  margin-top: 1rem;
+}
+
+.search__field {
+  width: 100%;
+  max-width: 51.5rem;
+  font-size: 1.6rem;
+}
+
+.search__field:focus {
+  outline: 0.25rem solid var(--accent);
+  outline-offset: 0.2rem;
+}
+
+.keys {
+  display: grid;
+  gap: 0.6rem;
+}
+
+.keys__row {
+  display: flex;
+  gap: 0.6rem;
+}
+
+.key {
+  width: 4.6rem;
+  height: 3.6rem;
+  border-radius: 1rem;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  font-size: 1.5rem;
+  font-weight: 800;
+  text-align: center;
+}
+
+.key--wide {
+  width: auto;
+  padding: 0 1.6rem;
+  font-size: 1.2rem;
+}
+
+.key:focus {
+  transform: scale(1.1);
+  background: var(--accent);
+  color: var(--surface);
+}
+
+:root[data-theme="dark"] .key:focus {
+  color: var(--bg);
+}
+
+.search .grid {
+  grid-template-columns: repeat(3, 1fr);
+  margin-top: 0;
+}

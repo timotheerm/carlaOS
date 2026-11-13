@@ -6,6 +6,8 @@
 //! in the interface therefore only ever offers places where the game really is.
 
 pub mod launch;
+pub mod epic;
+pub mod gog;
 pub mod steam;
 mod store;
 pub mod vdf;
@@ -63,7 +65,7 @@ impl Kind {
 }
 
 /// One installed game as a scanner found it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Scanned {
     /// The store's own id for the game (a Steam app id, for example).
     pub source_id: String,
@@ -71,6 +73,24 @@ pub struct Scanned {
     pub install_path: PathBuf,
     pub cover: Option<PathBuf>,
     pub hero: Option<PathBuf>,
+    /// The program to start, when the game starts without its store.
+    pub exe: Option<PathBuf>,
+    /// Options for that program; for a store that starts games through an
+    /// address of its own, that address.
+    pub args: String,
+}
+
+/// The stores CarlaOS looks through by itself.
+pub const STORES: [&str; 3] = ["steam", "epic", "gog"];
+
+/// What one store has installed on this machine.
+pub fn scan_store(store: &str, steam_root: Option<&std::path::Path>) -> Vec<Scanned> {
+    match store {
+        "steam" => steam_root.map(steam::scan).unwrap_or_default(),
+        "epic" => epic::manifests().as_deref().map(epic::scan).unwrap_or_default(),
+        "gog" => gog::scan(),
+        _ => Vec::new(),
+    }
 }
 
 /// A game the administrator adds by pointing at its program.

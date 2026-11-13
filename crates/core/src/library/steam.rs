@@ -119,6 +119,7 @@ pub fn scan(root: &Path) -> Vec<Scanned> {
                 install_path: apps.join("common").join(dir),
                 cover: art(root, appid, "library_600x900.jpg"),
                 hero: art(root, appid, "library_hero.jpg"),
+                ..Scanned::default()
             });
         }
     }
