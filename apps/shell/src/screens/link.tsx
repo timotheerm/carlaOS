@@ -132,6 +132,11 @@ export function LinkDesktops({ hosts, notify }: { hosts: Host[]; notify: (text: 
       <PinPad
         pinSet={admin.pin_set}
         lede="Linking and removing desktops is locked."
+        notThis={
+          admin.pin_set
+            ? "This is the Ally's own four-digit PIN, not the code from the desktop. The six-digit code is asked for next."
+            : "This PIN belongs to the Ally and is yours to choose. It is not the code from the desktop: that six-digit code is asked for next."
+        }
         unlock={async (pin) => {
           const r = await backend.unlock(pin);
           if (r.result === "unlocked") setAdmin({ pin_set: true, unlocked: true });
@@ -266,7 +271,7 @@ export function LinkDesktops({ hosts, notify }: { hosts: Host[]; notify: (text: 
       <CodePad
         length={6}
         title={`Code from ${step.name ?? step.address}`}
-        lede="Open the CarlaOS companion on the desktop. It shows six digits."
+        lede="Type the six digits the CarlaOS companion shows on the desktop."
         note={problem}
         busy={linking}
         onComplete={(code) => void link(step.address, code)}
