@@ -12,7 +12,7 @@ use carla_core::library::{HostRow, Scanned};
 use carla_core::link::client::{self, Error, Link};
 use carla_core::link::discover::{self, Found};
 use carla_core::link::moonlight::{self, Picture};
-use carla_core::link::{wake, State as HostState, Status, PORT};
+use carla_core::link::{wake, State as HostState, Status, Updating, PORT};
 use carla_core::secret;
 use serde::Serialize;
 use tauri::{AppHandle, State};
@@ -41,6 +41,8 @@ pub struct HostView {
     route: Option<&'static str>,
     /// The desktop told us how to wake it.
     can_wake: bool,
+    /// The companion's version, once the desktop has answered.
+    version: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -72,6 +74,7 @@ fn view(host: &HostRow) -> HostView {
         address: host.address.clone(),
         route: None,
         can_wake: !host.macs.is_empty(),
+        version: None,
     }
 }
 
@@ -192,6 +195,7 @@ fn refresh(library: &Library, host: &HostRow) -> HostView {
                 HostState::Busy => "busy",
                 HostState::NotReady => "not_ready",
             };
+            out.version = Some(status.version.clone());
             out.playing = status.playing;
             out.problem = status.problem;
             if sync_due(&host.id) {
@@ -354,6 +358,25 @@ pub fn hosts_wake(library: State<'_, Library>, id: String) -> Result<(), String>
         return Err(format!("{} has not said how it can be woken yet. Turn it on by hand once.", host.name));
     }
     Ok(())
+}
+
+/// Ask a desktop to update its companion to the newest release. It answers
+/// with the version it is moving to, then is away for a moment.
+#[tauri::command(async)]
+pub fn hosts_update(admin: State<'_, Admin>, library: State<'_, Library>, id: String) -> Result<Updating, String> {
+    admin.require()?;
+    let host = library.store().hosts()?.into_iter().find(|h| h.id == id).ok_or("That desktop is no longer set up.")?;
+    let (link, ..) = reach(&host).map_err(|e| match e {
+        Error::Unreachable => format!("{} did not answer. It has to be on to be updated.", host.name),
+        other => other.to_string(),
+    })?;
+    link.update().map_err(|e| match e {
+        // A companion from before updating existed does not know the request.
+        Error::Host(text) if text.contains("does not know that request") => {
+            format!("{} has an older CarlaOS that cannot update itself yet. Install the newest Desktop Host on it once by hand.", host.name)
+        }
+        other => other.to_string(),
+    })
 }
 
 /// How long a desktop gets to wake up before we say it did not.

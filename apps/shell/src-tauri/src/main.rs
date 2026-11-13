@@ -5,6 +5,7 @@ mod admin;
 mod details;
 mod hosts;
 mod library;
+mod updates;
 
 use carla_core::{AppInfo, Role};
 use tauri::Manager;
@@ -62,6 +63,9 @@ fn main() {
             details::saves_forget_folder,
             details::meta_search,
             details::meta_fetch,
+            hosts::hosts_update,
+            updates::update_check,
+            updates::update_install,
         ])
         .run(tauri::generate_context!())
         .expect("failed to start the CarlaOS shell");

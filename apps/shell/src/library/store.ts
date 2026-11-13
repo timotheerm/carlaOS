@@ -42,6 +42,7 @@ type HostView = {
   address: string;
   route: "local" | "remote" | null;
   can_wake: boolean;
+  version?: string | null;
 };
 type Linked = { host: HostView; games: number; warning: string | null };
 type Found = { address: string; hello: { name: string; id: string } };
@@ -103,6 +104,7 @@ const fromHost = (h: HostView): Host => ({
   problem: h.problem,
   address: h.address,
   canWake: h.can_wake,
+  version: h.version ?? null,
 });
 
 // How often desktops are asked how they are while the library is on screen.

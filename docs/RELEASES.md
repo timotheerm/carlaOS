@@ -69,6 +69,39 @@ Updating a desktop host stops it and starts it again in the background. A game
 that is being streamed at that moment keeps running, but the stream ends and
 has to be started again.
 
+## Updating from inside CarlaOS
+
+Nothing has to be downloaded by hand after the first install.
+
+- **On the Ally (or any machine with the interface):** Settings, Updates
+  (administrator PIN). The page says which version is installed and whether a
+  newer one is out. *Update this machine* downloads it, checks it and installs
+  it; CarlaOS closes for a moment and opens again as the new version. On a
+  machine that has both halves (the full install), the same press updates the
+  desktop host too.
+- **Linked desktops, from the Ally:** the same page lists every linked desktop
+  with its version. Pressing one that is behind tells it to update itself. It
+  is away for a moment while it restarts. A desktop has to be on, and it
+  refuses while a game is running on it.
+- **On a desktop itself:** *Update CarlaOS Desktop Host* in the Start menu, or
+  `carla-companion update`.
+
+How it works (`crates/core/src/update.rs`): the program asks GitHub for this
+repository's releases, takes the highest version above its own that has an
+installer for its half, downloads that installer and the release's
+`SHA256SUMS.txt`, and only runs the installer when its checksum matches. Files
+are only ever taken from this repository's release downloads. The update is
+the same installer a person would run, started quietly, so everything under
+"Updating and going back" applies. Updating never goes back to an older
+version; for that, run the older installer by hand.
+
+A desktop host from before the updater existed (0.6.0 and older) does not know
+how to update itself: install a
+newer Desktop Host on it once by hand, and it can from then on.
+
+Beta builds are not signed, so the checksum protects against a broken
+download, not against someone who controls the GitHub repository.
+
 ## Publishing by hand
 
 Rarely needed. *Actions*, *Build*, *Run workflow*:
@@ -106,6 +139,11 @@ one build is running, the ones in the middle may share a release with the
 last; its text lists all of them.
 
 ## Not yet tried by a person
+
+The updater's rules (which release to take, checksums, refusing files from
+elsewhere, a linked Ally asking a desktop to update) are covered by tests, but
+no real machine has updated itself yet: the download from GitHub, the
+interface closing and reopening, and a desktop updating on request.
 
 The installers are installed, checked and removed on GitHub's Windows machine
 at every build, but nobody has yet clicked through them on a real PC: the

@@ -91,6 +91,7 @@ Section "Install"
   WriteUninstaller "$INSTDIR\uninstall.exe"
 
   CreateShortcut "$SMPROGRAMS\${PRODUCT}.lnk" "$INSTDIR\${EXE}" "" "$INSTDIR\carlaos.ico"
+  CreateShortcut "$SMPROGRAMS\Update ${PRODUCT}.lnk" "$INSTDIR\${EXE}" "update" "$INSTDIR\carlaos.ico"
 
   WriteRegStr HKCU "${UNINSTALL_KEY}" "DisplayName" "${PRODUCT}"
   WriteRegStr HKCU "${UNINSTALL_KEY}" "DisplayVersion" "${VERSION}"
@@ -124,5 +125,6 @@ Section "Uninstall"
   Delete "$INSTDIR\uninstall.exe"
   RMDir "$INSTDIR"
   Delete "$SMPROGRAMS\${PRODUCT}.lnk"
+  Delete "$SMPROGRAMS\Update ${PRODUCT}.lnk"
   DeleteRegKey HKCU "${UNINSTALL_KEY}"
 SectionEnd

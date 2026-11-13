@@ -6,7 +6,7 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 
 use super::enrol::{valid_code, Exchange, Side};
-use super::{random_hex, sign, EnrolDone, EnrolFinish, EnrolOffer, EnrolStart, Hello, Pair, Prepare, Problem, RemoteGame, Status};
+use super::{random_hex, sign, EnrolDone, EnrolFinish, EnrolOffer, EnrolStart, Hello, Pair, Prepare, Problem, RemoteGame, Status, Updating};
 use crate::API_VERSION;
 
 /// Enough for a status question on Wi-Fi; a desktop that is slower is off.
@@ -201,5 +201,12 @@ impl Link {
     /// two finish, which can take a while.
     pub fn pair(&self, pin: &str, name: &str) -> Result<()> {
         self.post::<serde_json::Value>("/v1/stream/pair", &Pair { pin: pin.to_string(), name: name.to_string() }, SLOW).map(|_| ())
+    }
+
+    /// Ask the desktop to update its companion to the newest release. It
+    /// answers once it knows whether there is one, then installs on its own
+    /// and is away for a moment while it restarts.
+    pub fn update(&self) -> Result<Updating> {
+        self.post("/v1/update", &serde_json::json!({}), SLOW)
     }
 }

@@ -9,7 +9,7 @@ use carla_core::library::achievements::Achievement;
 use carla_core::library::Scanned;
 use carla_core::link::enrol::{Exchange, Shared, Side};
 use carla_core::link::sign::{self, Replay};
-use carla_core::link::{self, EnrolDone, EnrolFinish, EnrolOffer, EnrolStart, Hello, Pair, Prepare, Problem, RemoteGame, State, Status};
+use carla_core::link::{self, EnrolDone, EnrolFinish, EnrolOffer, EnrolStart, Hello, Pair, Prepare, Problem, RemoteGame, State, Status, Updating};
 use carla_core::{API_VERSION, VERSION};
 use serde::Serialize;
 
@@ -65,6 +65,9 @@ pub struct Server {
     achievements: fn(&str) -> Vec<Achievement>,
     /// Puts this desktop to sleep, a moment after it is called.
     sleep: fn() -> Result<(), String>,
+    /// Starts an update of this companion and says which version is coming,
+    /// or `None` when this is the newest.
+    updater: fn() -> Result<Option<String>, String>,
     replay: Mutex<Replay>,
     exchanges: Mutex<HashMap<String, Waiting>>,
     games: Mutex<Option<(Instant, Vec<Found>)>>,
@@ -122,10 +125,29 @@ impl Server {
             network,
             achievements,
             sleep,
+            updater: || Err("This companion cannot update itself.".to_string()),
             replay: Mutex::default(),
             exchanges: Mutex::default(),
             games: Mutex::default(),
             health: Mutex::default(),
+        }
+    }
+
+    /// Let linked devices ask this companion to update itself.
+    pub fn with_updater(mut self, updater: fn() -> Result<Option<String>, String>) -> Self {
+        self.updater = updater;
+        self
+    }
+
+    fn update(&self, now: i64) -> Answer {
+        // The update restarts the companion, which ends a stream.
+        if let Some(title) = self.status(now).playing {
+            return refuse(409, &format!("{title} is running on {}. Update it when the game is closed.", self.config.name));
+        }
+        match (self.updater)() {
+            Ok(Some(version)) => json(&Updating { updating: true, version }),
+            Ok(None) => json(&Updating { updating: false, version: VERSION.to_string() }),
+            Err(e) => Err((503, e)),
         }
     }
 
@@ -334,6 +356,7 @@ impl Server {
             ("POST", "/v1/stream/prepare") => self.prepare(req.body, now),
             ("POST", "/v1/stream/pair") => self.pair(req.body, req.from),
             ("POST", "/v1/power/sleep") => self.sleep(now),
+            ("POST", "/v1/update") => self.update(now),
             _ => refuse(404, "The companion does not know that request."),
         }
     }
@@ -505,7 +528,7 @@ mod tests {
                 SLEEPS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 Ok(())
             },
-        ));
+        ).with_updater(|| Ok(Some("9.9.9".into()))));
         let http = tiny_http::Server::http("127.0.0.1:0").unwrap();
         let port = http.server_addr().to_ip().unwrap().port();
         std::thread::spawn(move || serve(server, http));
@@ -556,6 +579,16 @@ mod tests {
         assert_eq!((pending.source.as_str(), pending.source_id.as_str(), pending.args.as_str()), ("gog", "30", "-windowed"));
         assert!(pending.exe.is_some_and(|exe| exe.ends_with("third.exe")));
         assert!(matches!(link.prepare("steam:99"), Err(Error::Host(_))));
+    }
+
+    #[test]
+    fn a_linked_ally_can_ask_the_desktop_to_update_and_a_stranger_cannot() {
+        let desk = desk("update", false);
+        let link = linked(&desk);
+        let answer = link.update().unwrap();
+        assert_eq!((answer.updating, answer.version.as_str()), (true, "9.9.9"));
+        let stranger = Link { device_id: "someone".into(), key: vec![7; 32], ..link };
+        assert_eq!(stranger.update().err(), Some(Error::Refused));
     }
 
     fn now_for_tests() -> i64 {
