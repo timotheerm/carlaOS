@@ -97,6 +97,29 @@ pub fn library_details(library: State<'_, Library>, game_id: String) -> Result<D
     })
 }
 
+/// What the stores still have to do before this game starts, in each place
+/// it is installed, asked now rather than at the last look through the
+/// library. The catalogue is brought up to date with the answer.
+#[tauri::command(async)]
+pub fn library_updates(library: State<'_, Library>, game_id: String) -> Result<Vec<carla_core::library::Waiting>, String> {
+    let game = library.store().list()?.into_iter().find(|g| g.id == game_id);
+    let places = game.map(|g| g.places).unwrap_or_default();
+    for place in &places {
+        let fresh = if place == LOCAL {
+            let install = library.store().install(&game_id, LOCAL)?;
+            let root = locked(&library.0.steam_root).clone();
+            Some(carla_core::library::update_of(&install.source, &install.source_id, root.as_deref()))
+        } else {
+            crate::hosts::pending_update(&library, &game_id, place)
+        };
+        // A desktop that did not answer keeps what it last said.
+        if let Some(update) = fresh {
+            library.store().set_update(&game_id, place, update)?;
+        }
+    }
+    Ok(library.store().list()?.into_iter().find(|g| g.id == game_id).map(|g| g.updates).unwrap_or_default())
+}
+
 /// Copy the saves aside after a play session, if they changed. Quiet: a
 /// backup that cannot be made must never get in the way of playing.
 pub(crate) fn backup_after_play(library: &Library, game_id: &str) {

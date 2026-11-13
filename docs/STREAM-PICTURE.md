@@ -33,6 +33,10 @@ over half of what was measured:
 | light | 720p, 60 a second | 7 Mbit/s | 12.6 Mbit/s |
 | lightest | 720p, 30 a second | 3 Mbit/s | anything |
 
+The sizes are for a 1080p screen like the Ally's. A screen of another shape
+or a smaller one gets a picture made for it, see
+[STREAM-SCREEN.md](STREAM-SCREEN.md).
+
 Two more rules:
 
 - An unsteady connection (answers more than 40 ms apart) gets "balanced" at

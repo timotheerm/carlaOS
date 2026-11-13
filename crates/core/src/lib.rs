@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 pub mod admin;
 pub mod boot;
 pub mod debloat;
+pub mod display;
 pub mod library;
 pub mod link;
 pub mod quick;

@@ -94,6 +94,8 @@ fn main() {
             quick::quick_set_brightness,
             quick::quick_close,
             quick::quick_end_game,
+            quick::quick_show_desktop,
+            details::library_updates,
             details::meta_search,
             details::meta_fetch,
             hosts::hosts_update,
