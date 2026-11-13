@@ -99,8 +99,12 @@ export function App() {
     [favourites],
   );
 
+  // The input listener is installed once and always calls the newest handler,
+  // so changing section does not start it afresh while a button is held.
+  const handler = useRef<(action: Action) => void>(() => undefined);
+  useEffect(() => installInput((action) => handler.current(action)), []);
   useEffect(() => {
-    const onAction = (action: Action) => {
+    handler.current = (action: Action) => {
       if (playing || splash) return; // only the one button on the playing screen works
       if (action === "back") back();
       else if (action === "prev" || action === "next") {
@@ -118,7 +122,6 @@ export function App() {
         }
       }
     };
-    return installInput(onAction);
   }, [back, go, playing, push, searching, section, splash, toggleFavourite]);
 
   // The administrator pages lock themselves again as soon as they are left.
