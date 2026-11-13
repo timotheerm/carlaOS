@@ -70,6 +70,8 @@ pub struct Server {
     /// Starts an update of this companion and says which version is coming,
     /// or `None` when this is the newest.
     updater: fn() -> Result<Option<String>, String>,
+    /// How long an Ally asking for requests is kept waiting when there are none.
+    admin_hold: Duration,
     replay: Mutex<Replay>,
     exchanges: Mutex<HashMap<String, Waiting>>,
     games: Mutex<Option<(Instant, Vec<Found>)>>,
@@ -128,6 +130,7 @@ impl Server {
             achievements,
             sleep,
             updater: || Err("This companion cannot update itself.".to_string()),
+            admin_hold: Duration::from_secs(20),
             replay: Mutex::default(),
             exchanges: Mutex::default(),
             games: Mutex::default(),
@@ -151,6 +154,36 @@ impl Server {
             Ok(None) => json(&Updating { updating: false, version: VERSION.to_string() }),
             Err(e) => Err((503, e)),
         }
+    }
+
+    #[cfg(test)]
+    fn with_admin_hold(mut self, hold: Duration) -> Self {
+        self.admin_hold = hold;
+        self
+    }
+
+    /// An Ally asks whether the administrator wants something from it. The
+    /// answer waits a while for a request to come, so the Ally can ask again
+    /// at once without that costing anything.
+    fn admin_next(&self, device: &str) -> Answer {
+        let asked = Instant::now();
+        loop {
+            let now = crate::files::now();
+            self.files.ally_listened(device, now);
+            if let Some(command) = self.files.take_ally_ask(device, now) {
+                return json(&Some(command));
+            }
+            if asked.elapsed() >= self.admin_hold {
+                return json(&None::<carla_core::remote::Command>);
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+    }
+
+    fn admin_done(&self, device: &str, bytes: &[u8]) -> Answer {
+        let done: carla_core::remote::Done = body(bytes)?;
+        self.files.set_ally_answer(device, &done).map_err(|e| (500, e))?;
+        json(&serde_json::json!({ "received": true }))
     }
 
     pub fn hello(&self) -> Hello {
@@ -433,6 +466,8 @@ impl Server {
             ("POST", "/v1/stream/pair") => self.pair(req.body, req.from),
             ("POST", "/v1/power/sleep") => self.sleep(now),
             ("POST", "/v1/stream/end") => self.end(now),
+            ("GET", "/v1/admin/next") => self.admin_next(req.device.unwrap_or_default()),
+            ("POST", "/v1/admin/done") => self.admin_done(req.device.unwrap_or_default(), req.body),
             ("POST", "/v1/update") => self.update(now),
             ("POST", "/v1/saves/find") => self.saves_find(req.body, now),
             ("POST", path) if path.starts_with("/v1/saves/") => self.saves_step(&path["/v1/saves/".len()..], req.body, now),
@@ -485,7 +520,8 @@ impl Server {
 /// Serve the API on an open listener until the process ends.
 pub fn serve(server: std::sync::Arc<Server>, http: tiny_http::Server) {
     let http = std::sync::Arc::new(http);
-    let workers: Vec<_> = (0..4)
+    // An Ally waiting for requests holds one of these, so there are spares.
+    let workers: Vec<_> = (0..8)
         .map(|_| {
             let (server, http) = (server.clone(), http.clone());
             std::thread::spawn(move || {
@@ -498,8 +534,14 @@ pub fn serve(server: std::sync::Arc<Server>, http: tiny_http::Server) {
                     let path = request.url().split('?').next().unwrap_or_default().to_string();
                     // Nothing the Ally sends is large, except a save file, and
                     // that much is only read from a device that is linked.
-                    let save = path.starts_with("/v1/saves/") && path.ends_with("/write") && device.as_deref().is_some_and(|d| server.knows(d));
-                    let most = if save { sync::LARGEST_FILE + 4096 } else { 64 * 1024 };
+                    let linked = device.as_deref().is_some_and(|d| server.knows(d));
+                    let save = path.starts_with("/v1/saves/") && path.ends_with("/write");
+                    let most = match (linked, save, path.as_str()) {
+                        (true, true, _) => sync::LARGEST_FILE + 4096,
+                        // The result of a request to the Ally, such as its list of games.
+                        (true, _, "/v1/admin/done") => 2 * 1024 * 1024,
+                        _ => 64 * 1024,
+                    };
                     let mut bytes = Vec::new();
                     let read = std::io::Read::read_to_end(&mut std::io::Read::take(request.as_reader(), most), &mut bytes);
                     let from = request.remote_addr().map(|a| a.ip().to_string()).unwrap_or_default();
@@ -610,7 +652,7 @@ mod tests {
                 SLEEPS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 Ok(())
             },
-        ).with_updater(|| Ok(Some("9.9.9".into()))));
+        ).with_updater(|| Ok(Some("9.9.9".into()))).with_admin_hold(Duration::from_millis(400)));
         let http = tiny_http::Server::http("127.0.0.1:0").unwrap();
         let port = http.server_addr().to_ip().unwrap().port();
         std::thread::spawn(move || serve(server, http));
@@ -893,5 +935,46 @@ mod tests {
         assert!(!desk.files.take_end(now_for_tests()));
         let stranger = Link { key: vec![7; 32], ..link.clone() };
         assert_eq!(stranger.end_game().err(), Some(Error::Refused));
+    }
+
+    #[test]
+    fn the_administrator_reaches_the_ally_through_the_desktop_it_is_linked_to() {
+        use carla_core::remote::{Command, Done};
+        let desk = desk("admin", false);
+        let link = linked(&desk);
+        let device = desk.files.devices()[0].id.clone();
+
+        // Nothing is wanted: the Ally is kept waiting a moment, then told so.
+        let asked = Instant::now();
+        assert_eq!(link.admin_next().unwrap(), None);
+        assert!(asked.elapsed() >= Duration::from_millis(400));
+        assert!(desk.files.ally_listening(&device).is_some(), "the desktop knows the Ally is listening");
+
+        // A request typed at the desktop while the Ally waits reaches it at once.
+        let command = Command { id: "c1".into(), op: "add_game".into(), args: serde_json::json!({ "title": "Paper Lanterns" }) };
+        let files = desk.files.clone();
+        let (later, for_device) = (command.clone(), device.clone());
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(150));
+            files.ask_ally(&for_device, &later).unwrap();
+        });
+        assert_eq!(link.admin_next().unwrap(), Some(command));
+        assert_eq!(link.admin_next().unwrap(), None, "handed out once");
+
+        // The result comes back to whoever asked, even when it is long.
+        assert!(desk.files.take_ally_answer(&device, "c1").is_none());
+        let games: Vec<String> = (0..4000).map(|i| format!("A game with quite a long name, number {i}")).collect();
+        let done = Done::of("c1", Ok(serde_json::json!(games)));
+        link.admin_done(&done).unwrap();
+        assert!(desk.files.take_ally_answer(&device, "other").is_none());
+        assert_eq!(desk.files.take_ally_answer(&device, "c1"), Some(done));
+
+        // A request for one Ally is never handed to another, or to a stranger.
+        let second = linked(&desk);
+        desk.files.ask_ally(&device, &Command { id: "c2".into(), op: "restart".into(), args: serde_json::Value::Null }).unwrap();
+        assert_eq!(second.admin_next().unwrap(), None);
+        let stranger = Link { key: vec![7; 32], ..link.clone() };
+        assert_eq!(stranger.admin_next().err(), Some(Error::Refused));
+        assert_eq!(link.admin_next().unwrap().map(|c| c.id), Some("c2".to_string()));
     }
 }

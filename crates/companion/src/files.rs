@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use carla_core::link::{self, enrol};
+use carla_core::remote::{Command, Done};
 use carla_core::secret;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -148,6 +149,9 @@ pub struct Playing {
     pub title: String,
     pub at: i64,
 }
+
+/// A request for an Ally that nobody fetched within this time is dropped.
+pub const ASK_LIFETIME: i64 = 60;
 
 /// A pending game older than this was for a stream that never started.
 pub const PENDING_LIFETIME: i64 = 120;
@@ -340,6 +344,50 @@ impl Files {
             }
             None => self.remove("playing.json"),
         }
+    }
+
+    /// Leave a request for a linked Ally to pick up. One at a time per Ally.
+    pub fn ask_ally(&self, device: &str, command: &Command) -> Result<(), String> {
+        self.remove(&format!("ally-answer-{device}.json"));
+        self.write(&format!("ally-ask-{device}.json"), &(now(), command))
+    }
+
+    /// The request waiting for this Ally, handed out once. One that waited
+    /// too long is dropped: nobody is waiting for its answer any more.
+    pub fn take_ally_ask(&self, device: &str, now: i64) -> Option<Command> {
+        let name = format!("ally-ask-{device}.json");
+        let (at, command): (i64, Command) = self.read(&name)?;
+        self.remove(&name);
+        (now - at <= ASK_LIFETIME).then_some(command)
+    }
+
+    /// Whether a request is still waiting to be fetched.
+    pub fn ally_asked(&self, device: &str) -> bool {
+        self.dir.join(format!("ally-ask-{device}.json")).is_file()
+    }
+
+    pub fn set_ally_answer(&self, device: &str, done: &Done) -> Result<(), String> {
+        self.write(&format!("ally-answer-{device}.json"), done)
+    }
+
+    /// The answer to the request with this id, once it has come.
+    pub fn take_ally_answer(&self, device: &str, id: &str) -> Option<Done> {
+        let name = format!("ally-answer-{device}.json");
+        let done: Done = self.read(&name)?;
+        (done.id == id).then(|| {
+            self.remove(&name);
+            done
+        })
+    }
+
+    /// Note that an Ally asked for requests just now.
+    pub fn ally_listened(&self, device: &str, now: i64) {
+        let _ = self.write(&format!("ally-listening-{device}.json"), &now);
+    }
+
+    /// When an Ally last asked for requests.
+    pub fn ally_listening(&self, device: &str) -> Option<i64> {
+        self.read(&format!("ally-listening-{device}.json"))
     }
 
     /// Ask the launcher to close the game it is watching.

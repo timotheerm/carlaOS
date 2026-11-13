@@ -60,6 +60,9 @@ function preview(gameId: string): Saves | null {
   return previewSaves.get(gameId) ?? null;
 }
 
+// Desktops allowed to administer the Ally, as the browser preview pretends.
+const previewAdmin = new Set<string>();
+
 // Consoles as the browser preview pretends them.
 let previewConsoles: Console[] = [
   { id: "c0", name: "PlayStation 2", emulator: "C:\\Emulators\\PCSX2\\pcsx2-qt.exe", options: '-batch -fullscreen -- "{game}"', folder: "D:\\My Games\\PS2", endings: ["chd", "iso"] },
@@ -167,6 +170,8 @@ export const library = {
       // Playtime and "recently played" change when a game ends.
       if (e.payload === null) void reload().catch(() => undefined);
     });
+    // The administrator changed the library from a desktop.
+    await listen("library://changed", () => void reload().catch(() => undefined));
     set({ session: fromSession(await invoke<SessionView | null>("library_session")) });
     await reload().catch(() => undefined); // show what we knew last time at once
     set({ hosts: (await invoke<HostView[]>("hosts_list").catch(() => [])).map(fromHost) });
@@ -242,6 +247,19 @@ export const library = {
     const games = await invoke<number>("hosts_rescan", { id });
     await reload();
     return games;
+  },
+
+  /** Whether a desktop may administer this Ally. */
+  async hostAdmin(id: string): Promise<boolean> {
+    if (inTauri) return invoke<boolean>("hosts_admin", { id });
+    return previewAdmin.has(id);
+  },
+
+  /** Allow a desktop to administer this Ally, or take that back. Administrator only. */
+  async setHostAdmin(id: string, allowed: boolean) {
+    if (inTauri) await invoke("hosts_set_admin", { id, allowed });
+    else if (allowed) previewAdmin.add(id);
+    else previewAdmin.delete(id);
   },
 
   /** Send a desktop to sleep. */

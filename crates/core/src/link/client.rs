@@ -194,6 +194,18 @@ impl Link {
         self.post::<serde_json::Value>("/v1/power/sleep", &serde_json::json!({}), QUICK).map(|_| ())
     }
 
+    /// Ask the desktop whether its administrator wants something from this
+    /// Ally. The desktop holds the question for a while when there is
+    /// nothing, so this can be asked again straight away.
+    pub fn admin_next(&self) -> Result<Option<crate::remote::Command>> {
+        parse(&self.ask("GET", "/v1/admin/next", b"", SLOW)?)
+    }
+
+    /// Hand back how a request went.
+    pub fn admin_done(&self, done: &crate::remote::Done) -> Result<()> {
+        self.post::<serde_json::Value>("/v1/admin/done", done, QUICK * 2).map(|_| ())
+    }
+
     /// Close the game that is running on the desktop. Says whether one was.
     pub fn end_game(&self) -> Result<bool> {
         let done: serde_json::Value = self.post("/v1/stream/end", &serde_json::json!({}), QUICK)?;

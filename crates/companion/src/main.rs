@@ -6,6 +6,7 @@
 //!
 //! Double-click it to set it up or to get a code for linking an Ally.
 
+mod ally;
 mod files;
 mod launcher;
 mod server;
@@ -45,6 +46,7 @@ const HELP: &str = "CarlaOS desktop companion
                              list the safe copies made before saves were replaced
   carla-companion saves restore KEY COPY
                              put a safe copy back
+  carla-companion ally ...   administer a linked Ally from here (carla-companion ally help)
   carla-companion sleep-test put this desktop to sleep now, the way the Ally would
   carla-companion status     show whether everything is ready
   carla-companion serve      run quietly (what happens when Windows starts)
@@ -489,6 +491,12 @@ fn run(args: &[String]) -> Result<i32, String> {
             }
         }
         Some("saves") => saves(&files, &args[1..]),
+        Some("ally") => {
+            // The companion in the background hands the request to the Ally.
+            // If its port is free, it is not running.
+            let serving = files.config().is_some_and(|c| std::net::TcpListener::bind((Ipv4Addr::UNSPECIFIED, c.port)).is_err());
+            ally::run(&files, &args[1..], serving)
+        }
         Some("sleep-test") => {
             println!("Going to sleep in three seconds. Wake it from the Ally to check that waking works.");
             sleep_soon()?;
