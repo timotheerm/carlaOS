@@ -56,6 +56,13 @@ shell ── signed HTTP, port 47600 ───▶  companion ── https://loca
   game's programs are gone. Sunshine then ends the stream, Moonlight exits and
   CarlaOS comes back to the front. No list of games ever has to be kept in step
   inside Sunshine.
+- **A stream without a game shows the desktop.** Choosing "CarlaOS" in
+  Moonlight itself, rather than a game in CarlaOS, leaves no note. The launcher
+  then stays alive doing nothing, so the stream shows the desktop, and starts
+  a game if the Ally asks for one later. (Leaving at once made Sunshine end the
+  stream before its first picture, which Moonlight reports as "Something went
+  wrong on your host PC when starting the stream".) What the launcher did is
+  written to `%LOCALAPPDATA%\CarlaOS\companion\launcher.log`.
 - **Leaving a stream does not close the game.** The player may have unsaved
   progress. Streaming the same game again picks it up; asking for a different
   one is refused with "X is still running on HOME PC".

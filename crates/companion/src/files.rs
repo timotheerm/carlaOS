@@ -326,6 +326,21 @@ impl Files {
         self.remove("enrol.json");
     }
 
+    /// Note what the launcher did, for whoever wonders why a stream ended.
+    /// Sunshine runs the launcher unseen, so this file is all there is.
+    pub fn log(&self, line: &str) {
+        use std::io::Write;
+        let path = self.dir.join("launcher.log");
+        // Start again rather than grow without end.
+        if fs::metadata(&path).is_ok_and(|m| m.len() > 256 * 1024) {
+            let _ = fs::remove_file(&path);
+        }
+        let _ = fs::create_dir_all(&self.dir);
+        if let Ok(mut file) = fs::OpenOptions::new().create(true).append(true).open(&path) {
+            let _ = writeln!(file, "{} {line}", now());
+        }
+    }
+
     pub fn set_pending(&self, pending: &Pending) -> Result<(), String> {
         self.write("pending.json", pending)
     }
