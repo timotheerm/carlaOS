@@ -19,6 +19,7 @@ export function Playing({ session, onEnd }: { session: Session; onEnd: () => voi
             ? "CarlaOS comes back by itself when the stream ends."
             : "CarlaOS comes back by itself when you quit the game."}
       </p>
+      {session.phase === "running" && <p className="lede">Hold View and Menu together for sound, brightness and ending the game.</p>}
       <button className="pill" data-focus data-autofocus data-fid="playing:end" onClick={onEnd}>
         {session.phase === "running" ? "I have finished playing" : "Stop"}
       </button>

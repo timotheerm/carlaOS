@@ -21,18 +21,24 @@ const POLL: Duration = Duration::from_secs(2);
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionView {
     game_id: String,
-    title: String,
+    pub(crate) title: String,
     /// "waking" while a sleeping desktop comes up, "starting" until the game's
     /// program (or the stream) has been seen, then "running".
-    phase: &'static str,
+    pub(crate) phase: &'static str,
     /// Streamed from a desktop, not running on this Ally.
     stream: bool,
 }
 
 pub(crate) struct Active {
-    view: SessionView,
+    pub(crate) view: SessionView,
+    /// Where it runs: this Ally, or the desktop it streams from.
+    pub(crate) place: String,
+    /// Unix seconds it was started.
+    pub(crate) since: i64,
     /// Set when the player says they have finished and we could not tell.
-    stop: bool,
+    pub(crate) stop: bool,
+    /// With `stop`: the player asked for the game to be closed.
+    pub(crate) end: bool,
 }
 
 pub(crate) struct Inner {
@@ -156,21 +162,26 @@ impl Running {
     }
 
     /// The player said they are done; do not leave a stream running behind.
-    fn stop(&mut self) {
-        if let Running::Stream { moonlight, .. } = self {
-            let _ = moonlight.kill();
-            let _ = moonlight.wait();
+    /// With `end` the game itself is closed too.
+    fn stop(&mut self, end: bool) {
+        match self {
+            Running::Stream { moonlight, .. } => {
+                let _ = moonlight.kill();
+                let _ = moonlight.wait();
+            }
+            Running::Game(watch) if end => watch.end(),
+            Running::Game(_) => {}
         }
     }
 }
 
 /// Take the one "now playing" slot, or say what holds it.
-fn claim(library: &Library, view: &SessionView) -> Result<(), String> {
+fn claim(library: &Library, view: &SessionView, place: &str) -> Result<(), String> {
     let mut active = locked(&library.0.active);
     if let Some(current) = active.as_ref() {
         return Err(format!("{} is still running.", current.view.title));
     }
-    *active = Some(Active { view: view.clone(), stop: false });
+    *active = Some(Active { view: view.clone(), place: place.to_string(), since: now(), stop: false, end: false });
     Ok(())
 }
 
@@ -180,7 +191,7 @@ pub fn library_launch(app: AppHandle, library: State<'_, Library>, game_id: Stri
     let view = SessionView { game_id: game_id.clone(), title: install.title.clone(), phase: "starting", stream: place != LOCAL };
     // Claimed before anything slow happens, so a second press cannot start a
     // second game, and the player sees at once that something is happening.
-    claim(&library, &view)?;
+    claim(&library, &view, &place)?;
     let _ = app.emit(SESSION_EVENT, Some(view.clone()));
     let started_running = if place == LOCAL {
         // What was played on a desktop since comes here first.
@@ -218,7 +229,7 @@ pub fn library_launch(app: AppHandle, library: State<'_, Library>, game_id: Stri
     let session = match library.store().start_session(&game_id, &place, started) {
         Ok(session) => session,
         Err(e) => {
-            running.stop();
+            running.stop(false);
             *locked(&library.0.active) = None;
             let _ = app.emit(SESSION_EVENT, None::<SessionView>);
             return Err(e);
@@ -234,7 +245,7 @@ pub fn library_launch(app: AppHandle, library: State<'_, Library>, game_id: Stri
             let mut active = locked(&library.0.active);
             let Some(current) = active.as_mut() else { break };
             if current.stop {
-                running.stop();
+                running.stop(current.end);
                 break;
             }
             match phase {
@@ -256,6 +267,7 @@ pub fn library_launch(app: AppHandle, library: State<'_, Library>, game_id: Stri
         // A desktop that was asleep before the stream may sleep again.
         let sleep_again = played && matches!(running, Running::Stream { woke: true, .. });
         *locked(&library.0.active) = None;
+        crate::quick::ended(&app);
         let _ = app.emit(SESSION_EVENT, None::<SessionView>);
         if let Some(window) = app.get_webview_window("main") {
             let _ = window.unminimize();

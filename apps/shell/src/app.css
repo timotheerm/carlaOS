@@ -1342,3 +1342,207 @@ button {
   color: var(--text-quiet);
   font-weight: 800;
 }
+
+/* ---------- quick menu (its own see-through window over the game) ---------- */
+:root.quick-window,
+:root.quick-window body {
+  background: transparent;
+}
+
+.quick {
+  height: 100%;
+  display: grid;
+  align-items: center;
+  padding: 0 4rem;
+  background: linear-gradient(90deg, rgb(20 10 18 / 72%), rgb(20 10 18 / 30%) 55%, rgb(20 10 18 / 12%));
+  animation: quick-in var(--slow) var(--ease);
+}
+
+/* In a browser there is no game behind it, so one is painted. */
+.quick--preview {
+  background:
+    linear-gradient(90deg, rgb(20 10 18 / 72%), rgb(20 10 18 / 30%) 55%, rgb(20 10 18 / 12%)),
+    radial-gradient(60% 80% at 75% 40%, #3c6e8f, #16263a 70%);
+}
+
+@keyframes quick-in {
+  from {
+    opacity: 0;
+  }
+}
+
+.quick__panel {
+  width: 42rem;
+  display: grid;
+  gap: 0.75rem;
+  padding: 2rem;
+  border-radius: calc(var(--radius-card) * 1.4);
+  background: var(--bg);
+  box-shadow: 0 2rem 5rem rgb(0 0 0 / 45%);
+  animation: quick-slide var(--slow) var(--ease);
+}
+
+@keyframes quick-slide {
+  from {
+    transform: translateX(-2rem);
+  }
+}
+
+.quick__head {
+  display: flex;
+  justify-content: space-between;
+  gap: 1.5rem;
+  padding: 0 0.75rem 0.75rem;
+}
+
+.quick__title {
+  margin: 0.15rem 0;
+  font-size: 2.1rem;
+  font-weight: 900;
+  line-height: 1.1;
+}
+
+.quick__sub {
+  margin: 0;
+  color: var(--text-quiet);
+  font-size: 1.1rem;
+  font-weight: 600;
+}
+
+.quick__status {
+  display: grid;
+  justify-items: end;
+  align-content: start;
+  gap: 0.2rem;
+  font-size: 1.3rem;
+  white-space: nowrap;
+}
+
+.quick__battery {
+  color: var(--text-quiet);
+  font-weight: 700;
+}
+
+.quick__battery--low {
+  color: var(--warn);
+}
+
+.quick__row {
+  min-height: var(--touch-min);
+  display: flex;
+  align-items: center;
+  gap: 1.25rem;
+  padding: 0.75rem 1.5rem;
+  border-radius: var(--radius-card);
+  background: var(--surface);
+  font-weight: 800;
+  transition:
+    transform var(--fast) var(--ease),
+    box-shadow var(--fast) var(--ease);
+}
+
+.quick__row--on {
+  transform: scale(1.02);
+  box-shadow:
+    0 0 0 0.3rem var(--accent),
+    0 0.75rem 2rem color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+.quick__name {
+  flex: none;
+  min-width: 8.5rem;
+}
+
+.quick__row--end .quick__name {
+  flex: 1;
+}
+
+.quick__level {
+  flex: 1;
+  height: 0.8rem;
+  border-radius: var(--radius-pill);
+  background: var(--accent-soft);
+  overflow: hidden;
+}
+
+.quick__level i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width var(--fast) var(--ease);
+}
+
+.quick__level--off i {
+  background: var(--off);
+}
+
+.quick__value {
+  width: 4.5rem;
+  text-align: right;
+  color: var(--text-quiet);
+}
+
+.quick__row--end {
+  flex-wrap: wrap;
+}
+
+.quick__question {
+  flex: 1 0 100%;
+}
+
+.quick__answers {
+  display: flex;
+  gap: 1rem;
+  padding-bottom: 0.35rem;
+}
+
+.quick__answer {
+  padding: 0.5rem 1.1rem;
+  border-radius: var(--radius-pill);
+  background: var(--accent-soft);
+  white-space: nowrap;
+}
+
+.quick__answer--on {
+  background: var(--accent);
+  color: var(--surface);
+}
+
+.quick__answer--end.quick__answer--on {
+  background: var(--text);
+  color: var(--bg);
+}
+
+.quick__hints span {
+  white-space: nowrap;
+}
+
+.quick__hints {
+  display: flex;
+  align-items: center;
+  gap: 1.25rem;
+  min-height: 2rem;
+  padding: 0.75rem 0.75rem 0;
+  color: var(--text-quiet);
+  font-size: 1rem;
+  font-weight: 700;
+}
+
+.quick__hints kbd {
+  padding: 0.1rem 0.5rem;
+  border-radius: 0.5rem;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-weight: 900;
+}
+
+.quick__how {
+  margin-left: auto;
+  font-weight: 600;
+}
+
+.quick__note {
+  color: var(--text);
+}

@@ -37,9 +37,15 @@ pub fn run(files: &Files) -> i32 {
         }
     };
     let mut watch = Watch::new(&install, child);
+    // A request to close an earlier game is not for this one.
+    files.take_end(now());
     loop {
         files.set_playing(Some(&Playing { game_id: pending.game_id.clone(), title: pending.title.clone(), at: now() }));
         std::thread::sleep(POLL);
+        // The player chose "End game" on the Ally.
+        if files.take_end(now()) {
+            watch.end();
+        }
         if matches!(watch.poll(), Phase::Finished | Phase::NeverStarted) {
             break;
         }

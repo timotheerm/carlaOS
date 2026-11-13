@@ -207,6 +207,16 @@ impl Server {
         json(&serde_json::json!({ "sleeping": true }))
     }
 
+    /// Close the game that is being streamed, because the player chose to
+    /// on the Ally. The launcher that started it does the closing.
+    fn end(&self, now: i64) -> Answer {
+        let playing = self.files.playing(now).is_some();
+        if playing {
+            self.files.ask_end(now).map_err(|e| (500, e))?;
+        }
+        json(&serde_json::json!({ "ended": playing }))
+    }
+
     fn streamer(&self) -> Result<&dyn Streamer, String> {
         self.streamer.as_deref().ok_or_else(|| "The companion has not been given Sunshine's user name and password. Run its set-up again.".to_string())
     }
@@ -422,6 +432,7 @@ impl Server {
             ("POST", "/v1/stream/prepare") => self.prepare(req.body, now),
             ("POST", "/v1/stream/pair") => self.pair(req.body, req.from),
             ("POST", "/v1/power/sleep") => self.sleep(now),
+            ("POST", "/v1/stream/end") => self.end(now),
             ("POST", "/v1/update") => self.update(now),
             ("POST", "/v1/saves/find") => self.saves_find(req.body, now),
             ("POST", path) if path.starts_with("/v1/saves/") => self.saves_step(&path["/v1/saves/".len()..], req.body, now),
@@ -864,5 +875,23 @@ mod tests {
         assert_eq!(desk.files.clear_save_folder(&entry.key).unwrap().as_deref(), Some("Third Game"));
         assert!(link.saves("gog:30", "Third Game").unwrap().is_none());
         assert!(remote.read("slot1.sav").is_err());
+    }
+
+    #[test]
+    fn the_ally_can_end_the_game_that_runs_on_the_desktop() {
+        let desk = desk("end", false);
+        let link = linked(&desk);
+        // Nothing runs: nothing is asked of anyone.
+        assert!(!link.end_game().unwrap());
+        assert!(!desk.files.take_end(now_for_tests()));
+        desk.files.set_playing(Some(&crate::files::Playing { game_id: "steam:10".into(), title: "First Game".into(), at: now_for_tests() }));
+        assert!(link.end_game().unwrap());
+        assert!(desk.files.take_end(now_for_tests()), "the launcher is told");
+        assert!(!desk.files.take_end(now_for_tests()), "once");
+        // A request nobody picked up does not close the next game.
+        desk.files.ask_end(now_for_tests() - 60).unwrap();
+        assert!(!desk.files.take_end(now_for_tests()));
+        let stranger = Link { key: vec![7; 32], ..link.clone() };
+        assert_eq!(stranger.end_game().err(), Some(Error::Refused));
     }
 }

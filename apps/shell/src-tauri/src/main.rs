@@ -4,8 +4,10 @@
 mod admin;
 mod consoles;
 mod details;
+mod device;
 mod hosts;
 mod library;
+mod quick;
 mod savesync;
 mod updates;
 
@@ -27,7 +29,9 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let data_dir = app.path().app_local_data_dir()?;
-            app.manage(library::Library::open(&data_dir)?);
+            let library = library::Library::open(&data_dir)?;
+            quick::watch(app.handle().clone(), library.clone());
+            app.manage(library);
             app.manage(admin::Admin::new(data_dir));
             Ok(())
         })
@@ -68,6 +72,11 @@ fn main() {
             details::saves_pick_folder,
             details::saves_forget_folder,
             savesync::saves_sync,
+            quick::quick_state,
+            quick::quick_set_sound,
+            quick::quick_set_brightness,
+            quick::quick_close,
+            quick::quick_end_game,
             details::meta_search,
             details::meta_fetch,
             hosts::hosts_update,

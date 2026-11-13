@@ -184,6 +184,23 @@ impl Processes {
     }
 }
 
+impl Processes {
+    /// End every program whose file is inside `dir`. Says how many.
+    pub fn end_inside(&mut self, dir: &Path) -> usize {
+        // Looked at afresh, and with the same guard against a folder that is
+        // too general.
+        if !self.any_inside(dir) {
+            return 0;
+        }
+        let mut prefix = normal(dir);
+        if !prefix.ends_with('/') {
+            prefix.push('/');
+        }
+        let Some(system) = self.system.as_ref() else { return 0 };
+        system.processes().values().filter(|p| p.exe().is_some_and(|exe| normal(exe).starts_with(&prefix))).filter(|p| p.kill()).count()
+    }
+}
+
 /// One running game: the tracker plus what it watches.
 pub struct Watch {
     dir: PathBuf,
@@ -195,6 +212,16 @@ pub struct Watch {
 impl Watch {
     pub fn new(install: &Install, child: Option<Child>) -> Self {
         Self { dir: install.install_path.clone(), child, tracker: Tracker::new(Instant::now()), processes: Processes::default() }
+    }
+
+    /// Close the game because the player asked. It is not asked nicely:
+    /// whatever it had not saved is lost.
+    pub fn end(&mut self) {
+        if let Some(child) = self.child.as_mut() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        self.processes.end_inside(&self.dir);
     }
 
     pub fn poll(&mut self) -> Phase {
@@ -286,5 +313,26 @@ mod tests {
         std::thread::sleep(Duration::from_millis(600));
         assert_eq!(watch.poll(), Phase::Running); // first miss
         assert_eq!(watch.poll(), Phase::Finished);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_game_the_player_ends_is_gone_at_once() {
+        let install = Install {
+            game_id: "manual:x".into(),
+            title: "Sleep".into(),
+            source: "manual".into(),
+            source_id: "x".into(),
+            install_path: PathBuf::from("/nonexistent-carla-dir"),
+            exe: Some(PathBuf::from("/bin/sleep")),
+            args: "30".into(),
+        };
+        let mut watch = Watch::new(&install, start(&install, None).unwrap());
+        assert_eq!(watch.poll(), Phase::Running);
+        watch.end();
+        assert_eq!(watch.poll(), Phase::Running); // first miss
+        assert_eq!(watch.poll(), Phase::Finished);
+        // Nothing outside the game's own folder is ever ended.
+        assert_eq!(Processes::default().end_inside(Path::new("/")), 0);
     }
 }

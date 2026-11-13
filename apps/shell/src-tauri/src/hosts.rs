@@ -338,6 +338,15 @@ pub(crate) fn sleep_again(library: &Library, place: &str) {
     }
 }
 
+/// Close the game a desktop is streaming, because the player chose to.
+/// Quiet: the stream is stopped either way.
+pub(crate) fn end_game(library: &Library, place: &str) {
+    let Some(host) = library.store().hosts().ok().and_then(|hosts| hosts.into_iter().find(|h| h.id == place)) else { return };
+    if let Ok((link, ..)) = reach(&host) {
+        let _ = link.end_game();
+    }
+}
+
 /// A game's achievements from the first desktop that has it and answers,
 /// with that desktop's name.
 pub(crate) fn achievements(library: &Library, game_id: &str, places: &[String]) -> Option<(Vec<carla_core::library::achievements::Achievement>, String)> {
