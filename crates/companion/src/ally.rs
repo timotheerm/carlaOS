@@ -29,6 +29,7 @@ be allowed first: Settings, Desktops, this desktop, \"Administer this Ally\".
   carla-companion ally cleanup undo ID [ID ...]
   carla-companion ally update           install the newest CarlaOS on the Ally
   carla-companion ally restart          close CarlaOS on the Ally and start it again
+  carla-companion ally startup [on|off] whether CarlaOS opens when the Ally is turned on
 
 With more than one Ally linked, say which first: carla-companion ally --device ID games
 (see carla-companion devices).";
@@ -58,6 +59,8 @@ pub fn request(words: &[String]) -> Result<Request, String> {
         ["rescan"] => plain("rescan", Duration::from_secs(120)),
         ["restart"] => plain("restart", quick),
         ["update"] => plain("update", Duration::from_secs(900)),
+        ["startup"] => plain("startup", quick),
+        ["startup", way @ ("on" | "off")] => Ok(Request { op: "startup", args: json!({ "enabled": *way == "on" }), patience: quick }),
         ["cleanup"] => plain("cleanup_scan", slow),
         ["cleanup", way @ ("apply" | "undo"), ids @ ..] if !ids.is_empty() => {
             Ok(Request { op: if *way == "apply" { "cleanup_apply" } else { "cleanup_undo" }, args: json!({ "ids": ids }), patience: slow })
@@ -184,6 +187,11 @@ pub fn show(op: &str, out: &Value) -> String {
             None => "The Ally already has the newest CarlaOS.".to_string(),
         },
         "restart" => "CarlaOS on the Ally is starting again.".to_string(),
+        "startup" => if out["enabled"].as_bool() == Some(true) {
+            "The Ally opens CarlaOS by itself when it is turned on.".to_string()
+        } else {
+            "The Ally opens the Windows desktop when it is turned on.".to_string()
+        },
         _ => serde_json::to_string_pretty(out).unwrap_or_default(),
     }
 }
@@ -268,11 +276,11 @@ mod tests {
         assert_eq!(request(&words(r#"saves manual:1 "D:\Saves\One""#)).unwrap().args, json!({ "id": "manual:1", "folder": r"D:\Saves\One" }));
         let apply = request(&words("cleanup apply app.news app.weather")).unwrap();
         assert_eq!((apply.op, apply.args), ("cleanup_apply", json!({ "ids": ["app.news", "app.weather"] })));
-        for wrong in ["cleanup apply", "add OnlyAName", "add A B --colour pink", "remove", "format c:", "saves"] {
+        for wrong in ["cleanup apply", "add OnlyAName", "add A B --colour pink", "remove", "format c:", "saves", "startup maybe"] {
             assert!(request(&words(wrong)).is_err(), "{wrong:?} is not a request");
         }
         // Everything that can be typed is something the Ally knows.
-        for line in ["status", "games", "rescan", "add A B", "remove X", "saves X Y", "desktops", "cleanup", "cleanup apply X", "cleanup undo X", "update", "restart"] {
+        for line in ["status", "games", "rescan", "add A B", "remove X", "saves X Y", "desktops", "cleanup", "cleanup apply X", "cleanup undo X", "update", "restart", "startup", "startup on"] {
             assert!(carla_core::remote::OPS.contains(&request(&words(line)).unwrap().op), "{line}");
         }
     }

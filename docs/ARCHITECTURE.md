@@ -6,8 +6,9 @@ Status: approved 11 Nov 2026. M0 to M2 are merged; the local library is describe
 
 Two programs share one Rust core.
 
-- **Shell** (`apps/shell`) runs on the Ally. It is registered as the home app of
-  Windows' full screen experience, so the device boots into it.
+- **Shell** (`apps/shell`) runs on the Ally. It starts with Windows, so the device
+  boots into it (see `STARTUP.md`). Becoming the home app of Windows' full
+  screen experience is a later step that needs different packaging.
 - **Companion** (`crates/companion`) runs on each desktop. It reports status,
   hardware and installed games, prepares a game for streaming, and manages
   Sunshine.

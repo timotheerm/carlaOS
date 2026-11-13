@@ -205,6 +205,7 @@ export function Settings({
   onManage,
   onDesktops,
   onUpdates,
+  onStartup,
   hostCount,
   onRefresh,
   refreshing,
@@ -215,6 +216,7 @@ export function Settings({
   onManage: () => void;
   onDesktops: () => void;
   onUpdates: () => void;
+  onStartup: () => void;
   hostCount: number;
   onRefresh: () => void;
   refreshing: boolean;
@@ -250,6 +252,10 @@ export function Settings({
       <button className="setting" data-focus data-fid="set:updates" onClick={onUpdates}>
         <span>Updates</span>
         <span className="setting__value">{version ? `CarlaOS ${version} · ` : ""}Administrator only</span>
+      </button>
+      <button className="setting" data-focus data-fid="set:startup" onClick={onStartup}>
+        <span>Starting up</span>
+        <span className="setting__value">Open CarlaOS when the Ally turns on · Administrator only</span>
       </button>
       <button className="setting" data-focus data-fid="set:exit" onClick={onExit}>
         <span>Exit to Windows</span>

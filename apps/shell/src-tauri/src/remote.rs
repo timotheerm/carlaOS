@@ -85,6 +85,12 @@ fn run(app: &AppHandle, library: &Library, command: &Command) -> (Result<Value, 
             Ok(None) => plain(Ok(json!({ "version": null }))),
             Err(e) => plain(Err(e)),
         },
+        "startup" => plain((|| {
+            if let Some(enabled) = args["enabled"].as_bool() {
+                carla_core::boot::set(&app.state::<crate::boot::Boot>().0, enabled)?;
+            }
+            Ok(json!({ "enabled": carla_core::boot::enabled() }))
+        })()),
         "restart" => match not_while_playing(library) {
             Ok(()) => (Ok(json!({ "restarting": true })), After::Restart),
             Err(e) => plain(Err(e)),

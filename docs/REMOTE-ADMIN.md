@@ -26,6 +26,7 @@ carla-companion ally cleanup apply ID [ID ...]
 carla-companion ally cleanup undo ID [ID ...]
 carla-companion ally update           install the newest CarlaOS on the Ally
 carla-companion ally restart          close CarlaOS on the Ally and start it again
+carla-companion ally startup [on|off] whether CarlaOS opens when the Ally is turned on
 ```
 
 With more than one Ally linked, name it first:
