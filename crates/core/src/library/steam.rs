@@ -88,9 +88,49 @@ fn art(root: &Path, appid: &str, name: &str) -> Option<PathBuf> {
         .find(|p| p.is_file())
 }
 
-/// Every fully installed game in every library folder of this Steam install.
-pub fn scan(root: &Path) -> Vec<Scanned> {
-    let mut found: Vec<Scanned> = Vec::new();
+/// `StateFlags` bits that mean Steam still has something to fetch.
+pub(crate) const UPDATE_REQUIRED: u32 = 2;
+pub(crate) const UPDATE_RUNNING: u32 = 256;
+pub(crate) const UPDATE_PAUSED: u32 = 512;
+pub(crate) const UPDATE_STARTED: u32 = 1024;
+
+/// One `appmanifest_<id>.acf`: an app Steam has installed, is installing, or
+/// has been told to install.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Manifest {
+    pub appid: String,
+    pub name: String,
+    pub installdir: String,
+    pub flags: u32,
+    pub bytes_to_download: u64,
+    pub bytes_downloaded: u64,
+    pub bytes_to_stage: u64,
+    pub size_on_disk: u64,
+    /// Unix seconds it was last brought up to date; 0 before the first time.
+    pub last_updated: i64,
+    /// The `steamapps` folder it is in.
+    pub apps: PathBuf,
+}
+
+impl Manifest {
+    /// Not a game: Steam's own tools and runtimes.
+    pub fn tool(&self) -> bool {
+        NOT_GAMES.contains(&self.appid.as_str()) || NOT_GAME_NAMES.iter().any(|n| self.name.starts_with(n))
+    }
+
+    pub fn installed(&self) -> bool {
+        self.flags & FULLY_INSTALLED != 0
+    }
+}
+
+/// The library folders of this Steam install, its own first.
+pub fn folders(root: &Path) -> Vec<PathBuf> {
+    library_folders(root)
+}
+
+/// Every manifest in every library folder, each app once.
+pub fn manifests(root: &Path) -> Vec<Manifest> {
+    let mut found: Vec<Manifest> = Vec::new();
     for folder in library_folders(root) {
         let apps = folder.join("steamapps");
         let Ok(entries) = fs::read_dir(&apps) else { continue };
@@ -101,28 +141,47 @@ pub fn scan(root: &Path) -> Vec<Scanned> {
             }
             let Some(manifest) = fs::read_to_string(entry.path()).ok().and_then(|t| vdf::parse(&t)) else { continue };
             let Some(state) = manifest.get("AppState") else { continue };
-            let (Some(appid), Some(title), Some(dir)) = (state.text("appid"), state.text("name"), state.text("installdir"))
-            else {
-                continue;
-            };
-            let flags: u32 = state.text("StateFlags").and_then(|f| f.parse().ok()).unwrap_or(0);
-            if flags & FULLY_INSTALLED == 0
-                || NOT_GAMES.contains(&appid)
-                || NOT_GAME_NAMES.iter().any(|n| title.starts_with(n))
-                || found.iter().any(|s| s.source_id == appid)
-            {
+            let Some(appid) = state.text("appid") else { continue };
+            if found.iter().any(|m| m.appid == appid) {
                 continue;
             }
-            found.push(Scanned {
-                source_id: appid.to_string(),
-                title: title.to_string(),
-                install_path: apps.join("common").join(dir),
-                cover: art(root, appid, "library_600x900.jpg"),
-                hero: art(root, appid, "library_hero.jpg"),
-                ..Scanned::default()
+            let number = |key: &str| state.text(key).and_then(|n| n.parse::<u64>().ok()).unwrap_or(0);
+            found.push(Manifest {
+                appid: appid.to_string(),
+                name: state.text("name").unwrap_or_default().to_string(),
+                installdir: state.text("installdir").unwrap_or_default().to_string(),
+                flags: number("StateFlags") as u32,
+                bytes_to_download: number("BytesToDownload"),
+                bytes_downloaded: number("BytesDownloaded"),
+                bytes_to_stage: number("BytesToStage"),
+                size_on_disk: number("SizeOnDisk"),
+                last_updated: number("LastUpdated") as i64,
+                apps: apps.clone(),
             });
         }
     }
+    found
+}
+
+/// A cover Steam has already fetched for an app, installed or not.
+pub fn cover(root: &Path, appid: &str) -> Option<PathBuf> {
+    art(root, appid, "library_600x900.jpg")
+}
+
+/// Every fully installed game in every library folder of this Steam install.
+pub fn scan(root: &Path) -> Vec<Scanned> {
+    let mut found: Vec<Scanned> = manifests(root)
+        .into_iter()
+        .filter(|m| m.installed() && !m.tool() && !m.name.is_empty() && !m.installdir.is_empty())
+        .map(|m| Scanned {
+            install_path: m.apps.join("common").join(&m.installdir),
+            cover: art(root, &m.appid, "library_600x900.jpg"),
+            hero: art(root, &m.appid, "library_hero.jpg"),
+            source_id: m.appid,
+            title: m.name,
+            ..Scanned::default()
+        })
+        .collect();
     found.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase()));
     found
 }

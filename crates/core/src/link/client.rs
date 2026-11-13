@@ -6,7 +6,8 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 
 use super::enrol::{valid_code, Exchange, Side};
-use super::{random_hex, sign, EnrolDone, EnrolFinish, EnrolOffer, EnrolStart, Hello, Pair, Prepare, Problem, RemoteGame, SaveFile, SavesFind, SavesFound, Status, Updating};
+use super::{random_hex, sign, EnrolDone, EnrolFinish, EnrolOffer, EnrolStart, Hello, Install, Installing, Pair, Prepare, Problem, RemoteGame, RemoteLibrary, SaveFile, SavesFind, SavesFound, Status, Updating};
+use crate::library::downloads::Download;
 use crate::library::sync::{self, Manifest};
 use crate::API_VERSION;
 
@@ -178,6 +179,22 @@ impl Link {
 
     pub fn games(&self) -> Result<Vec<RemoteGame>> {
         parse(&self.ask("GET", "/v1/games", b"", SLOW)?)
+    }
+
+    /// The games of the desktop's library that are not installed there.
+    pub fn library(&self) -> Result<RemoteLibrary> {
+        parse(&self.ask("GET", "/v1/library", b"", SLOW)?)
+    }
+
+    /// Ask the desktop to install a game of its library. Answering can take
+    /// a while: the store there may have to start again first.
+    pub fn install(&self, game_id: &str) -> Result<Installing> {
+        self.post("/v1/install", &Install { game_id: game_id.to_string() }, SLOW * 2)
+    }
+
+    /// What the desktop's stores are fetching now.
+    pub fn downloads(&self) -> Result<Vec<Download>> {
+        parse(&self.ask("GET", "/v1/downloads", b"", QUICK * 2)?)
     }
 
     /// The cover picture of one game, as the file's bytes.

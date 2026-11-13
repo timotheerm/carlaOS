@@ -1,10 +1,17 @@
 import { useLayoutEffect, useState } from "react";
 import { focusFirst } from "../nav/focus";
-import type { CloudService, Game, Host } from "../data/types";
+import type { CloudService, Download, Game, Host } from "../data/types";
 import { Cover, Empty, GameCard, Grid, HostCard, Row, playtime } from "../ui/parts";
 
 export type Ctx = {
+  /** Games that can be played now, here or from a desktop. */
   games: Game[];
+  /** Those, and the games of the library that are not installed anywhere. */
+  library: Game[];
+  /** What the stores are fetching, here and on the desktops. */
+  downloads: Download[];
+  /** Ask the store to install a game in one place. */
+  install: (gameId: string, place: string) => void;
   hosts: Host[];
   favourites: Set<string>;
   openGame: (id: string) => void;
@@ -23,7 +30,7 @@ const countOn = (games: Game[], place: string) => games.filter((g) => g.places.i
 
 function cards(list: Game[], ctx: Ctx) {
   return list.map((g) => (
-    <GameCard key={g.id} game={g} favourite={ctx.favourites.has(g.id)} onOpen={ctx.openGame} />
+    <GameCard key={g.id} game={g} favourite={ctx.favourites.has(g.id)} onOpen={ctx.openGame} download={ctx.downloads.find((d) => d.gameId === g.id)} />
   ));
 }
 
@@ -33,8 +40,17 @@ export function Home(ctx: Ctx) {
   const favourites = ctx.games.filter((g) => ctx.favourites.has(g.id));
   const added = [...ctx.games].sort((a, b) => b.added.localeCompare(a.added)).slice(0, 8);
 
-  if (ctx.games.length === 0) {
-    return <Empty>No games yet. Install some, or add them under Settings, then Manage games.</Empty>;
+  // One card per game, whichever machine is fetching it.
+  const fetched = ctx.library.filter((g) => ctx.downloads.some((d) => d.gameId === g.id));
+
+  if (ctx.games.length === 0 && fetched.length === 0) {
+    return (
+      <Empty>
+        {ctx.library.length
+          ? "Nothing is installed yet. Your library is under My Games, then Not installed."
+          : "No games yet. Install some, or add them under Settings, then Manage games."}
+      </Empty>
+    );
   }
 
   return (
@@ -65,9 +81,10 @@ export function Home(ctx: Ctx) {
           ))}
         </Row>
       )}
+      {fetched.length > 0 && <Row title="Installing now">{cards(fetched, ctx)}</Row>}
       {recent.length > 0 && <Row title="Recently played">{cards(recent.slice(0, 8), ctx)}</Row>}
       {favourites.length > 0 && <Row title="Favourites">{cards(favourites, ctx)}</Row>}
-      <Row title="Recently added">{cards(added, ctx)}</Row>
+      {added.length > 0 && <Row title="Recently added">{cards(added, ctx)}</Row>}
     </>
   );
 }
@@ -77,11 +94,13 @@ const FILTERS = [
   { id: "local", label: "On this Ally" },
   { id: "stream", label: "Streamed" },
   { id: "fav", label: "Favourites" },
+  { id: "absent", label: "Not installed" },
 ] as const;
 
 export function Games(ctx: Ctx) {
   const [filter, setFilter] = useState<(typeof FILTERS)[number]["id"]>("all");
-  const list = ctx.games
+  const absent = ctx.library.filter((g) => g.places.length === 0);
+  const list = (filter === "absent" ? absent : ctx.games)
     .filter((g) =>
       filter === "local"
         ? g.places.includes("local")
@@ -106,10 +125,15 @@ export function Games(ctx: Ctx) {
             onClick={() => setFilter(f.id)}
           >
             {f.label}
+            {f.id === "absent" && absent.length > 0 ? ` · ${absent.length}` : ""}
           </button>
         ))}
       </div>
-      {list.length ? <Grid>{cards(list, ctx)}</Grid> : <Empty>Nothing here yet.</Empty>}
+      {list.length ? (
+        <Grid>{cards(list, ctx)}</Grid>
+      ) : (
+        <Empty>{filter === "absent" ? "Every game of your Steam library is installed, or Steam has not been opened here yet." : "Nothing here yet."}</Empty>
+      )}
     </>
   );
 }

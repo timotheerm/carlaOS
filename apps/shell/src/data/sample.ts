@@ -36,7 +36,8 @@ const g = (
   added: string,
   description: string,
   origin?: string,
-): Game => ({ id, title, platform, kind, hue, places, playtimeMinutes, lastPlayed, added, description, favourite: false, origin });
+  installable: string[] = [],
+): Game => ({ id, title, platform, kind, hue, places, installable, playtimeMinutes, lastPlayed, added, description, favourite: false, origin });
 
 export const games: Game[] = [
   g("neon-harbor", "Neon Harbor", "Steam", "game", 330, ["local", "home"], 1260, "2026-11-10", "2026-09-02",
@@ -45,12 +46,20 @@ export const games: Game[] = [
     "Bright, quick kart racing with tracks that bloom as you drive."),
   g("starfall-odyssey", "Starfall Odyssey", "Epic", "game", 265, ["home", "second"], 3310, "2026-11-08", "2026-06-20",
     "An open-galaxy role-playing game about a crew chasing a falling star."),
+  g("glass-garden", "Glass Garden", "Steam", "game", 170, [], 0, undefined, "2026-11-12",
+    "Grow a greenhouse on a comet and keep it alive through the long dark.", undefined, ["local", "home"]),
+  g("thunder-lane", "Thunder Lane", "Steam", "game", 225, [], 0, undefined, "2026-11-12",
+    "Arcade bowling in a storm, with lanes that tilt in the wind.", undefined, ["local", "home"]),
+  g("sugar-rush-saga", "Sugar Rush Saga", "Steam", "game", 320, [], 0, undefined, "2026-11-12",
+    "A candy-coloured platformer with a hundred tiny levels.", undefined, ["local"]),
+  g("lantern-keepers", "Lantern Keepers", "Steam", "game", 50, [], 0, undefined, "2026-11-12",
+    "A co-operative lighthouse mystery for two.", undefined, ["local", "home", "second"]),
   g("hollow-tides", "Hollow Tides", "GOG", "game", 195, ["home"], 95, "2026-11-02", "2026-11-01",
     "Sail between drowned islands and piece together who sank them."),
   g("iron-meadow", "Iron Meadow", "Xbox", "game", 120, ["local", "home"], 610, "2026-10-28", "2026-08-15",
     "A gentle farming game on the back of a sleeping machine."),
   g("ashen-crown", "Ashen Crown", "Steam", "game", 15, ["home", "second"], 2240, "2026-10-20", "2026-03-04",
-    "A demanding action game through the ruins of a burnt kingdom."),
+    "A demanding action game through the ruins of a burnt kingdom.", undefined, ["local"]),
   g("paper-lanterns", "Paper Lanterns", "Standalone", "game", 40, ["local"], 180, "2026-10-14", "2026-10-13",
     "A short hand-drawn puzzle game about lighting the way home."),
   g("velvet-circuit", "Velvet Circuit", "Epic", "game", 300, ["home"], 0, undefined, "2026-11-10",

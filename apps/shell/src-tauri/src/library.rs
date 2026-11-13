@@ -108,7 +108,12 @@ impl Library {
             store.sync(LOCAL, source, games, now())?;
         }
         store.sync(LOCAL, "emu", &emulated, now())?;
-        store.list()
+        drop(store);
+        // The rest of the Steam library: what could be installed here.
+        let root = locked(&self.0.steam_root).clone();
+        crate::installs::sync_local(self, root.as_deref());
+        crate::installs::fetch_covers(app, self);
+        self.store().list_all()
     }
 }
 
@@ -119,7 +124,7 @@ pub fn library_scan(app: AppHandle, library: State<'_, Library>) -> Result<Vec<G
 
 #[tauri::command]
 pub fn library_list(library: State<'_, Library>) -> Result<Vec<GameView>, String> {
-    library.store().list()
+    library.store().list_all()
 }
 
 #[tauri::command]

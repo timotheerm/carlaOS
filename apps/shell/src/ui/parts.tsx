@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import type { Game, Host, HostState } from "../data/types";
+import type { Download, Game, Host, HostState } from "../data/types";
 import { Heart, OnDevice, Source, Streamed } from "./icons";
 import { banner } from "./platform";
 
@@ -59,6 +59,33 @@ function Band({ game }: { game: Game }) {
   );
 }
 
+/** How far a download is, in a few words. */
+export function fetching(d: Download): string {
+  const part = d.total ? Math.min(100, Math.floor((d.done / d.total) * 100)) : 0;
+  if (d.phase === "finishing") return "Almost ready";
+  if (d.phase === "paused") return `Paused at ${part} %`;
+  if (d.phase === "queued" || !d.total) return "Waiting for Steam";
+  return `${part} %`;
+}
+
+/** The pink bar of a download. */
+export function Progress({ download }: { download: Download }) {
+  const part = download.phase === "finishing" ? 100 : download.total ? Math.min(100, (download.done / download.total) * 100) : 0;
+  const waiting = download.phase === "queued" || !download.total;
+  return (
+    <span
+      className={`progress progress--${waiting ? "waiting" : download.phase}`}
+      role="progressbar"
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-valuenow={Math.round(part)}
+      aria-label={`${download.title}: ${fetching(download)}`}
+    >
+      <i style={{ width: `${waiting ? 100 : Math.max(part, 2)}%` }} />
+    </span>
+  );
+}
+
 // A game's picture. Without real artwork: a soft gradient from the game's
 // hue with its name on it.
 export function Cover({ game, wide = false, band = true }: { game: Game; wide?: boolean; band?: boolean }) {
@@ -94,6 +121,11 @@ export function Badges({ game, hosts }: { game: Game; hosts?: Host[] }) {
         <Source kind={game.kind} />
         {game.kind === "port" && game.platform === "Standalone" ? "Port" : game.platform}
       </span>
+      {game.places.length === 0 && (
+        <span className="badge badge--absent" title="In the library, not installed yet.">
+          Not installed
+        </span>
+      )}
       {local && (
         <span className="badge badge--offline" title="Installed on this Ally. Plays without a desktop.">
           <OnDevice />
@@ -114,6 +146,7 @@ export function Badges({ game, hosts }: { game: Game; hosts?: Host[] }) {
 export function availability(game: Game): string {
   const local = game.places.includes("local");
   const remote = game.places.some((p) => p !== "local");
+  if (!local && !remote) return "not installed yet";
   return local && remote ? "plays offline, can also stream" : local ? "plays offline" : "streams from a desktop";
 }
 
@@ -121,19 +154,23 @@ export function GameCard({
   game,
   favourite,
   onOpen,
+  download,
 }: {
   game: Game;
   favourite: boolean;
   onOpen: (id: string) => void;
+  /** What its store is fetching for it, if anything. */
+  download?: Download;
 }) {
+  const absent = game.places.length === 0;
   return (
     <button
-      className="card"
+      className={absent ? "card card--absent" : "card"}
       data-focus
       data-fid={`game:${game.id}`}
       data-game={game.id}
       onClick={() => onOpen(game.id)}
-      aria-label={`${game.title}, from ${game.platform}, ${availability(game)}${favourite ? ", favourite" : ""}`}
+      aria-label={`${game.title}, from ${game.platform}, ${download ? `installing, ${fetching(download)}` : availability(game)}${favourite ? ", favourite" : ""}`}
     >
       <Cover game={game} />
       <Badges game={game} />
@@ -142,7 +179,10 @@ export function GameCard({
           <Heart />
         </span>
       )}
-      <span className="card__meta">{playtime(game.playtimeMinutes)}</span>
+      {download && <Progress download={download} />}
+      <span className="card__meta">
+        {download ? `${download.update ? "Updating" : "Installing"} · ${fetching(download)}` : absent ? "Ready to install" : playtime(game.playtimeMinutes)}
+      </span>
     </button>
   );
 }
