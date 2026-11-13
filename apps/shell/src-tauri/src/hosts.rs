@@ -11,7 +11,9 @@ use std::time::{Duration, Instant};
 use carla_core::library::{HostRow, Scanned};
 use carla_core::link::client::{self, Error, Link};
 use carla_core::link::discover::{self, Found};
-use carla_core::link::moonlight::{self, Picture};
+use carla_core::library::Streamed;
+use carla_core::link::moonlight;
+use carla_core::link::quality::{self, Choice, Setting};
 use carla_core::link::{wake, State as HostState, Status, Updating, PORT};
 use carla_core::secret;
 use serde::Serialize;
@@ -76,6 +78,66 @@ fn view(host: &HostRow) -> HostView {
         can_wake: !host.macs.is_empty(),
         version: None,
     }
+}
+
+/// The picture setting of a desktop and what its last stream got.
+#[derive(Debug, Clone, Serialize)]
+pub struct PictureView {
+    /// "auto", "auto120" or a level's name.
+    setting: &'static str,
+    /// Every setting, in the order the interface steps through them.
+    settings: Vec<&'static str>,
+    last: Option<LastPicture>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct LastPicture {
+    level: &'static str,
+    automatic: bool,
+    height: u32,
+    fps: u32,
+    mbps: u32,
+    latency_ms: Option<u32>,
+    link_kbps: Option<u32>,
+    away: bool,
+    at: i64,
+}
+
+fn picture_view(library: &Library, id: &str) -> Result<PictureView, String> {
+    let (setting, streamed) = library.store().host_quality(id)?;
+    Ok(PictureView {
+        setting: setting.name(),
+        settings: Setting::all().into_iter().map(Setting::name).collect(),
+        last: streamed.map(|Streamed { choice, at }| {
+            let p = choice.picture();
+            LastPicture {
+                level: choice.level.name(),
+                automatic: choice.automatic,
+                height: p.height,
+                fps: p.fps,
+                mbps: p.kbps / 1000,
+                latency_ms: choice.measure.map(|m| m.latency_ms),
+                link_kbps: choice.measure.and_then(|m| m.kbps),
+                away: choice.measure.is_some_and(|m| m.away),
+                at,
+            }
+        }),
+    })
+}
+
+/// A desktop's picture setting and what its last stream got.
+#[tauri::command]
+pub fn hosts_picture(library: State<'_, Library>, id: String) -> Result<PictureView, String> {
+    picture_view(&library, &id)
+}
+
+/// Choose the picture of streams from a desktop.
+#[tauri::command]
+pub fn hosts_set_picture(admin: State<'_, Admin>, library: State<'_, Library>, id: String, setting: String) -> Result<PictureView, String> {
+    admin.require()?;
+    let setting = Setting::parse(&setting).ok_or("That is not a picture setting.")?;
+    library.store().set_host_quality(&id, setting)?;
+    picture_view(&library, &id)
 }
 
 pub(crate) fn this_device() -> String {
@@ -415,6 +477,20 @@ fn wake_and_wait(host: &HostRow, stopped: &dyn Fn() -> bool) -> Result<(Link, St
     Err(format!("{} did not wake up. It may be switched off at the wall, or waking is not turned on for it.", host.name))
 }
 
+/// Decide the picture of the stream that is about to start, measuring the
+/// connection unless the administrator fixed the picture, and note it.
+fn picture_for(library: &Library, host: &HostRow, link: &Link) -> Choice {
+    let setting = library.store().host_quality(&host.id).map(|(setting, _)| setting).unwrap_or_default();
+    let away = wake::is_tailscale(&link.address);
+    let measure = match setting {
+        Setting::Fixed(_) => None,
+        Setting::Auto { .. } => quality::measure(&|bytes| link.probe(bytes).ok(), away),
+    };
+    let choice = quality::choose(setting, measure, away);
+    let _ = library.store().set_host_streamed(&host.id, &Streamed { choice, at: now() });
+    choice
+}
+
 /// Tell the desktop which game is wanted and start Moonlight on it. A desktop
 /// that does not answer is woken first; `waking` is called when that starts.
 /// Also says whether the desktop had to be woken.
@@ -448,6 +524,7 @@ pub(crate) fn start_stream(library: &Library, game_id: &str, place: &str, waking
             Err(e) => return Err(e.to_string()),
         }
     }
-    let moonlight = moonlight::stream(&exe, &link.address, Picture::default()).map_err(|e| format!("Moonlight could not be started: {e}."))?;
+    let choice = picture_for(library, &host, &link);
+    let moonlight = moonlight::stream(&exe, &link.address, choice.picture()).map_err(|e| format!("Moonlight could not be started: {e}."))?;
     Ok((moonlight, woke))
 }

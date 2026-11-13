@@ -17,6 +17,7 @@ pub mod client;
 pub mod discover;
 pub mod enrol;
 pub mod moonlight;
+pub mod quality;
 pub mod sign;
 pub mod wake;
 

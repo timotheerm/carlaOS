@@ -13,6 +13,8 @@ use crate::API_VERSION;
 /// Enough for a status question on Wi-Fi; a desktop that is slower is off.
 pub const QUICK: Duration = Duration::from_secs(3);
 const SLOW: Duration = Duration::from_secs(40);
+/// A measurement that takes longer than this has its answer: too slow.
+const PROBE: Duration = Duration::from_secs(4);
 /// One save file is the largest thing a desktop sends.
 const LARGEST_REPLY: u64 = sync::LARGEST_FILE + 1024 * 1024;
 
@@ -187,6 +189,17 @@ impl Link {
     /// game has no achievements or has never been run there.
     pub fn achievements(&self, game_id: &str) -> Result<Vec<crate::library::achievements::Achievement>> {
         parse(&self.ask("GET", &format!("/v1/achievements/{game_id}"), b"", QUICK)?)
+    }
+
+    /// Have the desktop send `bytes` of nothing in particular and say how
+    /// long the whole exchange took. For measuring the connection.
+    pub fn probe(&self, bytes: usize) -> Result<Duration> {
+        let asked = std::time::Instant::now();
+        let got = self.ask("GET", &format!("/v1/probe/{bytes}"), b"", PROBE)?;
+        if got.len() != bytes {
+            return Err(Error::Host("The desktop sent a different amount than was asked for.".to_string()));
+        }
+        Ok(asked.elapsed())
     }
 
     /// Ask the desktop to go to sleep. It refuses while a game runs there.

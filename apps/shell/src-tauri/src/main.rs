@@ -87,6 +87,8 @@ fn main() {
             boot::boot_set,
             remote::hosts_admin,
             remote::hosts_set_admin,
+            hosts::hosts_picture,
+            hosts::hosts_set_picture,
             quick::quick_state,
             quick::quick_set_sound,
             quick::quick_set_brightness,

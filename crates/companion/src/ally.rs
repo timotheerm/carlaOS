@@ -7,6 +7,7 @@
 use std::time::{Duration, Instant};
 
 use carla_core::link;
+use carla_core::link::quality::{Choice, Setting};
 use carla_core::remote::Command;
 use serde_json::{json, Value};
 
@@ -30,6 +31,8 @@ be allowed first: Settings, Desktops, this desktop, \"Administer this Ally\".
   carla-companion ally update           install the newest CarlaOS on the Ally
   carla-companion ally restart          close CarlaOS on the Ally and start it again
   carla-companion ally startup [on|off] whether CarlaOS opens when the Ally is turned on
+  carla-companion ally picture DESKTOP [auto|auto120|sharp|balanced|light|lightest|smooth]
+                                        the picture of streams from a desktop to the Ally
 
 With more than one Ally linked, say which first: carla-companion ally --device ID games
 (see carla-companion devices).";
@@ -61,6 +64,8 @@ pub fn request(words: &[String]) -> Result<Request, String> {
         ["update"] => plain("update", Duration::from_secs(900)),
         ["startup"] => plain("startup", quick),
         ["startup", way @ ("on" | "off")] => Ok(Request { op: "startup", args: json!({ "enabled": *way == "on" }), patience: quick }),
+        ["picture", desktop] => Ok(Request { op: "picture", args: json!({ "desktop": desktop }), patience: quick }),
+        ["picture", desktop, picture] if Setting::parse(picture).is_some() => Ok(Request { op: "picture", args: json!({ "desktop": desktop, "picture": picture }), patience: quick }),
         ["cleanup"] => plain("cleanup_scan", slow),
         ["cleanup", way @ ("apply" | "undo"), ids @ ..] if !ids.is_empty() => {
             Ok(Request { op: if *way == "apply" { "cleanup_apply" } else { "cleanup_undo" }, args: json!({ "ids": ids }), patience: slow })
@@ -152,9 +157,19 @@ pub fn show(op: &str, out: &Value) -> String {
                 .as_array()
                 .into_iter()
                 .flatten()
-                .map(|d| format!("{}  {}  {}{}", word(&d["id"]), word(&d["name"]), word(&d["address"]), if d["may_administer"].as_bool() == Some(true) { "  (may administer the Ally)" } else { "" }))
+                .map(|d| format!("{}  {}  {}  picture: {}{}", word(&d["id"]), word(&d["name"]), word(&d["address"]), word(&d["picture"]), if d["may_administer"].as_bool() == Some(true) { "  (may administer the Ally)" } else { "" }))
                 .collect();
             lines.join("\n")
+        }
+        "picture" => {
+            let setting = out["picture"].as_str().and_then(Setting::parse).unwrap_or_default();
+            let mut text = format!("Streams from {} to the Ally: {}.", word(&out["name"]), setting.words());
+            if let Ok(choice) = serde_json::from_value::<Choice>(out["streamed"]["choice"].clone()) {
+                text.push_str(&format!("\nThe last one got {}", choice.level.words()));
+                let measured = choice.measured();
+                text.push_str(&if measured.is_empty() { ".".to_string() } else { format!(" (measured {measured}).") });
+            }
+            text
         }
         "rescan" => format!("The Ally looked again: {} games.", out["games"]),
         "add_game" => format!("{} was added to the Ally. Its id is {}.", word(&out["title"]), word(&out["id"])),
@@ -276,11 +291,11 @@ mod tests {
         assert_eq!(request(&words(r#"saves manual:1 "D:\Saves\One""#)).unwrap().args, json!({ "id": "manual:1", "folder": r"D:\Saves\One" }));
         let apply = request(&words("cleanup apply app.news app.weather")).unwrap();
         assert_eq!((apply.op, apply.args), ("cleanup_apply", json!({ "ids": ["app.news", "app.weather"] })));
-        for wrong in ["cleanup apply", "add OnlyAName", "add A B --colour pink", "remove", "format c:", "saves", "startup maybe"] {
+        for wrong in ["cleanup apply", "add OnlyAName", "add A B --colour pink", "remove", "format c:", "saves", "startup maybe", "picture", "picture HOME ultra"] {
             assert!(request(&words(wrong)).is_err(), "{wrong:?} is not a request");
         }
         // Everything that can be typed is something the Ally knows.
-        for line in ["status", "games", "rescan", "add A B", "remove X", "saves X Y", "desktops", "cleanup", "cleanup apply X", "cleanup undo X", "update", "restart", "startup", "startup on"] {
+        for line in ["status", "games", "rescan", "add A B", "remove X", "saves X Y", "desktops", "cleanup", "cleanup apply X", "cleanup undo X", "update", "restart", "startup", "startup on", "picture HOME", "picture HOME auto120", "picture HOME light"] {
             assert!(carla_core::remote::OPS.contains(&request(&words(line)).unwrap().op), "{line}");
         }
     }

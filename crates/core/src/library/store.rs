@@ -5,7 +5,8 @@ use std::path::{Path, PathBuf};
 use rusqlite::{params, Connection, OptionalExtension};
 
 use super::emulation::Console;
-use super::{GameView, HostRow, Install, Kind, ManualGame, Scanned, Synced, LOCAL};
+use super::{GameView, HostRow, Install, Kind, ManualGame, Scanned, Streamed, Synced, LOCAL};
+use crate::link::quality::Setting;
 
 type Result<T> = std::result::Result<T, String>;
 
@@ -120,7 +121,7 @@ impl Store {
         db.execute_batch(SCHEMA).map_err(err)?;
         // Columns added after the first release. SQLite has no "add column if
         // missing", so look first.
-        let added = [("hosts", "addresses", "TEXT NOT NULL DEFAULT '[]'"), ("hosts", "macs", "TEXT NOT NULL DEFAULT '[]'"), ("games", "save_path", "TEXT"), ("hosts", "admin", "INTEGER NOT NULL DEFAULT 0")];
+        let added = [("hosts", "addresses", "TEXT NOT NULL DEFAULT '[]'"), ("hosts", "macs", "TEXT NOT NULL DEFAULT '[]'"), ("games", "save_path", "TEXT"), ("hosts", "admin", "INTEGER NOT NULL DEFAULT 0"), ("hosts", "quality", "TEXT NOT NULL DEFAULT 'auto'"), ("hosts", "streamed", "TEXT")];
         for (table, column, kind) in added {
             let has: bool = db
                 .query_row("SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name = ?2", params![table, column], |r| r.get::<_, i64>(0))
@@ -386,6 +387,26 @@ impl Store {
         Ok(())
     }
 
+    /// The picture the administrator chose for streams from this desktop,
+    /// and what the last stream from it got.
+    pub fn host_quality(&self, id: &str) -> Result<(Setting, Option<Streamed>)> {
+        let row: Option<(String, Option<String>)> =
+            self.db.query_row("SELECT quality, streamed FROM hosts WHERE id = ?1", params![id], |r| Ok((r.get(0)?, r.get(1)?))).optional().map_err(err)?;
+        let (setting, streamed) = row.unwrap_or_default();
+        Ok((Setting::parse(&setting).unwrap_or_default(), streamed.and_then(|s| serde_json::from_str(&s).ok())))
+    }
+
+    pub fn set_host_quality(&mut self, id: &str, setting: Setting) -> Result<()> {
+        self.db.execute("UPDATE hosts SET quality = ?2 WHERE id = ?1", params![id, setting.name()]).map_err(err)?;
+        Ok(())
+    }
+
+    pub fn set_host_streamed(&mut self, id: &str, streamed: &Streamed) -> Result<()> {
+        let json = serde_json::to_string(streamed).expect("serialisable");
+        self.db.execute("UPDATE hosts SET streamed = ?2 WHERE id = ?1", params![id, json]).map_err(err)?;
+        Ok(())
+    }
+
     /// Note that a desktop answered, at which address, and what it said about
     /// itself. `host` carries the new values; its key is left alone.
     pub fn host_seen(&mut self, host: &HostRow, now: i64) -> Result<()> {
@@ -517,6 +538,7 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::link::quality::{self, Level};
 
     fn scanned(id: &str, title: &str) -> Scanned {
         Scanned { source_id: id.into(), title: title.into(), install_path: PathBuf::from("/games").join(title), ..Scanned::default() }
@@ -629,6 +651,11 @@ mod tests {
         assert!(store.host_admin("home").unwrap() && !store.host_admin("elsewhere").unwrap());
         store.save_host(&host, 5).unwrap();
         assert!(!store.host_admin("home").unwrap(), "linking again takes the permission back");
+        assert_eq!(store.host_quality("home").unwrap(), (Setting::default(), None));
+        let choice = quality::choose(Setting::Fixed(Level::Light), None, true);
+        store.set_host_quality("home", Setting::Fixed(Level::Light)).unwrap();
+        store.set_host_streamed("home", &Streamed { choice, at: 12 }).unwrap();
+        assert_eq!(store.host_quality("home").unwrap(), (Setting::Fixed(Level::Light), Some(Streamed { choice, at: 12 })));
         store.sync("home", "steam", &[scanned("10", "Here And There"), scanned("20", "Only There")], 6).unwrap();
 
         let games = store.list().unwrap();

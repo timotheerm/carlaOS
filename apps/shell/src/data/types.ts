@@ -91,6 +91,24 @@ export type Host = {
   version?: string | null; // the companion's version, once it has answered
 };
 
+/// The picture of streams from one desktop: what the administrator chose and
+/// what the last stream got.
+export type HostPicture = {
+  setting: string; // "auto", "auto120" or a level
+  settings: string[]; // every setting, in the order to step through
+  last: {
+    level: string;
+    automatic: boolean;
+    height: number;
+    fps: number;
+    mbps: number;
+    latency_ms: number | null;
+    link_kbps: number | null; // what the connection carried when measured
+    away: boolean;
+    at: number;
+  } | null;
+};
+
 /// A companion found on the network, not linked yet.
 export type FoundHost = { address: string; name: string; id: string };
 
