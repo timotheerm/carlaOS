@@ -120,7 +120,7 @@ impl Store {
         db.execute_batch(SCHEMA).map_err(err)?;
         // Columns added after the first release. SQLite has no "add column if
         // missing", so look first.
-        let added = [("hosts", "addresses", "TEXT NOT NULL DEFAULT '[]'"), ("hosts", "macs", "TEXT NOT NULL DEFAULT '[]'"), ("games", "save_path", "TEXT")];
+        let added = [("hosts", "addresses", "TEXT NOT NULL DEFAULT '[]'"), ("hosts", "macs", "TEXT NOT NULL DEFAULT '[]'"), ("games", "save_path", "TEXT"), ("hosts", "admin", "INTEGER NOT NULL DEFAULT 0")];
         for (table, column, kind) in added {
             let has: bool = db
                 .query_row("SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name = ?2", params![table, column], |r| r.get::<_, i64>(0))
@@ -338,12 +338,15 @@ impl Store {
             .execute(
                 "INSERT INTO hosts (id, name, address, port, device_id, key, hardware, last_seen, added)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
-                 ON CONFLICT (id) DO UPDATE SET name = ?2, address = ?3, port = ?4, device_id = ?5, key = ?6",
+                 ON CONFLICT (id) DO UPDATE SET name = ?2, address = ?3, port = ?4, device_id = ?5, key = ?6, admin = 0",
                 params![host.id, host.name, host.address, host.port, host.device_id, host.key, host.hardware, host.last_seen, now],
             )
             .map_err(err)?;
         Ok(())
     }
+
+    // Linking again is a new start: the desktop may administer the Ally only
+    // once that has been allowed again.
 
     /// Linked desktops, in the order they were added.
     pub fn hosts(&self) -> Result<Vec<HostRow>> {
@@ -370,6 +373,17 @@ impl Store {
             .collect::<rusqlite::Result<Vec<_>>>()
             .map_err(err)?;
         Ok(rows)
+    }
+
+    /// Whether this desktop may administer the Ally.
+    pub fn host_admin(&self, id: &str) -> Result<bool> {
+        let allowed: Option<bool> = self.db.query_row("SELECT admin FROM hosts WHERE id = ?1", params![id], |r| r.get(0)).optional().map_err(err)?;
+        Ok(allowed.unwrap_or(false))
+    }
+
+    pub fn set_host_admin(&mut self, id: &str, allowed: bool) -> Result<()> {
+        self.db.execute("UPDATE hosts SET admin = ?2 WHERE id = ?1", params![id, allowed]).map_err(err)?;
+        Ok(())
     }
 
     /// Note that a desktop answered, at which address, and what it said about
@@ -610,6 +624,11 @@ mod tests {
             macs: Vec::new(),
         };
         store.save_host(&host, 5).unwrap();
+        assert!(!store.host_admin("home").unwrap(), "administering the Ally is never allowed by itself");
+        store.set_host_admin("home", true).unwrap();
+        assert!(store.host_admin("home").unwrap() && !store.host_admin("elsewhere").unwrap());
+        store.save_host(&host, 5).unwrap();
+        assert!(!store.host_admin("home").unwrap(), "linking again takes the permission back");
         store.sync("home", "steam", &[scanned("10", "Here And There"), scanned("20", "Only There")], 6).unwrap();
 
         let games = store.list().unwrap();

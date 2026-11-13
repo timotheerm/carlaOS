@@ -18,6 +18,42 @@ type Step =
   | { at: "host"; id: string }
   | { at: "remove"; host: Host };
 
+// Whether this desktop may administer the Ally: add games, clean up Windows,
+// update. Off until the administrator turns it on here.
+function AdminSwitch({ host, notify }: { host: Host; notify: (text: string) => void }) {
+  const [allowed, setAllowed] = useState<boolean | null>(null);
+  useEffect(() => {
+    let current = true;
+    library.hostAdmin(host.id).then((a) => current && setAllowed(a), () => current && setAllowed(false));
+    return () => {
+      current = false;
+    };
+  }, [host.id]);
+  return (
+    <button
+      className="setting"
+      data-focus
+      data-fid="desk:admin"
+      onClick={() => {
+        if (allowed === null) return;
+        const next = !allowed;
+        library.setHostAdmin(host.id, next).then(
+          () => {
+            setAllowed(next);
+            notify(next ? `${host.name} may now administer this Ally.` : `${host.name} may no longer administer this Ally.`);
+          },
+          (e) => notify(message(e)),
+        );
+      }}
+    >
+      <span>Administer this Ally from {host.name}</span>
+      <span className="setting__value">
+        {allowed === null ? "…" : allowed ? "Allowed · commands typed there are carried out here" : "Not allowed"}
+      </span>
+    </button>
+  );
+}
+
 export function LinkDesktops({ hosts, notify }: { hosts: Host[]; notify: (text: string) => void }) {
   const [admin, setAdmin] = useState<AdminStatus | null>(null);
   const [step, setStep] = useState<Step>({ at: "list" });
@@ -268,6 +304,7 @@ export function LinkDesktops({ hosts, notify }: { hosts: Host[]; notify: (text: 
             <span className="setting__value">{host.canWake ? "The Ally can wake it again" : "It has not said how to wake it yet"}</span>
           </button>
         )}
+        <AdminSwitch host={host} notify={notify} />
         <button className="setting" data-focus data-fid="desk:remove" onClick={() => setStep({ at: "remove", host })}>
           <span>Remove {host.name}</span>
           <span className="setting__value">Stops streaming from it</span>

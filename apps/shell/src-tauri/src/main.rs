@@ -8,6 +8,7 @@ mod device;
 mod hosts;
 mod library;
 mod quick;
+mod remote;
 mod savesync;
 mod updates;
 
@@ -31,8 +32,9 @@ fn main() {
             let data_dir = app.path().app_local_data_dir()?;
             let library = library::Library::open(&data_dir)?;
             quick::watch(app.handle().clone(), library.clone());
+            app.manage(admin::Admin::new(data_dir.clone()));
+            remote::watch(app.handle().clone(), library.clone());
             app.manage(library);
-            app.manage(admin::Admin::new(data_dir));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -72,6 +74,8 @@ fn main() {
             details::saves_pick_folder,
             details::saves_forget_folder,
             savesync::saves_sync,
+            remote::hosts_admin,
+            remote::hosts_set_admin,
             quick::quick_state,
             quick::quick_set_sound,
             quick::quick_set_brightness,

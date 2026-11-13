@@ -43,6 +43,15 @@ impl Admin {
         let debloat = Debloat::new(PowerShell::new(self.dir.clone()), self.dir.join("journal.json"));
         f(&debloat).map_err(|e| e.to_string())
     }
+
+    /// A clean-up operation asked for by a desktop that the administrator
+    /// allowed to administer this Ally. The lock on the screen is not asked:
+    /// allowing the desktop, which needed the PIN, was the permission.
+    pub(crate) fn cleanup_remote<T>(&self, f: impl FnOnce(&Debloat<PowerShell>) -> Result<T, carla_core::debloat::Error>) -> Result<T, String> {
+        let _one_at_a_time = self.busy.lock().unwrap_or_else(|e| e.into_inner());
+        let debloat = Debloat::new(PowerShell::new(self.dir.clone()), self.dir.join("journal.json"));
+        f(&debloat).map_err(|e| e.to_string())
+    }
 }
 
 #[tauri::command]

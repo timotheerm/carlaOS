@@ -78,7 +78,7 @@ fn view(host: &HostRow) -> HostView {
     }
 }
 
-fn this_device() -> String {
+pub(crate) fn this_device() -> String {
     std::env::var("COMPUTERNAME").ok().filter(|n| !n.is_empty()).unwrap_or_else(|| "Ally".to_string())
 }
 

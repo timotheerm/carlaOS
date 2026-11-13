@@ -10,6 +10,7 @@ pub mod debloat;
 pub mod library;
 pub mod link;
 pub mod quick;
+pub mod remote;
 pub mod secret;
 pub mod update;
 
