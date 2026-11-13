@@ -42,6 +42,33 @@ const FIRST_REPEAT_MS = 380;
 const REPEAT_MS = 130;
 const STICK_THRESHOLD = 0.55;
 
+// Changing section is a big step, so a held LB or RB repeats slowly. Every
+// other button does its thing once per press, however long it is held.
+const REPEATS: ReadonlySet<Action> = new Set<Action>(["prev", "next"]);
+const ACTION_FIRST_REPEAT_MS = 600;
+const ACTION_REPEAT_MS = 400;
+
+// What is held right now. Kept here, not inside installInput, so that it
+// survives the listener being installed again: a button that is still down
+// must never look like a new press.
+let heldDir: Dir | null = null;
+let nextRepeat = 0;
+const wasDown = new Set<number>();
+const actionRepeat = new Map<number, number>(); // button -> time of its next repeat
+const keyRepeat = new Map<string, number>(); // key -> time of its next repeat
+
+/** Decide whether a held button acts again at `now`. First call is the press. */
+export function heldFires(next: Map<number | string, number>, id: number | string, repeats: boolean, isNew: boolean, now: number): boolean {
+  if (isNew) {
+    next.set(id, now + ACTION_FIRST_REPEAT_MS);
+    return true;
+  }
+  const due = next.get(id);
+  if (!repeats || due === undefined || now < due) return false;
+  next.set(id, now + ACTION_REPEAT_MS);
+  return true;
+}
+
 export function installInput(onAction: Handler): () => void {
   const onKey = (e: KeyboardEvent) => {
     // While typing in a field, only up and down leave it.
@@ -56,15 +83,15 @@ export function installInput(onAction: Handler): () => void {
     const action = KEY_ACTION[e.key];
     if (action) {
       e.preventDefault();
-      onAction(action);
+      // The keyboard repeats a held key some thirty times a second.
+      if (heldFires(keyRepeat as Map<number | string, number>, e.key, REPEATS.has(action), !e.repeat, performance.now())) onAction(action);
     }
   };
+  const onKeyUp = (e: KeyboardEvent) => keyRepeat.delete(e.key);
   window.addEventListener("keydown", onKey);
+  window.addEventListener("keyup", onKeyUp);
 
   let raf = 0;
-  let heldDir: Dir | null = null;
-  let nextRepeat = 0;
-  const wasDown = new Set<number>();
 
   const poll = (now: number) => {
     raf = requestAnimationFrame(poll);
@@ -73,6 +100,7 @@ export function installInput(onAction: Handler): () => void {
     if (!document.hasFocus()) {
       heldDir = null;
       for (let i = 0; i < 16; i++) wasDown.add(i);
+      actionRepeat.clear();
       return;
     }
     const pad = navigator.getGamepads?.().find((p) => p && p.connected);
@@ -110,7 +138,15 @@ export function installInput(onAction: Handler): () => void {
     };
     press(0, () => (document.activeElement as HTMLElement | null)?.click());
     for (const [index, action] of Object.entries(PAD_ACTION)) {
-      press(Number(index), () => onAction(action));
+      const button = Number(index);
+      const down = !!pad.buttons[button]?.pressed;
+      if (down) {
+        if (heldFires(actionRepeat as Map<number | string, number>, button, REPEATS.has(action), !wasDown.has(button), now)) onAction(action);
+        wasDown.add(button);
+      } else {
+        wasDown.delete(button);
+        actionRepeat.delete(button);
+      }
     }
   };
 
@@ -124,6 +160,7 @@ export function installInput(onAction: Handler): () => void {
 
   return () => {
     window.removeEventListener("keydown", onKey);
+    window.removeEventListener("keyup", onKeyUp);
     document.removeEventListener("visibilitychange", onVisibility);
     cancelAnimationFrame(raf);
   };
