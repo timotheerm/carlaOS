@@ -10,6 +10,7 @@ pub mod debloat;
 pub mod library;
 pub mod link;
 pub mod secret;
+pub mod update;
 
 /// Version of the core crate, shown in Settings and reported by the companion.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

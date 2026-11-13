@@ -66,6 +66,15 @@ pub struct Status {
     pub macs: Vec<String>,
 }
 
+/// What a desktop answers when it is asked to update itself.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Updating {
+    /// False when the desktop already has the newest version.
+    pub updating: bool,
+    /// The version it is moving to, or the one it has.
+    pub version: String,
+}
+
 /// One game installed on a desktop.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoteGame {

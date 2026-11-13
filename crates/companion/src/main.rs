@@ -17,7 +17,8 @@ use std::sync::Arc;
 
 use carla_core::library::{achievements, scan_store, steam, STORES};
 use carla_core::link::{discover, enrol, wake, SUNSHINE_APP};
-use carla_core::{AppInfo, Role};
+use carla_core::update::{self, Part};
+use carla_core::{AppInfo, Role, VERSION};
 
 use files::{Config, Files};
 use server::Server;
@@ -38,6 +39,7 @@ const HELP: &str = "CarlaOS desktop companion
   carla-companion sleep-test put this desktop to sleep now, the way the Ally would
   carla-companion status     show whether everything is ready
   carla-companion serve      run quietly (what happens when Windows starts)
+  carla-companion update     install the newest release, if there is one
   carla-companion remove     stop starting with Windows
   carla-companion launch     used by Sunshine when a stream starts
   carla-companion info       print version details";
@@ -239,6 +241,48 @@ fn build(files: &Files, config: Config) -> Server {
         |app_id| steam::find_root().and_then(|root| achievements::steam(&root, app_id)).unwrap_or_default(),
         sleep_soon,
     )
+    .with_updater(update_from_afar)
+}
+
+/// A linked Ally asked this desktop to update. Answer as soon as it is known
+/// whether there is a newer release, and install it once the answer is out:
+/// the installer stops this program and starts the new one.
+fn update_from_afar() -> Result<Option<String>, String> {
+    let Some(found) = update::check(Part::DesktopHost)? else { return Ok(None) };
+    let version = found.version.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        if let Err(e) = update::download(&found, &update::download_dir(), &|_| {}).and_then(|installer| update::install(Part::DesktopHost, &installer)) {
+            eprintln!("{e}");
+        }
+    });
+    Ok(Some(version))
+}
+
+/// `carla-companion update`, also behind the Start menu's "Update" entry.
+fn update_here() -> Result<(), String> {
+    println!("CarlaOS Desktop Host {VERSION}. Looking for a newer version...");
+    let megabytes = std::cell::Cell::new(0);
+    let progress = |bytes: u64| {
+        let now = bytes / 1_048_576;
+        if now != megabytes.replace(now) {
+            print!("\rDownloading: {now} MB");
+            let _ = std::io::stdout().flush();
+        }
+    };
+    match update::update_now(Part::DesktopHost, &progress)? {
+        Some(found) => {
+            println!("\nVersion {} is being installed. This window closes by itself,", found.version);
+            println!("and the companion carries on in the background.");
+            // The installer stops this program. Wait for that rather than racing it.
+            std::thread::sleep(std::time::Duration::from_secs(30));
+        }
+        None => {
+            println!("This is the newest version.");
+            pause();
+        }
+    }
+    Ok(())
 }
 
 /// Run the API. `Err` when the port is taken, which means it already runs.
@@ -369,6 +413,14 @@ fn run(args: &[String]) -> Result<i32, String> {
         Some("serve") => {
             let config = configured(&files)?;
             serve(&files, config).map_err(|e| format!("The companion could not start listening: {e}"))?;
+            Ok(0)
+        }
+        Some("update") => {
+            if let Err(e) = update_here() {
+                eprintln!("\n{e}");
+                pause();
+                return Ok(1);
+            }
             Ok(0)
         }
         Some("remove") => {

@@ -12,11 +12,13 @@ import { Playing } from "./screens/playing";
 import { Search } from "./screens/search";
 import { GameDetail } from "./screens/pregame";
 import { Cloud, Desktops, Games, Home, HostView, Settings, type Ctx } from "./screens/screens";
+import { Updates } from "./screens/updates";
 import { Hints, SECTIONS, TopBar, type Section } from "./ui/chrome";
 import { Splash } from "./ui/splash";
 
 type Page = { kind: "game"; id: string } | { kind: "host"; id: string } | { kind: "cleanup"; id: CleanupView }
-  | { kind: "manage"; id: "home" } | { kind: "desktops"; id: "home" } | { kind: "search"; id: "home" };
+  | { kind: "manage"; id: "home" } | { kind: "desktops"; id: "home" } | { kind: "search"; id: "home" }
+  | { kind: "updates"; id: "home" };
 type Theme = "light" | "dark";
 
 const THEME_KEY = "carla.theme";
@@ -164,6 +166,7 @@ export function App() {
   else if (top?.kind === "search") page = <Search {...ctx} query={query} setQuery={setQuery} />;
   else if (top?.kind === "manage") page = <Manage games={games} notify={setToast} />;
   else if (top?.kind === "desktops") page = <LinkDesktops hosts={hosts} notify={setToast} />;
+  else if (top?.kind === "updates") page = <Updates hosts={hosts} notify={setToast} refreshHosts={() => void library.refreshHosts().catch(() => undefined)} />;
   else if (top?.kind === "cleanup") page = <Cleanup view={top.id} open={(view) => push({ kind: "cleanup", id: view })} />;
   else if (section === "home") page = <Home {...ctx} />;
   else if (section === "games") page = <Games {...ctx} />;
@@ -177,6 +180,7 @@ export function App() {
         onCleanup={() => push({ kind: "cleanup", id: "home" })}
         onManage={() => push({ kind: "manage", id: "home" })}
         onDesktops={() => push({ kind: "desktops", id: "home" })}
+        onUpdates={() => push({ kind: "updates", id: "home" })}
         hostCount={hosts.length}
         onRefresh={() => void library.scan().catch((e) => setToast(message(e)))}
         refreshing={scanning}

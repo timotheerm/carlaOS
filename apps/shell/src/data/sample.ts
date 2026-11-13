@@ -10,6 +10,7 @@ export const hosts: Host[] = [
     latencyMs: 4,
     hardware: "Ryzen 7 9800X3D · RX 9070 XT · 64 GB",
     lastSeen: "now",
+    version: "0.5.0",
   },
   {
     id: "second",

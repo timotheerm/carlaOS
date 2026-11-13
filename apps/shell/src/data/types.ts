@@ -65,6 +65,7 @@ export type Host = {
   problem?: string | null; // one line on what is wrong, when it needs attention
   address?: string;
   canWake?: boolean; // the desktop has said how to wake it
+  version?: string | null; // the companion's version, once it has answered
 };
 
 /// A companion found on the network, not linked yet.

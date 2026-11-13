@@ -204,6 +204,7 @@ export function Settings({
   onCleanup,
   onManage,
   onDesktops,
+  onUpdates,
   hostCount,
   onRefresh,
   refreshing,
@@ -213,6 +214,7 @@ export function Settings({
 }: {
   onManage: () => void;
   onDesktops: () => void;
+  onUpdates: () => void;
   hostCount: number;
   onRefresh: () => void;
   refreshing: boolean;
@@ -244,6 +246,10 @@ export function Settings({
       <button className="setting" data-focus data-fid="set:cleanup" onClick={onCleanup}>
         <span>Clean up Windows</span>
         <span className="setting__value">Administrator only</span>
+      </button>
+      <button className="setting" data-focus data-fid="set:updates" onClick={onUpdates}>
+        <span>Updates</span>
+        <span className="setting__value">{version ? `CarlaOS ${version} · ` : ""}Administrator only</span>
       </button>
       <button className="setting" data-focus data-fid="set:exit" onClick={onExit}>
         <span>Exit to Windows</span>
