@@ -14,6 +14,11 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+pub mod achievements;
+pub mod bvdf;
+pub mod saves;
+pub mod meta;
+
 pub use store::Store;
 
 /// The place name for "installed on this machine".
@@ -71,6 +76,9 @@ pub struct ManualGame {
     pub kind: Kind,
     #[serde(default)]
     pub cover: Option<PathBuf>,
+    /// A sentence or two about the game, for its page.
+    #[serde(default)]
+    pub description: String,
 }
 
 /// One title as the interface shows it.

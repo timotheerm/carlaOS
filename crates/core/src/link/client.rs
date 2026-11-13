@@ -181,6 +181,12 @@ impl Link {
         self.ask("GET", &format!("/v1/cover/{game_id}"), b"", SLOW)
     }
 
+    /// What the player has earned in a game on that desktop. Empty when the
+    /// game has no achievements or has never been run there.
+    pub fn achievements(&self, game_id: &str) -> Result<Vec<crate::library::achievements::Achievement>> {
+        parse(&self.ask("GET", &format!("/v1/achievements/{game_id}"), b"", QUICK)?)
+    }
+
     /// Tell the desktop which game the stream that is about to start is for.
     pub fn prepare(&self, game_id: &str) -> Result<Status> {
         self.post("/v1/stream/prepare", &Prepare { game_id: game_id.to_string() }, QUICK * 2)

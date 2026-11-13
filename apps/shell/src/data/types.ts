@@ -25,7 +25,31 @@ export type Game = {
 
 export type Session = { gameId: string; title: string; phase: "waking" | "starting" | "running"; stream: boolean };
 
-export type NewGame = { title: string; exe: string; args: string; kind: Kind; cover: string | null };
+export type NewGame = { title: string; exe: string; args: string; kind: Kind; cover: string | null; description: string };
+
+export type Achievement = {
+  id: string;
+  name: string;
+  description: string;
+  hidden: boolean; // the game keeps it secret until it is earned
+  unlocked: number | null; // Unix seconds; 0 when earned at an unknown time
+};
+
+export type Backup = { id: string; at: number; files: number; bytes: number };
+
+export type Saves = { folder: string; files: number; bytes: number; modified: number | null; backups: Backup[] };
+
+/// What the page of one game shows before it starts.
+export type Details = {
+  achievements: Achievement[]; // the game's own
+  achievementsFrom: string | null; // "steam" or a desktop's name
+  milestones: Achievement[]; // CarlaOS's own, which every game has
+  saves: Saves | null; // when CarlaOS knows where they are
+  sessions: number;
+};
+
+/// A game found in the public store, for filling in details.
+export type Match = { id: string; name: string };
 
 export type HostState = "ready" | "busy" | "not_ready" | "asleep" | "off" | "unreachable" | "unknown";
 

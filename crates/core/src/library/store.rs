@@ -43,6 +43,11 @@ CREATE TABLE IF NOT EXISTS play_sessions (
     ended   INTEGER
 );
 CREATE INDEX IF NOT EXISTS play_sessions_game ON play_sessions (game_id);
+CREATE TABLE IF NOT EXISTS achievement_cache (
+    game_id TEXT PRIMARY KEY,
+    json    TEXT NOT NULL,
+    at      INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS hosts (
     id        TEXT PRIMARY KEY,
     name      TEXT NOT NULL,
@@ -92,13 +97,14 @@ impl Store {
         db.execute_batch(SCHEMA).map_err(err)?;
         // Columns added after the first release. SQLite has no "add column if
         // missing", so look first.
-        for column in ["addresses", "macs"] {
+        let added = [("hosts", "addresses", "TEXT NOT NULL DEFAULT '[]'"), ("hosts", "macs", "TEXT NOT NULL DEFAULT '[]'"), ("games", "save_path", "TEXT")];
+        for (table, column, kind) in added {
             let has: bool = db
-                .query_row("SELECT COUNT(*) FROM pragma_table_info('hosts') WHERE name = ?1", params![column], |r| r.get::<_, i64>(0))
+                .query_row("SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name = ?2", params![table, column], |r| r.get::<_, i64>(0))
                 .map(|n| n > 0)
                 .map_err(err)?;
             if !has {
-                db.execute_batch(&format!("ALTER TABLE hosts ADD COLUMN {column} TEXT NOT NULL DEFAULT '[]';")).map_err(err)?;
+                db.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {kind};")).map_err(err)?;
             }
         }
         Ok(Self { db })
@@ -140,9 +146,10 @@ impl Store {
         let dir = game.exe.parent().map(text).unwrap_or_default();
         let tx = self.db.transaction().map_err(err)?;
         tx.execute(
-            "INSERT INTO games (id, title, kind, platform, added, cover) VALUES (?1, ?2, ?3, 'Standalone', ?4, ?5)
-             ON CONFLICT (id) DO UPDATE SET title = ?2, kind = ?3, cover = COALESCE(?5, cover)",
-            params![id, title, game.kind.as_str(), now, game.cover.as_deref().map(text)],
+            "INSERT INTO games (id, title, kind, platform, added, cover, description) VALUES (?1, ?2, ?3, 'Standalone', ?4, ?5, ?6)
+             ON CONFLICT (id) DO UPDATE SET title = ?2, kind = ?3, cover = COALESCE(?5, cover),
+                description = CASE WHEN ?6 = '' THEN description ELSE ?6 END",
+            params![id, title, game.kind.as_str(), now, game.cover.as_deref().map(text), game.description.trim()],
         )
         .map_err(err)?;
         tx.execute(
@@ -313,6 +320,49 @@ impl Store {
         tx.commit().map_err(err)
     }
 
+    /// Finished play sessions of one game, as (start, end) in Unix seconds.
+    pub fn sessions(&self, game_id: &str) -> Result<Vec<(i64, i64)>> {
+        let mut query = self
+            .db
+            .prepare("SELECT started, ended FROM play_sessions WHERE game_id = ?1 AND ended IS NOT NULL ORDER BY started")
+            .map_err(err)?;
+        let rows = query.query_map(params![game_id], |r| Ok((r.get(0)?, r.get(1)?))).map_err(err)?.collect::<rusqlite::Result<Vec<_>>>().map_err(err)?;
+        Ok(rows)
+    }
+
+    /// Where the administrator said a game keeps its saves, if anywhere.
+    pub fn save_path(&self, game_id: &str) -> Result<Option<PathBuf>> {
+        let path: Option<Option<String>> =
+            self.db.query_row("SELECT save_path FROM games WHERE id = ?1", params![game_id], |r| r.get(0)).optional().map_err(err)?;
+        Ok(path.flatten().filter(|p| !p.is_empty()).map(PathBuf::from))
+    }
+
+    pub fn set_save_path(&mut self, game_id: &str, path: Option<&Path>) -> Result<()> {
+        self.db.execute("UPDATE games SET save_path = ?2 WHERE id = ?1", params![game_id, path.map(text)]).map_err(err)?;
+        Ok(())
+    }
+
+    /// Remember a desktop's answer about a game's achievements, so they can be
+    /// shown while that desktop is asleep.
+    pub fn cache_achievements(&mut self, game_id: &str, json: &str, now: i64) -> Result<()> {
+        self.db
+            .execute(
+                "INSERT INTO achievement_cache (game_id, json, at) VALUES (?1, ?2, ?3)
+                 ON CONFLICT (game_id) DO UPDATE SET json = ?2, at = ?3",
+                params![game_id, json, now],
+            )
+            .map_err(err)?;
+        Ok(())
+    }
+
+    /// The remembered answer and when it was given.
+    pub fn cached_achievements(&self, game_id: &str) -> Result<Option<(String, i64)>> {
+        self.db
+            .query_row("SELECT json, at FROM achievement_cache WHERE game_id = ?1", params![game_id], |r| Ok((r.get(0)?, r.get(1)?)))
+            .optional()
+            .map_err(err)
+    }
+
     pub fn start_session(&mut self, game_id: &str, place: &str, now: i64) -> Result<i64> {
         self.db
             .execute("INSERT INTO play_sessions (game_id, place, started) VALUES (?1, ?2, ?3)", params![game_id, place, now])
@@ -378,10 +428,30 @@ mod tests {
             args: "-fullscreen".into(),
             kind: Kind::Homebrew,
             cover: None,
+            description: "A berry who wants to fly.".into(),
         };
         let id = store.add_manual(&game, 10).unwrap();
-        let again = store.add_manual(&ManualGame { title: "Cloudberry 2".into(), ..game.clone() }, 20).unwrap();
+        // Adding it again without a description keeps the one it had.
+        let again = store.add_manual(&ManualGame { title: "Cloudberry 2".into(), description: String::new(), ..game.clone() }, 20).unwrap();
         assert_eq!(id, again);
+        assert_eq!(store.list().unwrap()[0].description, "A berry who wants to fly.");
+
+        // Saves, sessions and remembered achievements hang off the game.
+        assert_eq!(store.save_path(&id).unwrap(), None);
+        store.set_save_path(&id, Some(Path::new("/saves/berry"))).unwrap();
+        assert_eq!(store.save_path(&id).unwrap(), Some(PathBuf::from("/saves/berry")));
+        store.set_save_path(&id, None).unwrap();
+        assert_eq!(store.save_path(&id).unwrap(), None);
+        assert_eq!(store.save_path("nothing").unwrap(), None);
+        let open = store.start_session(&id, LOCAL, 100).unwrap();
+        let done = store.start_session(&id, LOCAL, 200).unwrap();
+        store.end_session(done, 260).unwrap();
+        assert_eq!(store.sessions(&id).unwrap(), [(200, 260)], "only finished sessions count");
+        store.end_session(open, 150).unwrap();
+        assert_eq!(store.cached_achievements(&id).unwrap(), None);
+        store.cache_achievements(&id, "[]", 5).unwrap();
+        store.cache_achievements(&id, "[1]", 6).unwrap();
+        assert_eq!(store.cached_achievements(&id).unwrap(), Some(("[1]".to_string(), 6)));
 
         let games = store.list().unwrap();
         assert_eq!(games.len(), 1);

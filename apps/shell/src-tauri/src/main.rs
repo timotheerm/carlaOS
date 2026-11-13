@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod admin;
+mod details;
 mod hosts;
 mod library;
 
@@ -52,6 +53,13 @@ fn main() {
             hosts::hosts_link,
             hosts::hosts_remove,
             hosts::hosts_wake,
+            details::library_details,
+            details::saves_backup,
+            details::saves_restore,
+            details::saves_pick_folder,
+            details::saves_forget_folder,
+            details::meta_search,
+            details::meta_fetch,
         ])
         .run(tauri::generate_context!())
         .expect("failed to start the CarlaOS shell");

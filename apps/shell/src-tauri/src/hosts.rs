@@ -285,6 +285,17 @@ pub fn hosts_remove(admin: State<'_, Admin>, library: State<'_, Library>, id: St
     library.store().remove_host(&id)
 }
 
+/// A game's achievements from the first desktop that has it and answers,
+/// with that desktop's name.
+pub(crate) fn achievements(library: &Library, game_id: &str, places: &[String]) -> Option<(Vec<carla_core::library::achievements::Achievement>, String)> {
+    let hosts = library.store().hosts().ok()?;
+    hosts.iter().filter(|h| places.contains(&h.id)).find_map(|host| {
+        let (link, ..) = reach(host).ok()?;
+        let list = link.achievements(game_id).ok()?;
+        (!list.is_empty()).then(|| (list, host.name.clone()))
+    })
+}
+
 /// Send the wake-up packet to a desktop. Anyone may: it only turns on a
 /// computer the administrator linked. Says whether there was anything to send.
 #[tauri::command(async)]
