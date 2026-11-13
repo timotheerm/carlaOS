@@ -8,6 +8,7 @@ import { library, message } from "../library/store";
 import { focusFirst, keepFocus } from "../nav/focus";
 import { size, when } from "../ui/parts";
 import { PinPad } from "../ui/pin";
+import { Consoles } from "./consoles";
 
 const KINDS: { id: Kind; label: string }[] = [
   { id: "game", label: "Game" },
@@ -276,6 +277,7 @@ export function Manage({ games, notify }: { games: Game[]; notify: (text: string
   const [admin, setAdmin] = useState<AdminStatus | null>(null);
   const [adding, setAdding] = useState<string | null>(null); // program being added
   const [saves, setSaves] = useState<string | "list" | null>(null); // game whose saves are open
+  const [consoles, setConsoles] = useState(false);
 
   // Locked on the way in and again on the way out.
   useEffect(() => {
@@ -289,7 +291,7 @@ export function Manage({ games, notify }: { games: Game[]; notify: (text: string
     if (active instanceof HTMLElement && active.matches("[data-focus]") && active.isConnected) return;
     const main = document.querySelector("main");
     if (main) focusFirst(main);
-  }, [admin?.unlocked, adding, saves, manual.length]);
+  }, [admin?.unlocked, adding, saves, consoles, manual.length]);
 
   if (!admin) return null;
   if (!admin.unlocked) {
@@ -310,6 +312,7 @@ export function Manage({ games, notify }: { games: Game[]; notify: (text: string
     );
   }
   if (adding) return <AddForm exe={adding} onDone={() => setAdding(null)} notify={notify} />;
+  if (consoles) return <Consoles onDone={() => setConsoles(false)} notify={notify} />;
   const onAlly = games.filter((g) => g.places.includes("local")).sort((a, b) => a.title.localeCompare(b.title));
   const open = onAlly.find((g) => g.id === saves);
   if (open) return <SavesAdmin game={open} onDone={() => setSaves("list")} notify={notify} />;
@@ -356,6 +359,10 @@ export function Manage({ games, notify }: { games: Game[]; notify: (text: string
       >
         <span>Add a game</span>
         <span className="setting__value">Choose its program</span>
+      </button>
+      <button className="setting" data-focus data-fid="manage:consoles" onClick={() => setConsoles(true)}>
+        <span>Consoles and emulators</span>
+        <span className="setting__value">Your own game files</span>
       </button>
       <button className="setting" data-focus data-fid="manage:saves" onClick={() => setSaves("list")}>
         <span>Game saves</span>

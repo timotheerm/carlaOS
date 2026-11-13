@@ -6,7 +6,7 @@ import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { games as sampleGames, hosts as sampleHosts } from "../data/sample";
 import { sampleDetails, sampleMatches } from "../data/sample";
-import type { Details, FoundHost, Game, Host, HostState, Kind, Match, NewGame, Saves, Session } from "../data/types";
+import type { Console, ConsoleHint, Details, FoundHost, Game, Host, HostState, Kind, Match, NewGame, Saves, Session } from "../data/types";
 import { inTauri } from "../native";
 import { when } from "../ui/parts";
 
@@ -59,6 +59,11 @@ function preview(gameId: string): Saves | null {
   }
   return previewSaves.get(gameId) ?? null;
 }
+
+// Consoles as the browser preview pretends them.
+let previewConsoles: Console[] = [
+  { id: "c0", name: "PlayStation 2", emulator: "C:\\Emulators\\PCSX2\\pcsx2-qt.exe", options: '-batch -fullscreen -- "{game}"', folder: "D:\\My Games\\PS2", endings: ["chd", "iso"] },
+];
 
 const FAV_KEY = "carla.favourites";
 const iso = (seconds: number) => new Date(seconds * 1000).toISOString();
@@ -293,8 +298,48 @@ export const library = {
     else set({ session: null });
   },
 
-  pick: (what: "program" | "image") =>
-    inTauri ? invoke<string | null>("library_pick", { what }) : Promise.resolve(what === "program" ? "C:\\Games\\Example\\example.exe" : null),
+  pick: (what: "program" | "image" | "emulator" | "folder") =>
+    inTauri
+      ? invoke<string | null>("library_pick", { what })
+      : Promise.resolve(
+          what === "program"
+            ? "C:\\Games\\Example\\example.exe"
+            : what === "emulator"
+              ? "C:\\Emulators\\Dolphin-x64\\Dolphin.exe"
+              : what === "folder"
+                ? "D:\\My Games\\GameCube"
+                : null,
+        ),
+
+  async consoles(): Promise<Console[]> {
+    return inTauri ? invoke<Console[]>("consoles_list") : previewConsoles;
+  },
+
+  /** What to fill in for an emulator CarlaOS recognises by its name. */
+  async suggestConsole(emulator: string): Promise<ConsoleHint> {
+    if (inTauri) return invoke<ConsoleHint>("consoles_suggest", { emulator });
+    return { name: "GameCube and Wii", options: '-b -e "{game}"', endings: ["iso", "gcm", "rvz", "wbfs"] };
+  },
+
+  /** Add or change a console. Resolves with how many games it has. */
+  async saveConsole(console_: Console): Promise<number> {
+    if (inTauri) {
+      const games = await invoke<number>("consoles_save", { console: console_ });
+      await reload();
+      return games;
+    }
+    if (!console_.endings.length) throw "Say which file endings are games, for example iso or chd.";
+    const saved = { ...console_, id: console_.id || `c${previewConsoles.length + 1}` };
+    previewConsoles = [...previewConsoles.filter((c) => c.id !== saved.id), saved];
+    return 3;
+  },
+
+  async removeConsole(id: string) {
+    if (inTauri) {
+      await invoke("consoles_remove", { id });
+      await reload();
+    } else previewConsoles = previewConsoles.filter((c) => c.id !== id);
+  },
 
   async addManual(game: NewGame) {
     if (inTauri) {

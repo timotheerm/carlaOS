@@ -7,7 +7,7 @@ use std::process::Child;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use carla_core::library::launch::{self, Phase, Watch};
-use carla_core::library::{scan_store, steam, GameView, ManualGame, Store, LOCAL, STORES};
+use carla_core::library::{emulation, scan_store, steam, GameView, ManualGame, Store, LOCAL, STORES};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::DialogExt;
@@ -81,7 +81,7 @@ impl Library {
     }
 
     /// Look at what is installed and bring the catalogue up to date.
-    fn scan(&self, app: &AppHandle) -> Result<Vec<GameView>, String> {
+    pub(crate) fn scan(&self, app: &AppHandle) -> Result<Vec<GameView>, String> {
         let root = steam::find_root();
         if let Some(root) = &root {
             allow_pictures(app, &root.join("appcache").join("librarycache"));
@@ -91,10 +91,14 @@ impl Library {
         // Looked through before the catalogue is locked: reading disks is slow.
         let found: Vec<_> = STORES.iter().map(|store| (*store, scan_store(store, root.as_deref()))).collect();
         *locked(&self.0.steam_root) = root;
+        // Game files of every console, each starting its emulator.
+        let consoles = self.store().consoles()?;
+        let emulated: Vec<_> = consoles.iter().flat_map(emulation::scan).collect();
         let mut store = self.store();
         for (source, games) in &found {
             store.sync(LOCAL, source, games, now())?;
         }
+        store.sync(LOCAL, "emu", &emulated, now())?;
         store.list()
     }
 }
@@ -267,7 +271,12 @@ pub fn library_launch(app: AppHandle, library: State<'_, Library>, game_id: Stri
 pub fn library_pick(app: AppHandle, admin: State<'_, Admin>, what: String) -> Result<Option<String>, String> {
     admin.require()?;
     let dialog = app.dialog().file();
+    if what == "folder" {
+        let folder = dialog.set_title("Choose the folder with the game files").blocking_pick_folder();
+        return Ok(folder.and_then(|f| f.into_path().ok()).map(|p| p.to_string_lossy().into_owned()));
+    }
     let dialog = match what.as_str() {
+        "emulator" => dialog.set_title("Choose the emulator's program").add_filter("Programs", &["exe"]),
         "image" => dialog.set_title("Choose artwork").add_filter("Pictures", &["png", "jpg", "jpeg", "webp"]),
         _ => dialog.set_title("Choose the game's program").add_filter("Programs", &["exe", "bat", "cmd", "lnk"]),
     };

@@ -48,6 +48,18 @@ export type Details = {
   sessions: number;
 };
 
+/// An emulator that is installed, paired with a folder of game files.
+export type Console = {
+  id: string; // empty for a new one
+  name: string;
+  emulator: string;
+  options: string; // with {game} where the game file goes
+  folder: string;
+  endings: string[];
+};
+
+export type ConsoleHint = { name: string; options: string; endings: string[] };
+
 /// A game found in the public store, for filling in details.
 export type Match = { id: string; name: string };
 

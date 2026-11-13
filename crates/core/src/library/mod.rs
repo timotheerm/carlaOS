@@ -6,6 +6,7 @@
 //! in the interface therefore only ever offers places where the game really is.
 
 pub mod launch;
+pub mod emulation;
 pub mod epic;
 pub mod gog;
 pub mod steam;
@@ -78,6 +79,10 @@ pub struct Scanned {
     /// Options for that program; for a store that starts games through an
     /// address of its own, that address.
     pub args: String,
+    /// What the badge says the game is from, when the store's name is not it.
+    pub platform: String,
+    /// Played through an emulator.
+    pub emulated: bool,
 }
 
 /// The stores CarlaOS looks through by itself.

@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod admin;
+mod consoles;
 mod details;
 mod hosts;
 mod library;
@@ -48,6 +49,10 @@ fn main() {
             library::library_pick,
             library::library_add_manual,
             library::library_remove_manual,
+            consoles::consoles_list,
+            consoles::consoles_suggest,
+            consoles::consoles_save,
+            consoles::consoles_remove,
             hosts::hosts_list,
             hosts::hosts_refresh,
             hosts::hosts_discover,
