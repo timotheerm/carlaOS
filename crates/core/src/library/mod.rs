@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize};
 pub mod achievements;
 pub mod bvdf;
 pub mod saves;
+pub mod sync;
 pub mod meta;
 
 pub use store::Store;
@@ -145,6 +146,21 @@ pub struct Install {
     pub install_path: PathBuf,
     pub exe: Option<PathBuf>,
     pub args: String,
+}
+
+/// The last time one game's saves were brought in step with one desktop.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Synced {
+    pub host_id: String,
+    /// What both machines held when they last agreed.
+    pub digest: Option<String>,
+    pub at: i64,
+    /// "same", "sent", "fetched" or "problem".
+    pub outcome: String,
+    /// Both had new saves; the older ones are in a safe copy.
+    pub both_changed: bool,
+    pub files: u32,
+    pub problem: Option<String>,
 }
 
 /// A linked desktop as the catalogue stores it.

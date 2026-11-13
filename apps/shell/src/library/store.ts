@@ -6,7 +6,7 @@ import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { games as sampleGames, hosts as sampleHosts } from "../data/sample";
 import { sampleDetails, sampleMatches } from "../data/sample";
-import type { Console, ConsoleHint, Details, FoundHost, Game, Host, HostState, Kind, Match, NewGame, Saves, Session } from "../data/types";
+import type { Console, ConsoleHint, Details, FoundHost, Game, Host, HostState, Kind, Match, NewGame, SaveSync, Saves, Session } from "../data/types";
 import { inTauri } from "../native";
 import { when } from "../ui/parts";
 
@@ -379,8 +379,16 @@ export const library = {
       return { ...rest, achievementsFrom: achievements_from };
     }
     const game = state.games.find((g) => g.id === gameId);
-    if (!game) return { achievements: [], achievementsFrom: null, milestones: [], saves: null, sessions: 0 };
+    if (!game) return { achievements: [], achievementsFrom: null, milestones: [], saves: null, sync: [], sessions: 0 };
     return { ...sampleDetails(game), saves: preview(gameId) };
+  },
+
+  /** Bring a game's saves in step with the desktops now. One line per desktop that takes part. */
+  async syncSaves(gameId: string): Promise<SaveSync[]> {
+    if (inTauri) return invoke<SaveSync[]>("saves_sync", { gameId });
+    const game = state.games.find((g) => g.id === gameId);
+    const at = Math.floor(Date.now() / 1000);
+    return game ? sampleDetails(game).sync.map((s) => ({ ...s, at, outcome: "same" as const, files: 0 })) : [];
   },
 
   /** Copy the saves aside now. Resolves with the new overview. */

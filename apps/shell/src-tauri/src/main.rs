@@ -6,6 +6,7 @@ mod consoles;
 mod details;
 mod hosts;
 mod library;
+mod savesync;
 mod updates;
 
 use carla_core::{AppInfo, Role};
@@ -66,6 +67,7 @@ fn main() {
             details::saves_restore,
             details::saves_pick_folder,
             details::saves_forget_folder,
+            savesync::saves_sync,
             details::meta_search,
             details::meta_fetch,
             hosts::hosts_update,

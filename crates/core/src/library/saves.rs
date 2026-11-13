@@ -76,6 +76,14 @@ pub fn measure(dir: &Path) -> Option<Measure> {
     complete.then_some(m)
 }
 
+/// Whether a folder could be one game's save folder. The whole disk, or
+/// Windows itself, is not.
+pub fn sensible(dir: &Path) -> bool {
+    let deep_enough = dir.components().count() >= 3;
+    let text = dir.to_string_lossy().to_lowercase().replace('/', "\\");
+    deep_enough && !text.contains("\\windows\\") && !text.ends_with("\\windows") && !text.ends_with("\\program files") && !text.ends_with("\\program files (x86)")
+}
+
 fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
     fs::create_dir_all(to)?;
     for entry in fs::read_dir(from)? {

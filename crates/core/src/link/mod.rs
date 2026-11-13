@@ -7,8 +7,9 @@
 //! Every later request is signed with it, and so is every reply, so the desktop
 //! only obeys linked devices and the Ally only believes the desktop it linked.
 //!
-//! Requests are signed, not encrypted: what travels is game names and status.
-//! Between locations the traffic goes through Tailscale, which encrypts it.
+//! Requests are signed, not encrypted: what travels is game names, status and
+//! save files. Between locations the traffic goes through Tailscale, which
+//! encrypts it.
 
 use serde::{Deserialize, Serialize};
 
@@ -126,6 +127,33 @@ pub struct Pair {
     pub pin: String,
     /// Name the Ally gets in Sunshine's list of clients.
     pub name: String,
+}
+
+/// Asks a desktop for its copy of one game's saves.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavesFind {
+    pub game_id: String,
+    /// A game added by hand has a different id on each machine, so the name
+    /// is the fallback.
+    pub title: String,
+}
+
+/// A desktop's save folder for a game, as it is now.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavesFound {
+    /// Names the folder in the requests that follow.
+    pub key: String,
+    pub manifest: crate::library::sync::Manifest,
+}
+
+/// Names one file of a save folder. Also the first line of a file being
+/// written, followed by a line break and the contents.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SaveFile {
+    pub path: String,
+    /// Unix seconds it was saved, when writing.
+    #[serde(default)]
+    pub modified: i64,
 }
 
 /// Body of every reply that is not a success.

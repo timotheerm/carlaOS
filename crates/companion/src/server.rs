@@ -9,11 +9,13 @@ use carla_core::library::achievements::Achievement;
 use carla_core::library::Scanned;
 use carla_core::link::enrol::{Exchange, Shared, Side};
 use carla_core::link::sign::{self, Replay};
-use carla_core::link::{self, EnrolDone, EnrolFinish, EnrolOffer, EnrolStart, Hello, Pair, Prepare, Problem, RemoteGame, State, Status, Updating};
+use carla_core::library::saves::Backups;
+use carla_core::library::sync::{self, Side as _};
+use carla_core::link::{self, EnrolDone, EnrolFinish, EnrolOffer, EnrolStart, Hello, Pair, Prepare, Problem, RemoteGame, SaveFile, SavesFind, SavesFound, State, Status, Updating};
 use carla_core::{API_VERSION, VERSION};
 use serde::Serialize;
 
-use crate::files::{Config, Extra, Files, Pending};
+use crate::files::{Config, Extra, Files, Pending, SaveFolder};
 use crate::sunshine::Streamer;
 
 /// How long a scan of the installed games is reused.
@@ -339,6 +341,70 @@ impl Server {
         }
     }
 
+    /// Saves are left alone while a game runs here: it may be writing them.
+    fn saves_free(&self, now: i64) -> Result<(), (u16, String)> {
+        match self.files.playing(now) {
+            Some(playing) => refuse(409, &format!("{} is still running on {}. Its saves are brought in step once it has closed.", playing.title, self.config.name)),
+            None => Ok(()),
+        }
+    }
+
+    /// The save folder the administrator named for this game: by its id, or
+    /// by its name for a game that is not from a store.
+    fn saves_find(&self, bytes: &[u8], now: i64) -> Answer {
+        let wanted: SavesFind = body(bytes)?;
+        let folders = self.files.save_folders();
+        let title = wanted.title.trim().to_lowercase();
+        let by_id = folders.iter().find(|f| f.game_id.as_deref() == Some(wanted.game_id.as_str()));
+        let Some(found) = by_id.or_else(|| folders.iter().find(|f| !title.is_empty() && f.title.to_lowercase() == title)) else {
+            return json(&None::<SavesFound>);
+        };
+        self.saves_free(now)?;
+        let manifest = sync::manifest(&found.folder).map_err(|e| (503, e))?;
+        json(&Some(SavesFound { key: found.key.clone(), manifest }))
+    }
+
+    /// One step of bringing a save folder in step: `key/what`.
+    fn saves_step(&self, rest: &str, bytes: &[u8], now: i64) -> Answer {
+        let unknown = || (404, "The companion does not know that request.".to_string());
+        let (key, what) = rest.split_once('/').ok_or_else(unknown)?;
+        let Some(SaveFolder { folder, .. }) = self.files.save_folders().into_iter().find(|f| f.key == key) else {
+            return refuse(404, &format!("{} no longer keeps that game's saves in step.", self.config.name));
+        };
+        self.saves_free(now)?;
+        let side = sync::Folder { folder, backups: Backups::new(&self.files.save_copies(), key), now };
+        let done = || json(&serde_json::json!({ "done": true }));
+        match what {
+            "read" => {
+                let file: SaveFile = body(bytes)?;
+                side.read(&file.path).map(|contents| (contents, "application/octet-stream")).map_err(|e| (404, e))
+            }
+            "write" => {
+                // One line that names the file, then its contents.
+                let cut = bytes.iter().position(|b| *b == b'\n').ok_or((400, "The request was not understood.".to_string()))?;
+                let file: SaveFile = body(&bytes[..cut])?;
+                side.write(&file.path, &bytes[cut + 1..], file.modified).map_err(|e| (409, e))?;
+                done()
+            }
+            "remove" => {
+                let file: SaveFile = body(bytes)?;
+                side.remove(&file.path).map_err(|e| (409, e))?;
+                done()
+            }
+            "protect" => {
+                side.protect().map_err(|e| (503, e))?;
+                done()
+            }
+            _ => Err(unknown()),
+        }
+    }
+
+    /// Whether a device with this id is linked. Decides how much of a request
+    /// is read before its signature can be checked.
+    pub fn knows(&self, device: &str) -> bool {
+        self.files.devices().iter().any(|d| d.id == device)
+    }
+
     fn signed(&self, req: &Request, now: i64) -> Answer {
         match (req.method, req.path) {
             ("GET", "/v1/status") => json(&self.status(now)),
@@ -357,6 +423,8 @@ impl Server {
             ("POST", "/v1/stream/pair") => self.pair(req.body, req.from),
             ("POST", "/v1/power/sleep") => self.sleep(now),
             ("POST", "/v1/update") => self.update(now),
+            ("POST", "/v1/saves/find") => self.saves_find(req.body, now),
+            ("POST", path) if path.starts_with("/v1/saves/") => self.saves_step(&path["/v1/saves/".len()..], req.body, now),
             _ => refuse(404, "The companion does not know that request."),
         }
     }
@@ -411,15 +479,18 @@ pub fn serve(server: std::sync::Arc<Server>, http: tiny_http::Server) {
             let (server, http) = (server.clone(), http.clone());
             std::thread::spawn(move || {
                 while let Ok(mut request) = http.recv() {
-                    // Nothing the Ally sends is large.
-                    let mut bytes = Vec::new();
-                    let read = std::io::Read::read_to_end(&mut std::io::Read::take(request.as_reader(), 64 * 1024), &mut bytes);
                     let header = |name: &str| {
                         request.headers().iter().find(|h| h.field.as_str().as_str().eq_ignore_ascii_case(name)).map(|h| h.value.as_str().to_string())
                     };
                     let (device, time, nonce, signature) = (header(sign::DEVICE), header(sign::TIME), header(sign::NONCE), header(sign::SIGN));
                     let method = request.method().as_str().to_ascii_uppercase();
                     let path = request.url().split('?').next().unwrap_or_default().to_string();
+                    // Nothing the Ally sends is large, except a save file, and
+                    // that much is only read from a device that is linked.
+                    let save = path.starts_with("/v1/saves/") && path.ends_with("/write") && device.as_deref().is_some_and(|d| server.knows(d));
+                    let most = if save { sync::LARGEST_FILE + 4096 } else { 64 * 1024 };
+                    let mut bytes = Vec::new();
+                    let read = std::io::Read::read_to_end(&mut std::io::Read::take(request.as_reader(), most), &mut bytes);
                     let from = request.remote_addr().map(|a| a.ip().to_string()).unwrap_or_default();
                     let reply = if read.is_err() {
                         Reply { status: 400, kind: "application/json", body: b"{\"error\":\"The request was not understood.\"}".to_vec(), sign: None }
@@ -721,5 +792,77 @@ mod tests {
         desk.files.set_playing(None);
         link.sleep().unwrap();
         assert_eq!(SLEEPS.load(std::sync::atomic::Ordering::SeqCst), before + 1);
+    }
+
+    #[test]
+    fn saves_are_kept_in_step_with_a_desktop_only_where_its_administrator_said() {
+        use carla_core::library::sync::{bring_in_step, Folder, Way};
+        let desk = desk("saves", false);
+        let link = linked(&desk);
+        let there = desk.files.dir().join("desk-saves").join("Third Game");
+        let here = desk.files.dir().join("ally").join("saves");
+        std::fs::create_dir_all(&there).unwrap();
+        std::fs::create_dir_all(&here).unwrap();
+        let ally = Folder { folder: here.clone(), backups: Backups::new(&desk.files.dir().join("ally").join("copies"), "gog:30"), now: now_for_tests() };
+
+        // Nothing was said on the desktop: no saves are offered, for any name.
+        assert!(link.saves("gog:30", "Third Game").unwrap().is_none());
+        assert!(desk.files.set_save_folder(Some("gog:30"), "Third Game", std::path::Path::new("relative")).is_err());
+        assert!(desk.files.set_save_folder(Some("gog:30"), "Third Game", std::path::Path::new("/")).is_err());
+        let entry = desk.files.set_save_folder(Some("gog:30"), "Third Game", &there).unwrap();
+        assert!(link.saves("steam:10", "First Game").unwrap().is_none(), "other games stay private");
+
+        // Played on the desktop first: the Ally receives.
+        std::fs::write(there.join("slot1.sav"), b"desk day 1").unwrap();
+        std::fs::create_dir_all(there.join("profile")).unwrap();
+        std::fs::write(there.join("profile").join("big.bin"), vec![7u8; 300_000]).unwrap();
+        let remote = link.saves("gog:30", "whatever it is called on the Ally").unwrap().unwrap();
+        let first = bring_in_step(&ally, &remote, None).unwrap();
+        assert_eq!((first.way, first.moved.files), (Way::Fetch, 2));
+        assert_eq!(std::fs::read(here.join("profile").join("big.bin")).unwrap().len(), 300_000);
+
+        // Played on the Ally: the desktop receives, larger than an ordinary
+        // request may be, and keeps a safe copy of what it had.
+        std::fs::write(here.join("slot1.sav"), b"ally day 2").unwrap();
+        std::fs::write(here.join("profile").join("big.bin"), vec![9u8; 400_000]).unwrap();
+        std::fs::write(here.join("slot2.sav"), b"line one\nline two").unwrap();
+        let remote = link.saves("gog:30", "").unwrap().unwrap();
+        let second = bring_in_step(&ally, &remote, Some(&first.agreed)).unwrap();
+        assert_eq!((second.way, second.both_changed, second.moved.files), (Way::Send, false, 3));
+        assert_eq!(std::fs::read(there.join("slot1.sav")).unwrap(), b"ally day 2");
+        assert_eq!(std::fs::read(there.join("slot2.sav")).unwrap(), b"line one\nline two");
+        assert_eq!(std::fs::read(there.join("profile").join("big.bin")).unwrap(), vec![9u8; 400_000]);
+        let copies = Backups::new(&desk.files.save_copies(), &entry.key).list();
+        assert_eq!(copies.len(), 1);
+        let remote = link.saves("gog:30", "").unwrap().unwrap();
+        assert_eq!(bring_in_step(&ally, &remote, Some(&second.agreed)).unwrap().way, Way::Same);
+
+        // Nothing outside the named folder can be read or written.
+        std::fs::write(desk.files.dir().join("desk-saves").join("secret.txt"), b"private").unwrap();
+        use carla_core::library::sync::Side as _;
+        assert!(remote.read("../secret.txt").is_err());
+        assert!(remote.write("../secret.txt", b"x", 1).is_err());
+        assert!(remote.remove("../secret.txt").is_err());
+        assert_eq!(std::fs::read(desk.files.dir().join("desk-saves").join("secret.txt")).unwrap(), b"private");
+        let stranger = Link { key: vec![7; 32], ..link.clone() };
+        assert_eq!(stranger.saves("gog:30", "").err(), Some(Error::Refused));
+
+        // While a game runs on the desktop its saves are left alone.
+        desk.files.set_playing(Some(&crate::files::Playing { game_id: "gog:30".into(), title: "Third Game".into(), at: now_for_tests() }));
+        assert!(matches!(link.saves("gog:30", ""), Err(Error::Host(text)) if text.contains("still running")));
+        assert!(remote.write("slot1.sav", b"x", 1).is_err());
+        desk.files.set_playing(None);
+
+        // A game that is in no store is found by its name.
+        let loose = desk.files.dir().join("desk-saves").join("Lanterns");
+        std::fs::create_dir_all(&loose).unwrap();
+        desk.files.set_save_folder(None, "Paper Lanterns", &loose).unwrap();
+        assert!(link.saves("manual:0123", " paper lanterns ").unwrap().is_some());
+        assert!(link.saves("manual:0123", "Other").unwrap().is_none());
+
+        // Once the administrator takes it back, nothing is offered again.
+        assert_eq!(desk.files.clear_save_folder(&entry.key).unwrap().as_deref(), Some("Third Game"));
+        assert!(link.saves("gog:30", "Third Game").unwrap().is_none());
+        assert!(remote.read("slot1.sav").is_err());
     }
 }

@@ -36,6 +36,15 @@ const HELP: &str = "CarlaOS desktop companion
                              add a game that Steam does not list; put quotes
                              around a name or path that has spaces
   carla-companion drop KEY   take a game added by hand off the list
+  carla-companion saves      list the games whose saves are kept in step with the Ally
+  carla-companion saves set NAME FOLDER
+                             say where a game keeps its saves on this desktop
+  carla-companion saves clear KEY
+                             stop keeping a game's saves in step
+  carla-companion saves copies KEY
+                             list the safe copies made before saves were replaced
+  carla-companion saves restore KEY COPY
+                             put a safe copy back
   carla-companion sleep-test put this desktop to sleep now, the way the Ally would
   carla-companion status     show whether everything is ready
   carla-companion serve      run quietly (what happens when Windows starts)
@@ -302,6 +311,81 @@ fn configured(files: &Files) -> Result<Config, String> {
     files.config().ok_or_else(|| "The companion is not set up yet. Run it without arguments first.".to_string())
 }
 
+/// The commands about keeping saves in step. Only here, at the desktop, can
+/// a folder be named: the Ally can never point the companion at one.
+fn saves(files: &Files, args: &[String]) -> Result<i32, String> {
+    use carla_core::library::saves::Backups;
+    let folders = files.save_folders();
+    let entry = |key: Option<&String>| {
+        let key = key.ok_or("Say which game by its key (see carla-companion saves).")?;
+        folders.iter().find(|f| &f.key == key).ok_or_else(|| "No game has that key (see carla-companion saves).".to_string())
+    };
+    match args.first().map(String::as_str) {
+        None => {
+            if folders.is_empty() {
+                println!("No game's saves are kept in step yet. Add one with:");
+                println!("  carla-companion saves set \"NAME OF THE GAME\" \"C:\\path\\to\\its saves\"");
+            }
+            for f in &folders {
+                let gone = if f.folder.is_dir() { "" } else { "  (folder not found)" };
+                println!("{}  {}  {}{gone}", f.key, f.title, f.folder.display());
+            }
+            Ok(0)
+        }
+        Some("set") => {
+            let usage = "Say the game and its save folder: carla-companion saves set \"NAME\" \"C:\\path\\to\\saves\"";
+            let (name, folder) = (args.get(1).ok_or(usage)?, args.get(2).ok_or(usage)?);
+            // A game this desktop lists is known by its id, like on the Ally.
+            let wanted = name.trim().to_lowercase();
+            let store = installed().into_iter().map(|(source, g)| (format!("{source}:{}", g.source_id), g.title));
+            let by_hand = files.extras().into_iter().map(|e| (format!("manual:{}", e.key), e.title));
+            let known = store.chain(by_hand).find(|(id, title)| id.to_lowercase() == wanted || title.to_lowercase() == wanted);
+            let saved = match &known {
+                Some((id, title)) => files.set_save_folder(Some(id), title, std::path::Path::new(folder))?,
+                None => files.set_save_folder(None, name, std::path::Path::new(folder))?,
+            };
+            println!("Saves of {} are now kept in step with the Ally, from {}.", saved.title, saved.folder.display());
+            if known.is_none() {
+                println!("No game with that name is listed on this desktop, so it is matched with the Ally's game of exactly that name.");
+            }
+            println!("On the Ally the game needs its save folder too: Settings, Manage games.");
+            Ok(0)
+        }
+        Some("clear") => match files.clear_save_folder(args.get(1).ok_or("Say which game: carla-companion saves clear KEY (see carla-companion saves).")?)? {
+            Some(title) => {
+                println!("Saves of {title} are no longer kept in step. Nothing was deleted.");
+                Ok(0)
+            }
+            None => Err("No game has that key (see carla-companion saves).".to_string()),
+        },
+        Some("copies") => {
+            let f = entry(args.get(1))?;
+            let copies = Backups::new(&files.save_copies(), &f.key).list();
+            if copies.is_empty() {
+                println!("No safe copy of {} has been needed yet.", f.title);
+            }
+            for c in copies {
+                println!("{}  {} files, {} KB, taken {} minutes ago", c.id, c.files, c.bytes / 1024, (files::now() - c.at).max(0) / 60);
+            }
+            Ok(0)
+        }
+        Some("restore") => {
+            let f = entry(args.get(1))?;
+            let copy = args.get(2).ok_or("Say which copy (see carla-companion saves copies KEY).")?;
+            if files.playing(files::now()).is_some() {
+                return Err("Close the game first.".to_string());
+            }
+            Backups::new(&files.save_copies(), &f.key).restore(&f.folder, copy, files::now())?;
+            println!("That copy of {} is back in place. What was there before is kept as a new safe copy.", f.title);
+            Ok(0)
+        }
+        _ => {
+            println!("{HELP}");
+            Ok(0)
+        }
+    }
+}
+
 fn run(args: &[String]) -> Result<i32, String> {
     let files = Files::new(files::default_dir());
     match args.first().map(String::as_str) {
@@ -404,6 +488,7 @@ fn run(args: &[String]) -> Result<i32, String> {
                 None => Err("No game added by hand has that key.".to_string()),
             }
         }
+        Some("saves") => saves(&files, &args[1..]),
         Some("sleep-test") => {
             println!("Going to sleep in three seconds. Wake it from the Ally to check that waking works.");
             sleep_soon()?;

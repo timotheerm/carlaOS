@@ -39,12 +39,23 @@ export type Backup = { id: string; at: number; files: number; bytes: number };
 
 export type Saves = { folder: string; files: number; bytes: number; modified: number | null; backups: Backup[] };
 
+/// How a game's saves stand with one desktop that keeps them in step.
+export type SaveSync = {
+  host: string; // the desktop's name
+  at: number;
+  outcome: "same" | "sent" | "fetched" | "problem";
+  both_changed: boolean; // both had new saves; the older ones are in a safe copy
+  files: number;
+  problem: string | null;
+};
+
 /// What the page of one game shows before it starts.
 export type Details = {
   achievements: Achievement[]; // the game's own
   achievementsFrom: string | null; // "steam" or a desktop's name
   milestones: Achievement[]; // CarlaOS's own, which every game has
   saves: Saves | null; // when CarlaOS knows where they are
+  sync: SaveSync[]; // one line per desktop that keeps the saves in step
   sessions: number;
 };
 

@@ -112,6 +112,19 @@ pub struct Extra {
     pub cover: Option<PathBuf>,
 }
 
+/// Where one game keeps its saves on this desktop, said by the administrator
+/// so that the Ally and this desktop can keep them in step.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SaveFolder {
+    /// Names the folder in requests and in the commands.
+    pub key: String,
+    /// The catalogue id, when the game is one this desktop lists.
+    #[serde(default)]
+    pub game_id: Option<String>,
+    pub title: String,
+    pub folder: PathBuf,
+}
+
 /// The game the next stream is for.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Pending {
@@ -240,6 +253,50 @@ impl Files {
             self.write("games.json", &extras)?;
         }
         Ok(found)
+    }
+
+    pub fn save_folders(&self) -> Vec<SaveFolder> {
+        self.read("saves.json").unwrap_or_default()
+    }
+
+    /// Say where a game keeps its saves here. Saying it again replaces it.
+    pub fn set_save_folder(&self, game_id: Option<&str>, title: &str, folder: &Path) -> Result<SaveFolder, String> {
+        let title = title.trim();
+        if title.is_empty() || title.len() > 80 {
+            return Err("The game needs a name of at most 80 letters.".to_string());
+        }
+        if !folder.is_absolute() || !folder.is_dir() {
+            return Err(format!("{} is not a folder on this desktop. Give its full path.", folder.display()));
+        }
+        if !carla_core::library::saves::sensible(folder) {
+            return Err("That folder is too general. Give the folder that holds only this game's saves.".to_string());
+        }
+        // Reading it through also shows whether it is small enough.
+        carla_core::library::sync::manifest(folder)?;
+        let key = carla_core::library::manual_key(&game_id.map(str::to_string).unwrap_or_else(|| format!("title:{title}")));
+        let entry = SaveFolder { key, game_id: game_id.map(str::to_string), title: title.to_string(), folder: folder.to_path_buf() };
+        let mut folders = self.save_folders();
+        folders.retain(|f| f.key != entry.key);
+        folders.push(entry.clone());
+        folders.sort_by_key(|f| f.title.to_lowercase());
+        self.write("saves.json", &folders)?;
+        Ok(entry)
+    }
+
+    /// Stop keeping a game's saves in step. Returns its title when it was
+    /// there. Neither the saves nor their safe copies are touched.
+    pub fn clear_save_folder(&self, key: &str) -> Result<Option<String>, String> {
+        let mut folders = self.save_folders();
+        let found = folders.iter().position(|f| f.key == key).map(|i| folders.remove(i).title);
+        if found.is_some() {
+            self.write("saves.json", &folders)?;
+        }
+        Ok(found)
+    }
+
+    /// Where the safe copies of saves are kept.
+    pub fn save_copies(&self) -> PathBuf {
+        self.dir.join("save-copies")
     }
 
     /// Make a new code, replacing any earlier one.

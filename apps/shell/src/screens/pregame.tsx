@@ -1,7 +1,7 @@
 // The page of one game, shown before it starts, the way a console does: how
 // long it has been played, what has been achieved, and how the saves are.
 import { useEffect, useState } from "react";
-import type { Achievement, Details, Game, Saves } from "../data/types";
+import type { Achievement, Details, Game, SaveSync, Saves } from "../data/types";
 import { library, message } from "../library/store";
 import { Clock, Heart, Lock, SaveIcon, Sparkle, Trophy } from "../ui/icons";
 import { Badges, Cover, Empty, Row, amount, day, placeLabel, size, when } from "../ui/parts";
@@ -64,7 +64,20 @@ function Stat({ icon, label, value, children }: { icon: React.ReactNode; label: 
   );
 }
 
-function SavesPanel({ game, saves, onSaves, notify }: { game: Game; saves: Saves | null; onSaves: (s: Saves) => void; notify: Ctx["notify"] }) {
+// One sentence on how the saves stand with a desktop.
+function inStep(s: SaveSync): string {
+  if (s.outcome === "problem") return `Not in step with ${s.host}: ${s.problem ?? "something went wrong."}`;
+  if (s.both_changed) {
+    return s.outcome === "fetched"
+      ? `Both had new saves. The newer ones, from ${s.host}, are here now; the ones from this Ally are in a safe copy.`
+      : `Both had new saves. The newer ones, from this Ally, went to ${s.host}, which kept its own in a safe copy.`;
+  }
+  if (s.outcome === "fetched") return `Continues from ${s.host} · saves came over ${when(s.at)}`;
+  if (s.outcome === "sent") return `Ready to continue on ${s.host} · saves went over ${when(s.at)}`;
+  return `In step with ${s.host} · checked ${when(s.at)}`;
+}
+
+function SavesPanel({ game, saves, sync, onSaves, notify }: { game: Game; saves: Saves | null; sync: SaveSync[]; onSaves: (s: Saves) => void; notify: Ctx["notify"] }) {
   const [busy, setBusy] = useState(false);
   if (!game.places.includes("local")) {
     return <p className="lede">Saves for this game stay on the desktop it streams from.</p>;
@@ -85,6 +98,11 @@ function SavesPanel({ game, saves, onSaves, notify }: { game: Game; saves: Saves
             ? `Safe copy from ${when(latest.at)} · ${saves.backups.length} kept`
             : "No safe copy yet. CarlaOS makes one each time you finish playing."}
         </span>
+        {sync.map((s) => (
+          <span key={s.host} className={s.outcome === "problem" ? "savebox__sync savebox__sync--problem" : "savebox__sync"}>
+            {inStep(s)}
+          </span>
+        ))}
       </div>
       <button
         className="pill"
@@ -116,6 +134,12 @@ export function GameDetail({ gameId, onToggleFavourite, ...ctx }: Ctx & { gameId
   useEffect(() => {
     let current = true;
     library.details(gameId).then((d) => current && setDetails(d), () => undefined);
+    // Meanwhile the saves are brought in step with the desktops, which can
+    // take a moment; the page shows the result when there is one.
+    library
+      .syncSaves(gameId)
+      .then((sync) => (sync.length ? library.details(gameId) : null))
+      .then((d) => current && d && setDetails(d), () => undefined);
     return () => {
       current = false;
     };
@@ -192,7 +216,7 @@ export function GameDetail({ gameId, onToggleFavourite, ...ctx }: Ctx & { gameId
       {details && (
         <section className="row">
           <h2 className="row__title">Saves</h2>
-          <SavesPanel game={game} saves={details.saves} onSaves={(saves) => setDetails({ ...details, saves })} notify={ctx.notify} />
+          <SavesPanel game={game} saves={details.saves} sync={details.sync} onSaves={(saves) => setDetails({ ...details, saves })} notify={ctx.notify} />
         </section>
       )}
     </div>
