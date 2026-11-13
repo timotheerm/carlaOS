@@ -149,6 +149,8 @@ export function sampleDetails(game: Game): Details {
             ],
           }
         : null,
+    // One sample game shows what keeping saves in step looks like.
+    sync: local && modified !== null && game.kind !== "emulated" && game.platform !== "Steam" && game.places.length > 1 ? [{ host: "HOME PC", at: modified + 60, outcome: "sent", both_changed: false, files: 2, problem: null }] : [],
     sessions: played === 0 ? 0 : Math.max(1, Math.round(played / 70)),
   };
 }

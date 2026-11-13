@@ -183,6 +183,8 @@ pub fn library_launch(app: AppHandle, library: State<'_, Library>, game_id: Stri
     claim(&library, &view)?;
     let _ = app.emit(SESSION_EVENT, Some(view.clone()));
     let started_running = if place == LOCAL {
+        // What was played on a desktop since comes here first.
+        crate::savesync::all(&library, &game_id, true);
         let steam_root = locked(&library.0.steam_root).clone();
         launch::start(&install, steam_root.as_deref())
             .map(|child| Running::Game(Watch::new(&install, child)))
@@ -258,6 +260,13 @@ pub fn library_launch(app: AppHandle, library: State<'_, Library>, game_id: Stri
         if let Some(window) = app.get_webview_window("main") {
             let _ = window.unminimize();
             let _ = window.set_focus();
+        }
+        // Saves follow the player: to the desktops after playing here, back
+        // from the desktop after a stream.
+        if played && place == LOCAL {
+            crate::savesync::all(&library, &game_id, false);
+        } else if played {
+            crate::savesync::after_stream(&library, &game_id, &place);
         }
         if sleep_again {
             crate::hosts::sleep_again(&library, &place);

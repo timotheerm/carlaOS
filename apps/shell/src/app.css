@@ -1062,6 +1062,16 @@ button {
   font-weight: 800;
 }
 
+.savebox__sync {
+  margin-top: 0.35rem;
+  color: var(--accent);
+}
+
+.savebox__sync--problem {
+  color: var(--text-quiet);
+  font-style: italic;
+}
+
 .savebox .pill {
   flex: none;
   background: var(--accent-soft);

@@ -6,13 +6,15 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 
 use super::enrol::{valid_code, Exchange, Side};
-use super::{random_hex, sign, EnrolDone, EnrolFinish, EnrolOffer, EnrolStart, Hello, Pair, Prepare, Problem, RemoteGame, Status, Updating};
+use super::{random_hex, sign, EnrolDone, EnrolFinish, EnrolOffer, EnrolStart, Hello, Pair, Prepare, Problem, RemoteGame, SaveFile, SavesFind, SavesFound, Status, Updating};
+use crate::library::sync::{self, Manifest};
 use crate::API_VERSION;
 
 /// Enough for a status question on Wi-Fi; a desktop that is slower is off.
 pub const QUICK: Duration = Duration::from_secs(3);
 const SLOW: Duration = Duration::from_secs(40);
-const LARGEST_REPLY: u64 = 16 * 1024 * 1024;
+/// One save file is the largest thing a desktop sends.
+const LARGEST_REPLY: u64 = sync::LARGEST_FILE + 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Error {
@@ -208,5 +210,55 @@ impl Link {
     /// and is away for a moment while it restarts.
     pub fn update(&self) -> Result<Updating> {
         self.post("/v1/update", &serde_json::json!({}), SLOW)
+    }
+
+    /// The desktop's copy of a game's saves, when its administrator said
+    /// where that game keeps them there.
+    pub fn saves(&self, game_id: &str, title: &str) -> Result<Option<RemoteSaves<'_>>> {
+        let found: Option<SavesFound> = self.post("/v1/saves/find", &SavesFind { game_id: game_id.to_string(), title: title.to_string() }, SLOW)?;
+        Ok(found.map(|found| RemoteSaves { link: self, key: found.key, manifest: found.manifest }))
+    }
+}
+
+/// One game's save folder on a linked desktop.
+pub struct RemoteSaves<'a> {
+    link: &'a Link,
+    key: String,
+    manifest: Manifest,
+}
+
+impl RemoteSaves<'_> {
+    fn ask(&self, what: &str, body: &[u8]) -> std::result::Result<Vec<u8>, String> {
+        self.link.ask("POST", &format!("/v1/saves/{}/{what}", self.key), body, SLOW).map_err(|e| e.to_string())
+    }
+
+    fn file(path: &str, modified: i64) -> Vec<u8> {
+        serde_json::to_vec(&SaveFile { path: path.to_string(), modified }).expect("serialisable")
+    }
+}
+
+impl sync::Side for RemoteSaves<'_> {
+    /// As the desktop described it when it was asked.
+    fn manifest(&self) -> std::result::Result<Manifest, String> {
+        Ok(self.manifest.clone())
+    }
+
+    fn read(&self, path: &str) -> std::result::Result<Vec<u8>, String> {
+        self.ask("read", &Self::file(path, 0))
+    }
+
+    fn write(&self, path: &str, contents: &[u8], modified: i64) -> std::result::Result<(), String> {
+        let mut body = Self::file(path, modified);
+        body.push(b'\n');
+        body.extend_from_slice(contents);
+        self.ask("write", &body).map(|_| ())
+    }
+
+    fn remove(&self, path: &str) -> std::result::Result<(), String> {
+        self.ask("remove", &Self::file(path, 0)).map(|_| ())
+    }
+
+    fn protect(&self) -> std::result::Result<(), String> {
+        self.ask("protect", b"{}").map(|_| ())
     }
 }

@@ -2,7 +2,7 @@
 //! saves. Also backups of saves, and looking up public details for games
 //! added by hand.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use carla_core::library::achievements::{self, Achievement};
 use carla_core::library::meta::{self, Match};
@@ -25,6 +25,8 @@ pub struct Details {
     milestones: Vec<Achievement>,
     /// Saves on this machine, when CarlaOS knows where they are.
     saves: Option<Overview>,
+    /// How the saves stand with each desktop that keeps them in step.
+    sync: Vec<crate::savesync::SyncView>,
     /// Number of finished play sessions.
     sessions: usize,
 }
@@ -90,6 +92,7 @@ pub fn library_details(library: State<'_, Library>, game_id: String) -> Result<D
         achievements_from: from,
         milestones: achievements::milestones(&sessions),
         saves: if places.iter().any(|p| p == LOCAL) { overview(&library, &game_id) } else { None },
+        sync: crate::savesync::views(&library, &game_id),
         sessions: sessions.len(),
     })
 }
@@ -121,13 +124,6 @@ pub fn saves_restore(admin: State<'_, Admin>, library: State<'_, Library>, game_
     overview(&library, &game_id).ok_or_else(|| "The save folder could not be read.".to_string())
 }
 
-/// A folder that is the whole disk, or Windows itself, is not a save folder.
-fn sensible_save_folder(dir: &Path) -> bool {
-    let deep_enough = dir.components().count() >= 3;
-    let text = dir.to_string_lossy().to_lowercase().replace('/', "\\");
-    deep_enough && !text.contains("\\windows\\") && !text.ends_with("\\windows") && !text.ends_with("\\program files") && !text.ends_with("\\program files (x86)")
-}
-
 /// The administrator says where a game keeps its saves.
 #[tauri::command(async)]
 pub fn saves_pick_folder(app: AppHandle, admin: State<'_, Admin>, library: State<'_, Library>, game_id: String) -> Result<Option<Overview>, String> {
@@ -135,7 +131,7 @@ pub fn saves_pick_folder(app: AppHandle, admin: State<'_, Admin>, library: State
     let Some(dir) = app.dialog().file().set_title("Choose the folder with this game's saves").blocking_pick_folder().and_then(|f| f.into_path().ok()) else {
         return Ok(None);
     };
-    if !sensible_save_folder(&dir) {
+    if !saves::sensible(&dir) {
         return Err("That folder is too general. Choose the folder that holds only this game's saves.".to_string());
     }
     if saves::measure(&dir).is_none() {

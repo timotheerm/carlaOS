@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use rusqlite::{params, Connection, OptionalExtension};
 
 use super::emulation::Console;
-use super::{GameView, HostRow, Install, Kind, ManualGame, Scanned, LOCAL};
+use super::{GameView, HostRow, Install, Kind, ManualGame, Scanned, Synced, LOCAL};
 
 type Result<T> = std::result::Result<T, String>;
 
@@ -57,6 +57,17 @@ CREATE TABLE IF NOT EXISTS consoles (
     folder   TEXT NOT NULL,
     endings  TEXT NOT NULL,
     added    INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS save_sync (
+    game_id      TEXT NOT NULL,
+    host_id      TEXT NOT NULL,
+    digest       TEXT,
+    at           INTEGER NOT NULL,
+    outcome      TEXT NOT NULL,
+    both_changed INTEGER NOT NULL DEFAULT 0,
+    files        INTEGER NOT NULL DEFAULT 0,
+    problem      TEXT,
+    PRIMARY KEY (game_id, host_id)
 );
 CREATE TABLE IF NOT EXISTS hosts (
     id        TEXT PRIMARY KEY,
@@ -381,6 +392,7 @@ impl Store {
         }
         let tx = self.db.transaction().map_err(err)?;
         tx.execute("DELETE FROM installs WHERE place = ?1", params![id]).map_err(err)?;
+        tx.execute("DELETE FROM save_sync WHERE host_id = ?1", params![id]).map_err(err)?;
         tx.execute("DELETE FROM hosts WHERE id = ?1", params![id]).map_err(err)?;
         tx.commit().map_err(err)
     }
@@ -404,6 +416,42 @@ impl Store {
 
     pub fn set_save_path(&mut self, game_id: &str, path: Option<&Path>) -> Result<()> {
         self.db.execute("UPDATE games SET save_path = ?2 WHERE id = ?1", params![game_id, path.map(text)]).map_err(err)?;
+        Ok(())
+    }
+
+    /// What happened the last time a game's saves were brought in step with
+    /// each desktop.
+    pub fn synced(&self, game_id: &str) -> Result<Vec<Synced>> {
+        let mut query = self
+            .db
+            .prepare("SELECT host_id, digest, at, outcome, both_changed, files, problem FROM save_sync WHERE game_id = ?1 ORDER BY host_id")
+            .map_err(err)?;
+        let rows = query
+            .query_map(params![game_id], |r| {
+                Ok(Synced { host_id: r.get(0)?, digest: r.get(1)?, at: r.get(2)?, outcome: r.get(3)?, both_changed: r.get(4)?, files: r.get(5)?, problem: r.get(6)? })
+            })
+            .map_err(err)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(err)?;
+        Ok(rows)
+    }
+
+    /// Remember it. A row without a digest (something went wrong) keeps the
+    /// digest both machines last agreed on.
+    pub fn set_synced(&mut self, game_id: &str, row: &Synced) -> Result<()> {
+        self.db
+            .execute(
+                "INSERT INTO save_sync (game_id, host_id, digest, at, outcome, both_changed, files, problem) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                 ON CONFLICT (game_id, host_id) DO UPDATE SET digest = COALESCE(?3, digest), at = ?4, outcome = ?5, both_changed = ?6, files = ?7, problem = ?8",
+                params![game_id, row.host_id, row.digest, row.at, row.outcome, row.both_changed, row.files, row.problem],
+            )
+            .map_err(err)?;
+        Ok(())
+    }
+
+    /// A desktop no longer keeps this game's saves in step.
+    pub fn clear_synced(&mut self, game_id: &str, host_id: &str) -> Result<()> {
+        self.db.execute("DELETE FROM save_sync WHERE game_id = ?1 AND host_id = ?2", params![game_id, host_id]).map_err(err)?;
         Ok(())
     }
 
@@ -510,6 +558,13 @@ mod tests {
         store.end_session(done, 260).unwrap();
         assert_eq!(store.sessions(&id).unwrap(), [(200, 260)], "only finished sessions count");
         store.end_session(open, 150).unwrap();
+        let ok = Synced { host_id: "desk".into(), digest: Some("abc".into()), at: 10, outcome: "fetched".into(), both_changed: true, files: 3, problem: None };
+        store.set_synced(&id, &ok).unwrap();
+        let failed = Synced { digest: None, at: 20, outcome: "problem".into(), both_changed: false, files: 0, problem: Some("The disk is full.".into()), ..ok.clone() };
+        store.set_synced(&id, &failed).unwrap();
+        assert_eq!(store.synced(&id).unwrap(), [Synced { digest: Some("abc".into()), ..failed }], "a failure keeps what was agreed");
+        store.clear_synced(&id, "desk").unwrap();
+        assert!(store.synced(&id).unwrap().is_empty());
         assert_eq!(store.cached_achievements(&id).unwrap(), None);
         store.cache_achievements(&id, "[]", 5).unwrap();
         store.cache_achievements(&id, "[1]", 6).unwrap();

@@ -138,7 +138,7 @@ fn sync_due(host_id: &str) -> bool {
 /// once, so a desktop that has moved (home network to Tailscale, or a new
 /// address from the router) costs no extra waiting. The home network wins
 /// when several answer.
-fn reach(host: &HostRow) -> Result<(Link, Status, u64), Error> {
+pub(crate) fn reach(host: &HostRow) -> Result<(Link, Status, u64), Error> {
     let base = link_of(host).map_err(Error::Host)?;
     let asking: Vec<_> = wake::candidates(&host.address, &host.addresses)
         .into_iter()
@@ -424,6 +424,8 @@ pub(crate) fn start_stream(library: &Library, game_id: &str, place: &str, waking
         Err(e) => return Err(e.to_string()),
     };
     seen(library, &host, &link, &status);
+    // What was played on the Ally since goes to the desktop first.
+    crate::savesync::before_stream(library, game_id, &host, &link);
     // A desktop that has just woken may need a moment before Sunshine is up.
     let mut tries = 0;
     loop {
