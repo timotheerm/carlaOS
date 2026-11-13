@@ -1,24 +1,78 @@
 name: Build
 
+# Builds and tests every pull request, and turns every change that reaches
+# main into a numbered beta release with installers. How versions are
+# numbered, and how to publish one by hand, is in docs/RELEASES.md.
+
 on:
   push:
     branches: [main]
+    paths-ignore: ["**.md", "docs/**"]
   pull_request:
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Publish this version by hand (e.g. 0.5.0). Leave empty for the next number."
+        type: string
+      ref:
+        description: "Commit or tag on main to build for it. Leave empty for the newest."
+        type: string
+      previous:
+        description: "Commit or tag where its list of changes starts. Leave empty for the release before."
+        type: string
+      host:
+        description: "Include the desktop host (untick for versions from before it existed)"
+        type: boolean
+        default: true
 
 concurrency:
-  group: build-${{ github.ref }}
-  cancel-in-progress: true
+  # One at a time per branch, so two merges cannot claim the same number.
+  # Versions published by hand have their own number and may run side by side.
+  group: build-${{ github.ref }}-${{ inputs.version || 'auto' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
 
 jobs:
+  plan:
+    name: Version
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      version: ${{ steps.plan.outputs.version }}
+      release: ${{ steps.plan.outputs.release }}
+      republish: ${{ steps.plan.outputs.republish }}
+      ref: ${{ steps.plan.outputs.ref }}
+      target: ${{ steps.plan.outputs.target }}
+      previous: ${{ steps.plan.outputs.previous }}
+      host: ${{ steps.plan.outputs.host }}
+      tests: ${{ steps.plan.outputs.tests }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # version numbers come from the tags
+      - id: plan
+        run: scripts/release/plan.sh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IN_VERSION: ${{ inputs.version }}
+          IN_REF: ${{ inputs.ref }}
+          IN_PREVIOUS: ${{ inputs.previous }}
+          IN_HOST: ${{ inputs.host }}
+
   check:
     name: Tests and UI build
+    needs: plan
+    # An older commit that is only being published again was tested when it was new.
+    if: needs.plan.outputs.tests == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.ref }}
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --locked
@@ -34,9 +88,22 @@ jobs:
 
   windows:
     name: Windows installers
+    needs: plan
     runs-on: windows-latest
+    env:
+      VERSION: ${{ needs.plan.outputs.version }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.ref }}
+      # The packaging always comes from the commit this workflow runs from, so
+      # an older commit can be rebuilt with today's installers.
+      - uses: actions/checkout@v4
+        with:
+          path: .release-tools
+          sparse-checkout: |
+            packaging
+            scripts/release
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-node@v4
@@ -46,25 +113,101 @@ jobs:
           cache-dependency-path: apps/shell/package-lock.json
       - run: npm ci
         working-directory: apps/shell
+      # After the cache step on purpose: the cache is keyed on Cargo.lock as committed.
+      - name: Stamp version ${{ needs.plan.outputs.version }}
+        run: node .release-tools/scripts/release/stamp-version.mjs $env:VERSION .
       # Runs the Windows clean-up helper for real on this throwaway machine:
       # scan, apply, undo, and check everything is back as it was.
       - name: Test the core on Windows
+        if: needs.plan.outputs.tests == 'true'
         run: cargo test --locked -p carla-core -- --nocapture
       # Linking, signing and key sealing, with Windows data protection for real.
       - name: Test the companion on Windows
+        if: needs.plan.outputs.tests == 'true'
         run: cargo test --locked -p carla-companion
       - name: Build the shell installer
         run: npx tauri build
         working-directory: apps/shell
       - name: Build the companion
         run: cargo build --release --locked -p carla-companion
+      - name: Find NSIS
+        run: |
+          $found = @(
+            (Get-Command makensis -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Source),
+            "${env:ProgramFiles(x86)}\NSIS\makensis.exe",
+            "$env:LOCALAPPDATA\tauri\NSIS\makensis.exe"
+          ) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+          if (-not $found) {
+            choco install nsis -y --no-progress
+            $found = "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
+          }
+          Write-Host "NSIS: $found"
+          "MAKENSIS=$found" >> $env:GITHUB_ENV
+      - name: Make the installers
+        run: |
+          $options = @('--version', $env:VERSION, '--source', '.', '--out', 'installers')
+          if ('${{ needs.plan.outputs.host }}' -ne 'true') { $options += '--no-host' }
+          node .release-tools/packaging/package.mjs @options
+      # Installs them on this throwaway machine and checks what landed.
+      - name: Try the installers
+        run: |
+          $options = @{ Version = $env:VERSION; Dir = (Resolve-Path installers).Path }
+          if ('${{ needs.plan.outputs.host }}' -ne 'true') { $options.NoHost = $true }
+          & ./.release-tools/packaging/smoke-test.ps1 @options
       - uses: actions/upload-artifact@v4
         with:
-          name: carlaos-shell-installer
-          path: target/release/bundle/nsis/*.exe
+          name: carlaos-installers
+          path: installers/*
           if-no-files-found: error
-      - uses: actions/upload-artifact@v4
+
+  release:
+    name: ${{ needs.plan.outputs.release == 'true' && 'Publish the release' || 'Release preview' }}
+    needs: [plan, check, windows]
+    # Runs after a skipped test job too (an older commit published again), never after a failed one.
+    if: always() && needs.windows.result == 'success' && (needs.check.result == 'success' || needs.check.result == 'skipped')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ needs.plan.outputs.version }}
+      TARGET: ${{ needs.plan.outputs.target }}
+      PREVIOUS: ${{ needs.plan.outputs.previous }}
+      HOST: ${{ needs.plan.outputs.host }}
+    steps:
+      - uses: actions/checkout@v4
         with:
-          name: carlaos-companion
-          path: target/release/carla-companion.exe
-          if-no-files-found: error
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          name: carlaos-installers
+          path: installers
+      - name: Write the release text
+        run: |
+          scripts/release/notes.sh "$VERSION" "$TARGET" "$PREVIOUS" "$HOST" > notes.md
+          cat notes.md >> "$GITHUB_STEP_SUMMARY"
+          (cd installers && sha256sum --check SHA256SUMS.txt)
+      # On a pull request this job stops here: the text above is what the
+      # release would say, and nothing is published.
+      - name: Publish CarlaOS ${{ needs.plan.outputs.version }}
+        if: needs.plan.outputs.release == 'true'
+        run: |
+          tag="v$VERSION"
+          title="CarlaOS $VERSION (beta)"
+          # "file#label": the label is what the downloads list shows.
+          assets=("installers/CarlaOS-Ally-$VERSION-setup.exe#For the Ally: CarlaOS-Ally-$VERSION-setup.exe")
+          if [ "$HOST" = true ]; then
+            assets+=(
+              "installers/CarlaOS-Desktop-Host-$VERSION-setup.exe#For a desktop PC: CarlaOS-Desktop-Host-$VERSION-setup.exe"
+              "installers/CarlaOS-Full-$VERSION-setup.exe#Both, for testing: CarlaOS-Full-$VERSION-setup.exe"
+            )
+          fi
+          assets+=("installers/SHA256SUMS.txt#Checksums: SHA256SUMS.txt")
+          if [ "${{ needs.plan.outputs.republish }}" = true ]; then
+            gh release edit "$tag" --title "$title" --notes-file notes.md --prerelease
+            gh release upload "$tag" --clobber "${assets[@]}"
+          else
+            gh release create "$tag" --target "$TARGET" --title "$title" --notes-file notes.md --prerelease "${assets[@]}"
+          fi
+          echo "Published: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/$tag" >> "$GITHUB_STEP_SUMMARY"

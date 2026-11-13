@@ -20,12 +20,29 @@ beforehand or remotely by an administrator.
 | `apps/shell` | The handheld interface: Tauri 2, React, TypeScript. |
 | `crates/core` | Rust code shared by both ends: catalogue model, scanners, protocol. |
 | `crates/companion` | The background program for each desktop that streams games. |
+| `packaging` | The desktop host and full installers, and the check that tries them. |
+| `scripts/release` | Version numbering and release notes, run by the Build workflow. |
 | `docs` | Architecture and decisions. |
+
+## Downloads
+
+Every feature that is merged becomes a numbered beta on the
+[releases page](https://github.com/timotheerm/carlaOS/releases), and every
+earlier version stays there to go back to. Each release has three installers:
+
+| File | For |
+| --- | --- |
+| `CarlaOS-Ally-<version>-setup.exe` | The Ally, or a laptop standing in for it. |
+| `CarlaOS-Desktop-Host-<version>-setup.exe` | A desktop PC that your games run on. |
+| `CarlaOS-Full-<version>-setup.exe` | Both on one machine, with a tick box for each. For testing. |
+
+How versions are numbered, how to go back to an older one and how to publish
+one by hand: [docs/RELEASES.md](docs/RELEASES.md).
 
 ## Building
 
-Every push builds a Windows installer in GitHub Actions. Open the latest
-**Build** run and download `carlaos-shell-installer`.
+Every pull request is built and tested in GitHub Actions, installers included
+(the `carlaos-installers` artifact of its **Build** run).
 
 To work on it locally on Windows:
 
