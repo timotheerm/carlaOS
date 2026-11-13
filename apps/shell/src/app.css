@@ -499,6 +499,14 @@ button {
   font-weight: 600;
 }
 
+/* A line under a setting that says what it last did. */
+.setting__note {
+  margin: -0.35rem 0 0.2rem 2rem;
+  color: var(--text-quiet);
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
 /* ---------- game detail ---------- */
 .detail {
   display: grid;

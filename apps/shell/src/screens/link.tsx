@@ -3,10 +3,59 @@
 import { useEffect, useLayoutEffect, useState } from "react";
 import { backend } from "../cleanup/backend";
 import type { AdminStatus } from "../cleanup/types";
-import type { FoundHost, Host } from "../data/types";
+import type { FoundHost, Host, HostPicture } from "../data/types";
 import { library, message } from "../library/store";
 import { focusFirst, keepFocus } from "../nav/focus";
 import { CodePad, PinPad } from "../ui/pin";
+
+const PICTURES: Record<string, string> = {
+  auto: "Automatic",
+  auto120: "Automatic, up to 120 a second",
+  smooth: "Always 1080p at 120, 40 Mbit/s",
+  sharp: "Always 1080p at 60, 25 Mbit/s",
+  balanced: "Always 1080p at 60, 12 Mbit/s",
+  light: "Always 720p at 60, 7 Mbit/s",
+  lightest: "Always 720p at 30, 3 Mbit/s",
+};
+
+function lastPicture(last: NonNullable<HostPicture["last"]>): string {
+  const got = `Last stream: ${last.height}p at ${last.fps}, ${last.mbps} Mbit/s`;
+  if (!last.automatic || last.latency_ms === null) return got;
+  const speed = last.link_kbps === null ? "" : last.link_kbps >= 10_000 ? `${Math.round(last.link_kbps / 1000)} Mbit/s, ` : `${(last.link_kbps / 1000).toFixed(1)} Mbit/s, `;
+  return `${got} · connection ${speed}${last.latency_ms} ms${last.away ? ", away from home" : ""}`;
+}
+
+// The picture of streams from this desktop. Automatic measures the
+// connection before each stream; each press steps to the next choice.
+function PictureSetting({ host, notify }: { host: Host; notify: (text: string) => void }) {
+  const [picture, setPicture] = useState<HostPicture | null>(null);
+  useEffect(() => {
+    let current = true;
+    library.hostPicture(host.id).then((p) => current && setPicture(p), () => undefined);
+    return () => {
+      current = false;
+    };
+  }, [host.id]);
+  const note = picture?.last ? lastPicture(picture.last) : picture?.setting.startsWith("auto") ? "The connection is measured before each stream." : null;
+  return (
+    <>
+      <button
+        className="setting"
+        data-focus
+        data-fid="desk:picture"
+        onClick={() => {
+          if (!picture) return;
+          const next = picture.settings[(picture.settings.indexOf(picture.setting) + 1) % picture.settings.length];
+          library.setHostPicture(host.id, next).then(setPicture, (e) => notify(message(e)));
+        }}
+      >
+        <span>Picture</span>
+        <span className="setting__value">{picture === null ? "…" : (PICTURES[picture.setting] ?? picture.setting)}</span>
+      </button>
+      {note && <p className="setting__note">{note}</p>}
+    </>
+  );
+}
 
 type Step =
   | { at: "list" }
@@ -304,6 +353,7 @@ export function LinkDesktops({ hosts, notify }: { hosts: Host[]; notify: (text: 
             <span className="setting__value">{host.canWake ? "The Ally can wake it again" : "It has not said how to wake it yet"}</span>
           </button>
         )}
+        <PictureSetting host={host} notify={notify} />
         <AdminSwitch host={host} notify={notify} />
         <button className="setting" data-focus data-fid="desk:remove" onClick={() => setStep({ at: "remove", host })}>
           <span>Remove {host.name}</span>

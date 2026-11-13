@@ -6,7 +6,7 @@ import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { games as sampleGames, hosts as sampleHosts } from "../data/sample";
 import { sampleDetails, sampleMatches } from "../data/sample";
-import type { Console, ConsoleHint, Details, FoundHost, Game, Host, HostState, Kind, Match, NewGame, SaveSync, Saves, Session } from "../data/types";
+import type { Console, ConsoleHint, Details, FoundHost, Game, Host, HostPicture, HostState, Kind, Match, NewGame, SaveSync, Saves, Session } from "../data/types";
 import { inTauri } from "../native";
 import { when } from "../ui/parts";
 
@@ -160,6 +160,16 @@ async function refreshHosts() {
   }
 }
 
+const previewPictures = new Map<string, string>();
+function previewPicture(id: string): HostPicture {
+  return {
+    setting: previewPictures.get(id) ?? "auto",
+    settings: ["auto", "auto120", "smooth", "sharp", "balanced", "light", "lightest"],
+    // One sample desktop shows what a measured stream looks like.
+    last: id === "home" ? { level: "sharp", automatic: true, height: 1080, fps: 60, mbps: 25, latency_ms: 4, link_kbps: 310_000, away: false, at: Math.floor(Date.now() / 1000) - 5400 } : null,
+  };
+}
+
 export const library = {
   /** Called once when the shell starts. */
   async start() {
@@ -260,6 +270,19 @@ export const library = {
     if (inTauri) await invoke("hosts_set_admin", { id, allowed });
     else if (allowed) previewAdmin.add(id);
     else previewAdmin.delete(id);
+  },
+
+  /** A desktop's picture setting and what its last stream got. */
+  async hostPicture(id: string): Promise<HostPicture> {
+    if (inTauri) return invoke<HostPicture>("hosts_picture", { id });
+    return previewPicture(id);
+  },
+
+  /** Choose the picture of streams from a desktop. Administrator only. */
+  async setHostPicture(id: string, setting: string): Promise<HostPicture> {
+    if (inTauri) return invoke<HostPicture>("hosts_set_picture", { id, setting });
+    previewPictures.set(id, setting);
+    return previewPicture(id);
   },
 
   /** Send a desktop to sleep. */

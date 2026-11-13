@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::library::{saves, Kind, ManualGame, Store, LOCAL};
+use crate::link::quality::Setting;
 
 /// One thing the administrator asked for.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -53,7 +54,7 @@ impl Done {
 }
 
 /// Everything that can be asked, for the help text and to refuse the rest.
-pub const OPS: &[&str] = &["status", "games", "rescan", "add_game", "remove_game", "save_folder", "desktops", "cleanup_scan", "cleanup_apply", "cleanup_undo", "update", "restart", "startup"];
+pub const OPS: &[&str] = &["status", "games", "rescan", "add_game", "remove_game", "save_folder", "desktops", "cleanup_scan", "cleanup_apply", "cleanup_undo", "update", "restart", "startup", "picture"];
 
 fn text(args: &Value, name: &str) -> Result<String, String> {
     args[name].as_str().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string).ok_or_else(|| format!("The request is missing \"{name}\"."))
@@ -132,10 +133,25 @@ pub fn catalogue(store: &mut Store, op: &str, args: &Value, now: i64) -> Option<
         "desktops" => store.hosts().and_then(|hosts| {
             let mut out = Vec::new();
             for h in hosts {
-                out.push(json!({ "id": h.id, "name": h.name, "address": h.address, "last_seen": h.last_seen, "may_administer": store.host_admin(&h.id)? }));
+                let (setting, streamed) = store.host_quality(&h.id)?;
+                out.push(json!({
+                    "id": h.id, "name": h.name, "address": h.address, "last_seen": h.last_seen, "may_administer": store.host_admin(&h.id)?,
+                    "picture": setting.name(), "streamed": streamed,
+                }));
             }
             Ok(Value::Array(out))
         }),
+        "picture" => (|| {
+            let wanted = text(args, "desktop")?;
+            let hosts = store.hosts()?;
+            let host = hosts.iter().find(|h| h.id == wanted || h.name.eq_ignore_ascii_case(&wanted)).ok_or_else(|| format!("The Ally is not linked to a desktop called \"{wanted}\"."))?;
+            if let Some(name) = args["picture"].as_str() {
+                let setting = Setting::parse(name).ok_or_else(|| format!("\"{name}\" is not a picture. Use one of: {}.", Setting::all().iter().map(|s| s.name()).collect::<Vec<_>>().join(", ")))?;
+                store.set_host_quality(&host.id, setting)?;
+            }
+            let (setting, streamed) = store.host_quality(&host.id)?;
+            Ok(json!({ "id": host.id, "name": host.name, "picture": setting.name(), "streamed": streamed }))
+        })(),
         _ => return None,
     })
 }
@@ -178,10 +194,11 @@ mod tests {
         assert_eq!(ask("remove_game", json!({ "id": id })).unwrap()["title"].as_str(), Some("Paper Lanterns"));
         assert_eq!(ask("games", Value::Null).unwrap(), json!([]));
         assert_eq!(ask("desktops", Value::Null).unwrap(), json!([]));
+        assert!(ask("picture", json!({ "desktop": "HOME PC" })).is_err(), "not linked to it");
 
         // What needs more than the catalogue is left to the shell.
         assert!(catalogue(&mut store, "restart", &Value::Null, 100).is_none());
-        assert!(OPS.iter().filter(|op| catalogue(&mut store, op, &Value::Null, 100).is_some()).count() == 5);
+        assert!(OPS.iter().filter(|op| catalogue(&mut store, op, &Value::Null, 100).is_some()).count() == 6);
         let failed = Done::of("7", Err("No.".into()));
         assert_eq!((failed.ok, failed.error()), (false, Some("No.")));
         assert_eq!(Done::of("7", Ok(json!(1))).error(), None);

@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 use carla_core::library::achievements::Achievement;
 use carla_core::library::Scanned;
 use carla_core::link::enrol::{Exchange, Shared, Side};
+use carla_core::link::quality;
 use carla_core::link::sign::{self, Replay};
 use carla_core::library::saves::Backups;
 use carla_core::library::sync::{self, Side as _};
@@ -93,6 +94,20 @@ fn refuse<T>(status: u16, text: &str) -> Result<T, (u16, String)> {
 
 fn body<'a, T: serde::Deserialize<'a>>(bytes: &'a [u8]) -> Result<T, (u16, String)> {
     serde_json::from_slice(bytes).map_err(|_| (400, "The request was not understood.".to_string()))
+}
+
+/// Bytes that mean nothing and do not shrink if something on the way
+/// compresses, for measuring the connection.
+fn filler(bytes: usize) -> Vec<u8> {
+    let mut state = 0x9E37_79B9_7F4A_7C15u64;
+    (0..bytes)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state as u8
+        })
+        .collect()
 }
 
 fn locked<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -462,6 +477,10 @@ impl Server {
                     None => refuse(404, &format!("That game is no longer installed on {}.", self.config.name)),
                 }
             }
+            ("GET", path) if path.starts_with("/v1/probe/") => match path["/v1/probe/".len()..].parse::<usize>() {
+                Ok(bytes) if bytes <= quality::LARGEST_PROBE => Ok((filler(bytes), "application/octet-stream")),
+                _ => refuse(400, "That is more than a measurement needs."),
+            },
             ("POST", "/v1/stream/prepare") => self.prepare(req.body, now),
             ("POST", "/v1/stream/pair") => self.pair(req.body, req.from),
             ("POST", "/v1/power/sleep") => self.sleep(now),
@@ -935,6 +954,23 @@ mod tests {
         assert!(!desk.files.take_end(now_for_tests()));
         let stranger = Link { key: vec![7; 32], ..link.clone() };
         assert_eq!(stranger.end_game().err(), Some(Error::Refused));
+    }
+
+    #[test]
+    fn a_linked_ally_can_measure_the_connection_and_a_stranger_cannot() {
+        use carla_core::link::quality::{self, Level, Setting};
+        let desk = desk("probe", false);
+        let link = linked(&desk);
+        assert!(link.probe(0).is_ok());
+        assert!(link.probe(300_000).is_ok());
+        assert!(matches!(link.probe(quality::LARGEST_PROBE + 1), Err(Error::Host(_))), "no more than a measurement needs");
+        // Over the loopback the whole measurement comes out as a fast, steady line.
+        let measured = quality::measure(&|bytes| link.probe(bytes).ok(), false).expect("measured");
+        assert!(measured.kbps.unwrap() > 50_000, "{measured:?}");
+        assert_eq!(quality::choose(Setting::default(), Some(measured), false).level, Level::Sharp);
+        let stranger = Link { key: vec![7; 32], ..link.clone() };
+        assert_eq!(stranger.probe(1024).err(), Some(Error::Refused));
+        assert_eq!(quality::measure(&|bytes| stranger.probe(bytes).ok(), false), None);
     }
 
     #[test]

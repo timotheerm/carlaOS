@@ -16,11 +16,13 @@ pub struct Picture {
     pub width: u32,
     pub height: u32,
     pub fps: u32,
+    /// How much the video may use, in kilobits a second.
+    pub kbps: u32,
 }
 
 impl Default for Picture {
     fn default() -> Self {
-        Self { width: 1920, height: 1080, fps: 60 }
+        Self { width: 1920, height: 1080, fps: 60, kbps: 25_000 }
     }
 }
 
@@ -47,6 +49,8 @@ pub fn stream_args(address: &str, picture: Picture) -> Vec<String> {
         format!("{}x{}", picture.width, picture.height),
         "--fps".to_string(),
         picture.fps.to_string(),
+        "--bitrate".to_string(),
+        picture.kbps.to_string(),
         "--display-mode".to_string(),
         "fullscreen".to_string(),
         // Leaving the stream must not close the game on the desktop: the
@@ -107,6 +111,7 @@ mod tests {
         assert_eq!(args[..3], ["stream", "192.168.1.20", "CarlaOS"]);
         assert!(args.windows(2).any(|w| w == ["--resolution", "1920x1080"]));
         assert!(args.windows(2).any(|w| w == ["--fps", "60"]));
+        assert!(args.windows(2).any(|w| w == ["--bitrate", "25000"]));
         assert!(args.windows(2).any(|w| w == ["--display-mode", "fullscreen"]));
         assert!(args.contains(&"--no-quit-after".to_string()));
     }

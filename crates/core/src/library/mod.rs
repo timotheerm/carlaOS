@@ -163,6 +163,14 @@ pub struct Synced {
     pub problem: Option<String>,
 }
 
+/// The picture a stream from a desktop got, and when.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Streamed {
+    pub choice: crate::link::quality::Choice,
+    /// Unix seconds.
+    pub at: i64,
+}
+
 /// A linked desktop as the catalogue stores it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostRow {
