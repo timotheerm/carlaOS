@@ -22,7 +22,10 @@ be allowed first: Settings, Desktops, this desktop, \"Administer this Ally\".
   carla-companion ally add NAME PROGRAM [--args OPTIONS] [--kind game|port|homebrew] [--about TEXT] [--console NAME]
                                         add a program that is on the Ally as a game; a shortcut
                                         is followed, and --console says what a port is from
-  carla-companion ally remove ID        take a game added by hand off its library
+  carla-companion ally cloud LINK [NAME]
+                                        add a cloud game: the link to its page on GeForce NOW,
+                                        Xbox Cloud Gaming, Boosteroid or Luna
+  carla-companion ally remove ID        take a game added by hand, or a cloud game, off its library
   carla-companion ally saves ID FOLDER  say where a game keeps its saves on the Ally
   carla-companion ally saves ID --forget
   carla-companion ally desktops         the desktops the Ally is linked to
@@ -78,6 +81,7 @@ pub fn request(words: &[String]) -> Result<Request, String> {
         ["cleanup", way @ ("apply" | "undo"), ids @ ..] if !ids.is_empty() => {
             Ok(Request { op: if *way == "apply" { "cleanup_apply" } else { "cleanup_undo" }, args: json!({ "ids": ids }), patience: slow })
         }
+        ["cloud", link, name @ ..] => Ok(Request { op: "add_cloud", args: json!({ "link": link, "title": name.join(" ") }), patience: quick }),
         ["remove", id] => Ok(Request { op: "remove_game", args: json!({ "id": id }), patience: quick }),
         ["saves", id, "--forget"] => Ok(Request { op: "save_folder", args: json!({ "id": id }), patience: quick }),
         ["saves", id, folder] => Ok(Request { op: "save_folder", args: json!({ "id": id, "folder": folder }), patience: quick }),
@@ -150,10 +154,11 @@ pub fn show(op: &str, out: &Value) -> String {
                 .into_iter()
                 .flatten()
                 .map(|g| {
-                    let place = match (g["on_ally"].as_bool() == Some(true), g["desktops"].as_u64().unwrap_or(0)) {
-                        (true, 0) => "on the Ally",
-                        (true, _) => "on the Ally and streamed",
-                        (false, _) => "streamed",
+                    let place = match (g["on_ally"].as_bool() == Some(true), g["desktops"].as_u64().unwrap_or(0), g["cloud"].as_bool() == Some(true)) {
+                        (_, _, true) => "in the cloud",
+                        (true, 0, _) => "on the Ally",
+                        (true, _, _) => "on the Ally and streamed",
+                        (false, _, _) => "streamed",
                     };
                     let saves = g["save_folder"].as_str().map(|f| format!("\n    saves: {f}")).unwrap_or_default();
                     format!("{}\n    {} · {} · {place} · {} min played{saves}", word(&g["title"]), word(&g["id"]), word(&g["platform"]), g["minutes"])
@@ -213,6 +218,14 @@ pub fn show(op: &str, out: &Value) -> String {
             }
             lines.join("\n")
         }
+        "add_cloud" => format!(
+            "{} was added to the Ally, played on {}. Its id is {}.\nFor a picture: carla-companion ally art {}\nThe first time, sign in to {} on the Ally: Cloud, then its tile.",
+            word(&out["title"]),
+            word(&out["service"]),
+            word(&out["id"]),
+            word(&out["id"]),
+            word(&out["service"])
+        ),
         "art_set" => format!("{} has its new {}.", word(&out["title"]), if out["shape"] == "wide" { "wide picture" } else { "cover" }),
         "art_clear" => format!("{} is back to the picture it had by itself.", word(&out["title"])),
         "art_key" => if out["key_set"].as_bool() == Some(true) {
@@ -410,11 +423,12 @@ mod tests {
         assert_eq!(request(&words(r#"art manual:1 ocarina of time"#)).unwrap().args, json!({ "id": "manual:1", "term": "ocarina of time" }));
         assert_eq!(request(&words("art steam:10")).unwrap().args, json!({ "id": "steam:10", "term": "" }));
         assert_eq!(request(&words("art key none")).unwrap().args, json!({ "key": "" }));
+        assert_eq!(request(&words("cloud https://www.xbox.com/play/games/x/1 Forza 5")).unwrap().args, json!({ "link": "https://www.xbox.com/play/games/x/1", "title": "Forza 5" }));
         for wrong in ["cleanup apply", "add OnlyAName", "add A B --colour pink", "remove", "format c:", "saves", "startup maybe", "picture", "picture HOME ultra", "art", "art use 2"] {
             assert!(request(&words(wrong)).is_err(), "{wrong:?} is not a request");
         }
         // Everything that can be typed is something the Ally knows.
-        for line in ["status", "games", "rescan", "add A B", "remove X", "saves X Y", "desktops", "cleanup", "cleanup apply X", "cleanup undo X", "update", "restart", "startup", "startup on", "picture HOME", "picture HOME auto120", "picture HOME light", "art X", "art X zelda", "art clear X", "art key abcdef0123456789"] {
+        for line in ["status", "games", "rescan", "add A B", "remove X", "saves X Y", "desktops", "cleanup", "cleanup apply X", "cleanup undo X", "update", "restart", "startup", "startup on", "picture HOME", "picture HOME auto120", "picture HOME light", "art X", "art X zelda", "art clear X", "art key abcdef0123456789", "cloud https://www.xbox.com/play", "cloud https://www.xbox.com/play Forza Horizon"] {
             assert!(carla_core::remote::OPS.contains(&request(&words(line)).unwrap().op), "{line}");
         }
     }

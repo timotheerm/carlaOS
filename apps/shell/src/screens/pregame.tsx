@@ -80,6 +80,7 @@ function inStep(s: SaveSync): string {
 function SavesPanel({ game, saves, sync, onSaves, notify }: { game: Game; saves: Saves | null; sync: SaveSync[]; onSaves: (s: Saves) => void; notify: Ctx["notify"] }) {
   const [busy, setBusy] = useState(false);
   if (!game.places.includes("local")) {
+    if (game.places.includes("cloud")) return <p className="lede">{game.platform} keeps the saves of this game, in your account there.</p>;
     return <p className="lede">Saves for this game stay on the desktop it streams from.</p>;
   }
   if (!saves) {
@@ -180,7 +181,7 @@ export function GameDetail({ gameId, onToggleFavourite, ...ctx }: Ctx & { gameId
             {game.places.map((place, i) => {
               const host = ctx.hosts.find((h) => h.id === place);
               const away = host && host.state !== "ready" && host.state !== "busy" && host.state !== "unknown";
-              const label = place === "local" ? "Play" : `Stream from ${placeLabel(place, ctx.hosts)}`;
+              const label = place === "local" ? "Play" : place === "cloud" ? `Play on ${game.platform}` : `Stream from ${placeLabel(place, ctx.hosts)}`;
               return (
                 <button
                   key={place}

@@ -4,6 +4,7 @@
 mod admin;
 mod art;
 mod boot;
+mod cloud;
 mod consoles;
 mod details;
 mod device;
@@ -95,6 +96,9 @@ fn main() {
             quick::quick_set_brightness,
             quick::quick_close,
             quick::quick_end_game,
+            cloud::cloud_inspect,
+            cloud::cloud_add,
+            cloud::cloud_open,
             art::art_find,
             art::art_use,
             art::art_pick,

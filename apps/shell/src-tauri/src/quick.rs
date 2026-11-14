@@ -11,6 +11,7 @@
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use std::time::{Duration, Instant};
 
+use carla_core::library::cloud::CLOUD;
 use carla_core::library::LOCAL;
 use carla_core::quick::{Chord, Presses};
 use serde::Serialize;
@@ -43,7 +44,7 @@ pub struct QuickState {
 
 fn state(library: &Library) -> QuickState {
     let (title, stream, since) = match locked(&library.0.active).as_ref() {
-        Some(active) => (Some(active.view.title.clone()), active.place != LOCAL, Some(active.since)),
+        Some(active) => (Some(active.view.title.clone()), active.place != LOCAL && active.place != CLOUD, Some(active.since)),
         None => (None, false, None),
     };
     QuickState { title, stream, since, sound: device::sound(), brightness: device::brightness(), battery: device::battery() }
@@ -179,7 +180,7 @@ pub fn quick_close(app: AppHandle) {
 #[tauri::command(async)]
 pub fn quick_end_game(app: AppHandle, library: State<'_, Library>) {
     let place = locked(&library.0.active).as_ref().map(|a| a.place.clone());
-    if let Some(place) = place.filter(|p| p != LOCAL) {
+    if let Some(place) = place.filter(|p| p != LOCAL && p != CLOUD) {
         crate::hosts::end_game(&library, &place);
     }
     if let Some(active) = locked(&library.0.active).as_mut() {

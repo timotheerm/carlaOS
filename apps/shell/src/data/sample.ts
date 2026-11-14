@@ -67,6 +67,10 @@ export const games: Game[] = [
     "Arcade rally racing with chunky cars and big jumps."),
   g("ocean-sixty-four", "Harbour 64", "Standalone", "port", 205, ["local"], 410, "2026-10-25", "2026-10-02",
     "A community-built native version of a classic seaside adventure.", "Nintendo 64"),
+  g("cloud-skyline", "Skyline Drift", "Xbox Cloud Gaming", "game", 285, ["cloud"], 130, "2026-11-07", "2026-10-30",
+    "Open-road racing across a coastline that never ends."),
+  g("cloud-ember", "Ember Guard", "GeForce NOW", "game", 10, ["cloud"], 0, undefined, "2026-11-12",
+    "A tower-defence game where the towers are dragons."),
   g("open-quarry", "Open Quarry", "Standalone", "port", 30, ["local", "home"], 15, "2026-09-05", "2026-09-05",
     "An open-source reimplementation of a beloved mining shooter."),
 ];
@@ -75,6 +79,7 @@ export const cloud: CloudService[] = [
   { id: "gfn", name: "GeForce NOW", note: "Your own PC games, on a rented cloud PC", hue: 110, kind: "Cloud PC" },
   { id: "xcloud", name: "Xbox Cloud Gaming", note: "Game Pass games, streamed", hue: 130, kind: "Game Pass" },
   { id: "boosteroid", name: "Boosteroid", note: "Your own PC games, on a rented cloud PC", hue: 210, kind: "Cloud PC" },
+  { id: "luna", name: "Amazon Luna", note: "Luna+ and Prime games, streamed", hue: 270, kind: "Channels" },
 ];
 
 // ---- what the browser preview shows on a game's page ----

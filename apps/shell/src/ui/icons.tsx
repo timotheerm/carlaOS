@@ -73,6 +73,13 @@ export const SaveIcon = () => (
   </Icon>
 );
 
+/** Played on a cloud gaming service. */
+export const CloudIcon = () => (
+  <Icon>
+    <path d="M7.5 18.5h9.5a4 4 0 00.6-7.95A5.5 5.5 0 006.9 9.6 4.5 4.5 0 007.5 18.5z" />
+  </Icon>
+);
+
 const SOURCE: Record<Kind, ReactNode> = {
   // A shopping bag: came from a store.
   game: <path d="M6 8h12l-1 11.5H7zM9 8V6.5a3 3 0 016 0V8" />,

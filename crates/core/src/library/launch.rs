@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 
-use super::{shortcut, steam, Install};
+use super::{cloud, shortcut, steam, Install};
 
 /// How long a game may take to appear after being asked to start. Steam can
 /// sit on "updating" or "syncing saves" for a while first.
@@ -79,6 +79,18 @@ pub fn start(install: &Install, steam_root: Option<&Path>) -> io::Result<Option<
             }
             open_address(&install.args)?;
             Ok(None)
+        }
+        "cloud" => {
+            // Checked again here: only a page of a known service is opened.
+            let (_, link) = cloud::checked(&install.args).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+            if !install.install_path.is_absolute() {
+                return Err(io::Error::new(io::ErrorKind::InvalidInput, "the cloud browser profile has no folder"));
+            }
+            let browser = cloud::find_browser().ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Microsoft Edge was not found"))?;
+            std::fs::create_dir_all(&install.install_path)?;
+            // The browser stays open for as long as the game is played: it
+            // is what is watched, and what is closed to end the game.
+            Command::new(browser).args(cloud::browser_args(&install.install_path, &link)).spawn().map(Some)
         }
         _ => {
             let exe = install
@@ -388,6 +400,23 @@ mod tests {
         std::thread::sleep(Duration::from_millis(600));
         assert_eq!(watch.poll(), Phase::Running); // first miss
         assert_eq!(watch.poll(), Phase::Finished);
+    }
+
+    #[test]
+    fn a_cloud_game_only_opens_a_page_of_its_service() {
+        let install = |args: &str, dir: &str| Install {
+            game_id: "cloud:1".into(),
+            title: "Forza".into(),
+            source: "cloud".into(),
+            source_id: "1".into(),
+            install_path: PathBuf::from(dir),
+            exe: Some(PathBuf::from("/bin/sh")),
+            args: args.into(),
+        };
+        let profile = std::env::temp_dir().join("carla-cloud-profile").to_string_lossy().into_owned();
+        assert!(start(&install("https://evil.example/play", &profile), None).is_err());
+        assert!(start(&install("https://www.xbox.com/play --x", &profile), None).is_err());
+        assert!(start(&install("https://www.xbox.com/play", "relative"), None).is_err(), "the profile must be a full path");
     }
 
     #[cfg(unix)]

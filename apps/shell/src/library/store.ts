@@ -30,7 +30,7 @@ type GameView = {
   origin: string;
   own_art: boolean;
 };
-type SessionView = { game_id: string; title: string; phase: Session["phase"]; stream: boolean };
+type SessionView = { game_id: string; title: string; phase: Session["phase"]; stream: boolean; cloud: boolean };
 // What the Rust side sends for one linked desktop.
 type HostView = {
   id: string;
@@ -111,7 +111,7 @@ const fromView = (g: GameView): Game => ({
 });
 
 const fromSession = (s: SessionView | null): Session | null =>
-  s && { gameId: s.game_id, title: s.title, phase: s.phase, stream: s.stream };
+  s && { gameId: s.game_id, title: s.title, phase: s.phase, stream: s.stream, cloud: s.cloud };
 
 const awake = (state: HostState) => state === "ready" || state === "busy" || state === "not_ready";
 
@@ -338,14 +338,58 @@ export const library = {
     const host = state.hosts.find((h) => h.id === place);
     const game = state.games.find((g) => g.id === gameId);
     if (!game) return;
+    if (place === "cloud") {
+      set({ session: { gameId, title: game.title, phase: "starting", stream: false, cloud: true } });
+      await new Promise((r) => setTimeout(r, 1500));
+      if (state.session !== null) set({ session: { gameId, title: game.title, phase: "running", stream: false, cloud: true } });
+      return;
+    }
     if (place !== "local" && host?.state !== "ready" && host?.state !== "busy") {
       if (!host?.canWake) throw `${host?.name ?? "That desktop"} did not answer. It may be off or asleep.`;
-      set({ session: { gameId, title: game.title, phase: "waking", stream: true } });
+      set({ session: { gameId, title: game.title, phase: "waking", stream: true, cloud: false } });
       await new Promise((r) => setTimeout(r, 1500));
       if (state.session === null) return; // the player gave up
       set({ hosts: state.hosts.map((h) => (h.id === place ? { ...h, state: "ready", route: "local", lastSeen: "now" } : h)) });
     }
-    set({ session: { gameId, title: game.title, phase: "running", stream: place !== "local" } });
+    set({ session: { gameId, title: game.title, phase: "running", stream: place !== "local", cloud: false } });
+  },
+
+  /** Open a cloud gaming service itself: to browse it, or to sign in once. */
+  async openCloud(service: string, name: string) {
+    if (inTauri) {
+      set({ session: fromSession(await invoke<SessionView>("cloud_open", { service })) });
+      return;
+    }
+    set({ session: { gameId: `cloudservice:${service}`, title: name, phase: "running", stream: false, cloud: true } });
+  },
+
+  /** Which service a link is for, and the name it suggests. Administrator only. */
+  async inspectCloud(link: string): Promise<{ service: string; title: string }> {
+    if (inTauri) return invoke<{ service: string; title: string }>("cloud_inspect", { link });
+    const known: [RegExp, string][] = [
+      [/^https:\/\/play\.geforcenow\.com\//, "GeForce NOW"],
+      [/^https:\/\/www\.xbox\.com\/([a-z]{2}(-[a-z]{2})?\/)?play/i, "Xbox Cloud Gaming"],
+      [/^https:\/\/cloud\.boosteroid\.com\//, "Boosteroid"],
+      [/^https:\/\/luna\.amazon\.com\//, "Amazon Luna"],
+    ];
+    const found = known.find(([pattern]) => pattern.test(link.trim()));
+    if (!found) throw "That is not a link to a game on GeForce NOW, Xbox Cloud Gaming, Boosteroid or Luna. Copy the game's link from its page there.";
+    const slug = /\/(?:games|launch)\/([a-z0-9-]+)/i.exec(link)?.[1] ?? "";
+    return { service: found[1], title: slug.split("-").filter(Boolean).map((w) => w[0].toUpperCase() + w.slice(1)).join(" ") };
+  },
+
+  /** Add a cloud game. Resolves with its id. Administrator only. */
+  async addCloud(link: string, title: string): Promise<string> {
+    if (inTauri) {
+      const id = await invoke<string>("cloud_add", { link, title });
+      await reload();
+      return id;
+    }
+    const { service } = await library.inspectCloud(link);
+    const id = `cloud:${link.length}${title.length}`;
+    const added: Game = { id, title, description: "", platform: service, kind: "game", hue: hue(title), places: ["cloud"], playtimeMinutes: 0, added: new Date().toISOString(), favourite: false, manual: true };
+    set({ games: [...state.games.filter((g) => g.id !== id), added] });
+    return id;
   },
 
   /** The player says the game is over. */

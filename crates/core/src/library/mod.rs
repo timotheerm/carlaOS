@@ -23,6 +23,7 @@ pub mod saves;
 pub mod sync;
 pub mod meta;
 pub mod art;
+pub mod cloud;
 pub mod ports;
 pub mod shortcut;
 

@@ -228,6 +228,11 @@ button {
   color: #a8456a;
 }
 
+.badge--cloud {
+  background: #dff1ff;
+  color: #2f6a9e;
+}
+
 .badge--stream {
   background: #ece4ff;
   color: #6a4fb0;
@@ -1924,4 +1929,13 @@ button {
 .host--cloud > span:not(.cloud__glow) {
   position: relative;
   z-index: 1;
+}
+
+.hosts--cloud {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+}
+
+.hosts--cloud .host--large {
+  min-height: 16rem;
 }

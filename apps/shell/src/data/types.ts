@@ -2,7 +2,7 @@
 // Rust core (`games`, `installs`, `hosts`), so swapping sample data for the
 // real catalogue in M2 does not touch the screens.
 
-export type Place = "local" | string; // "local" or a host id
+export type Place = "local" | "cloud" | string; // this Ally, a cloud service, or a desktop's id
 
 export type Kind = "game" | "emulated" | "port" | "homebrew";
 
@@ -25,7 +25,7 @@ export type Game = {
   ownArt?: boolean; // the administrator chose its pictures
 };
 
-export type Session = { gameId: string; title: string; phase: "waking" | "starting" | "running"; stream: boolean };
+export type Session = { gameId: string; title: string; phase: "waking" | "starting" | "running"; stream: boolean; cloud: boolean };
 
 export type NewGame = { title: string; exe: string; args: string; kind: Kind; cover: string | null; description: string; origin: string };
 

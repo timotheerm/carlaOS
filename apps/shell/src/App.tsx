@@ -37,7 +37,7 @@ function load<T>(key: string, fallback: T): T {
 
 // The desktop a stream comes from, when the game is on only one.
 function streamFrom(places: string[], hosts: { id: string; name: string }[]): string | undefined {
-  const away = places.filter((p) => p !== "local");
+  const away = places.filter((p) => p !== "local" && p !== "cloud");
   return away.length === 1 ? hosts.find((h) => h.id === away[0])?.name : undefined;
 }
 
@@ -180,6 +180,10 @@ export function App() {
       setToast("Waking it. This can take up to a minute.");
       void library.wake(id).catch((e) => setToast(message(e)));
     },
+    openCloud: (service, name) => {
+      cue("launch");
+      void library.openCloud(service, name).catch((e) => setToast(message(e)));
+    },
     refreshHosts: () => {
       setToast("Checking…");
       void library.refreshHosts().catch((e) => setToast(message(e)));
@@ -198,7 +202,7 @@ export function App() {
   else if (section === "home") page = <Home {...ctx} />;
   else if (section === "games") page = <Games {...ctx} />;
   else if (section === "desktops") page = <Desktops {...ctx} />;
-  else if (section === "cloud") page = <Cloud services={cloud} notify={setToast} />;
+  else if (section === "cloud") page = <Cloud {...ctx} services={cloud} />;
   else
     page = (
       <Settings

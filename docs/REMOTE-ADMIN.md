@@ -17,6 +17,7 @@ carla-companion ally                  how the Ally is doing
 carla-companion ally games            every game in its library, with ids
 carla-companion ally rescan           look for installed games again
 carla-companion ally add "NAME" "C:\path\on\the\ally\game.exe" [--args "…"] [--kind game|port|homebrew] [--about "…"]
+carla-companion ally cloud LINK [NAME] add a cloud game by its link (see CLOUD.md)
 carla-companion ally remove ID        take a game added by hand off its library
 carla-companion ally saves ID "C:\path\on\the\ally\saves"
 carla-companion ally saves ID --forget
@@ -74,3 +75,7 @@ is refused. A command normally answers within a second or two.
 ## Pictures
 
 `carla-companion ally art ...` finds and chooses a game's pictures from the desktop. See [ARTWORK.md](ARTWORK.md).
+
+## Cloud games
+
+`carla-companion ally cloud LINK [NAME]` adds a cloud game from the desktop. See [CLOUD.md](CLOUD.md).
