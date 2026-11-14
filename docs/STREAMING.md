@@ -100,6 +100,32 @@ shell ── signed HTTP, port 47600 ───▶  companion ── https://loca
   sleeps keeps its session; one that was shut down stops at the sign-in screen
   unless it signs in automatically.
 
+## When a stream does not start
+
+Settings, Desktops, a desktop, **Check streaming from it** walks every link a
+stream needs, in order, and marks the first broken one:
+
+| Step | Fixed by |
+| --- | --- |
+| The desktop answers | **Wake it** (when it has said how), or turning it on |
+| It still accepts this Ally | **Link it again** with a new code (it was forgotten there, or set up afresh) |
+| Same CarlaOS on both | **Update the desktop** (a note only: different versions still work) |
+| Sunshine runs there | The desktop itself: `carla-companion status` says what is wrong |
+| Moonlight is installed on the Ally | Installing it once |
+| Moonlight is paired with that Sunshine | **Pair streaming again**: over the link, no PIN typed |
+| The Ally can wake it | A note: it learns this the first time it answers |
+| The connection | A note with what was measured and the picture a stream would get |
+
+Pairing also repairs itself. Before the first stream from a desktop after
+CarlaOS starts, the Ally asks Moonlight whether it is still paired, and pairs
+again over the link when it is not (Sunshine reinstalled, its clients cleared,
+Moonlight set up afresh). A stream that ends at once makes it ask again before
+the next one. The player never sees Moonlight's own PIN screen.
+
+From the desktop, the same check runs on the Ally with
+`carla-companion ally check DESKTOP`, and `--repair` does the fixes CarlaOS
+can do by itself.
+
 ## Trust
 
 | Step | What protects it |
@@ -123,7 +149,7 @@ router; nothing in CarlaOS needs it.
 
 | Where | What |
 | --- | --- |
-| `crates/core/src/link/` | Protocol types, signing, linking, discovery, the Ally's client, the Moonlight driver |
+| `crates/core/src/link/` | Protocol types, signing, linking, discovery, the Ally's client, the Moonlight driver, checking a desktop (`check.rs`) |
 | `crates/core/src/secret.rs` | Sealing keys with Windows data protection |
 | `crates/companion/src/server.rs` | The companion API and its end-to-end tests |
 | `crates/companion/src/sunshine.rs` | Sunshine's web API, old and new pairing flows |

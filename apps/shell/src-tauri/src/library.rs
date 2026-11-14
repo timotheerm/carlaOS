@@ -296,6 +296,7 @@ pub(crate) fn play(app: AppHandle, library: &Library, mut install: Install, plac
     let library = library.clone();
     std::thread::spawn(move || {
         let mut played = false;
+        let mut never_started = false;
         loop {
             std::thread::sleep(POLL);
             // A store that is updating the game first is not a game that
@@ -327,8 +328,17 @@ pub(crate) fn play(app: AppHandle, library: &Library, mut install: Install, plac
                     let _ = app.emit(SESSION_EVENT, Some(current.view.clone()));
                 }
                 Phase::Running | Phase::Starting => {}
-                Phase::Finished | Phase::NeverStarted => break,
+                Phase::Finished => break,
+                Phase::NeverStarted => {
+                    never_started = true;
+                    break;
+                }
             }
+        }
+        // A stream that ended at once may mean the pairing was lost: ask
+        // Moonlight again before the next one rather than trusting the cache.
+        if never_started && place != LOCAL {
+            crate::hosts::stream_failed(&library, &place);
         }
         // A game that never appeared was not played.
         let ended = if played { now() } else { started };

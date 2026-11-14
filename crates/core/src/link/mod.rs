@@ -13,6 +13,7 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod check;
 pub mod client;
 pub mod discover;
 pub mod enrol;

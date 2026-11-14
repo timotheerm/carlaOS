@@ -119,6 +119,8 @@ fn main() {
             details::meta_search,
             details::meta_fetch,
             hosts::hosts_update,
+            hosts::hosts_check,
+            hosts::hosts_repair,
             updates::update_check,
             updates::update_install,
             installs::installs_start,

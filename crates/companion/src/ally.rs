@@ -37,6 +37,10 @@ be allowed first: Settings, Desktops, this desktop, \"Administer this Ally\".
   carla-companion ally startup [on|off] whether CarlaOS opens when the Ally is turned on
   carla-companion ally picture DESKTOP [auto|auto120|sharp|balanced|light|lightest|smooth]
                                         the picture of streams from a desktop to the Ally
+  carla-companion ally check DESKTOP [--repair]
+                                        check streaming from a desktop step by step, as the
+                                        Ally sees it; --repair wakes it, pairs streaming again
+                                        or updates it when that is what is wrong
   carla-companion ally power ID [quiet|balanced|turbo] [smooth|saver] [--stream|--cloud] [--forget]
                                         how hard the Ally works for a game, and whether its
                                         screen runs smooth (as fast as it goes) or at 60 to save
@@ -81,6 +85,10 @@ pub fn request(words: &[String]) -> Result<Request, String> {
         ["startup", way @ ("on" | "off")] => Ok(Request { op: "startup", args: json!({ "enabled": *way == "on" }), patience: quick }),
         ["picture", desktop] => Ok(Request { op: "picture", args: json!({ "desktop": desktop }), patience: quick }),
         ["picture", desktop, picture] if Setting::parse(picture).is_some() => Ok(Request { op: "picture", args: json!({ "desktop": desktop, "picture": picture }), patience: quick }),
+        ["check", desktop] => Ok(Request { op: "check", args: json!({ "desktop": desktop }), patience: Duration::from_secs(120) }),
+        ["check", desktop, "--repair"] | ["check", "--repair", desktop] => {
+            Ok(Request { op: "check", args: json!({ "desktop": desktop, "repair": true }), patience: Duration::from_secs(240) })
+        }
         ["cleanup"] => plain("cleanup_scan", slow),
         ["cleanup", way @ ("apply" | "undo"), ids @ ..] if !ids.is_empty() => {
             Ok(Request { op: if *way == "apply" { "cleanup_apply" } else { "cleanup_undo" }, args: json!({ "ids": ids }), patience: slow })
@@ -207,6 +215,10 @@ pub fn show(op: &str, out: &Value) -> String {
             }
             text
         }
+        "check" => match serde_json::from_value::<link::check::Report>(out.clone()) {
+            Ok(report) => report.words(),
+            Err(_) => "The Ally answered in a way this companion does not understand. Update one of them.".to_string(),
+        },
         "rescan" => format!("The Ally looked again: {} games.", out["games"]),
         "add_game" => {
             let mut text = format!("{} was added to the Ally. Its id is {}.", word(&out["title"]), word(&out["id"]));
@@ -456,11 +468,11 @@ mod tests {
         assert!(request(&words("power X max")).is_err());
         assert_eq!(show("power", &json!({ "title": "Hookshot", "power": "quiet", "screen": "saver", "chosen": true })), "Hookshot: Quiet (longest battery), screen at 60 to save battery.");
         assert_eq!(request(&words("cloud https://www.xbox.com/play/games/x/1 Forza 5")).unwrap().args, json!({ "link": "https://www.xbox.com/play/games/x/1", "title": "Forza 5" }));
-        for wrong in ["cleanup apply", "add OnlyAName", "add A B --colour pink", "remove", "format c:", "saves", "startup maybe", "picture", "picture HOME ultra", "art", "art use 2"] {
+        for wrong in ["cleanup apply", "add OnlyAName", "add A B --colour pink", "remove", "format c:", "saves", "startup maybe", "picture", "picture HOME ultra", "art", "art use 2", "check", "check A B"] {
             assert!(request(&words(wrong)).is_err(), "{wrong:?} is not a request");
         }
         // Everything that can be typed is something the Ally knows.
-        for line in ["status", "games", "rescan", "add A B", "remove X", "saves X Y", "desktops", "cleanup", "cleanup apply X", "cleanup undo X", "update", "restart", "startup", "startup on", "picture HOME", "picture HOME auto120", "picture HOME light", "art X", "art X zelda", "art clear X", "art key abcdef0123456789", "cloud https://www.xbox.com/play", "cloud https://www.xbox.com/play Forza Horizon", "power X", "power X turbo saver --stream", "power X --forget"] {
+        for line in ["status", "games", "rescan", "add A B", "remove X", "saves X Y", "desktops", "cleanup", "cleanup apply X", "cleanup undo X", "update", "restart", "startup", "startup on", "picture HOME", "picture HOME auto120", "picture HOME light", "art X", "art X zelda", "art clear X", "art key abcdef0123456789", "cloud https://www.xbox.com/play", "cloud https://www.xbox.com/play Forza Horizon", "power X", "power X turbo saver --stream", "power X --forget", "check HOME", "check HOME --repair", "check --repair HOME"] {
             assert!(carla_core::remote::OPS.contains(&request(&words(line)).unwrap().op), "{line}");
         }
     }

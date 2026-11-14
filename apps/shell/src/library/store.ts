@@ -6,7 +6,7 @@ import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { games as sampleGames, hosts as sampleHosts } from "../data/sample";
 import { sampleArt, sampleDetails, sampleMatches } from "../data/sample";
-import type { ArtChoice, ArtSearch, Console, ConsoleHint, Details, Download, Inspected, Storage, FoundHost, Game, Host, HostPicture, HostState, Kind, Match, NewGame, SaveSync, Saves, Session, Waiting, Power, PowerView } from "../data/types";
+import type { ArtChoice, ArtSearch, CheckFix, CheckReport, Console, ConsoleHint, Details, Download, Inspected, Storage, FoundHost, Game, Host, HostPicture, HostState, Kind, Match, NewGame, SaveSync, Saves, Session, Waiting, Power, PowerView } from "../data/types";
 import { inTauri } from "../native";
 import { when } from "../ui/parts";
 
@@ -181,6 +181,43 @@ async function refreshHosts() {
   }
 }
 
+// A browser stand-in for checking a desktop: the first look finds pairing
+// lost, so the repair can be tried.
+const previewPaired = new Set<string>();
+function previewCheck(id: string): CheckReport {
+  const host = state.hosts.find((h) => h.id === id);
+  const name = host?.name ?? "Desktop";
+  const awake = host?.state === "ready" || host?.state === "busy";
+  const paired = previewPaired.has(id);
+  const skip = (key: string, title: string) => ({ key, title, outcome: "skipped" as const, detail: "Needs the desktop to answer first.", fix: null });
+  return {
+    id,
+    name,
+    repaired: [],
+    steps: awake
+      ? [
+          { key: "answer", title: "Answers", outcome: "ok", detail: `At ${host?.address ?? "192.168.1.20"}, on the home network, in ${host?.latencyMs ?? 4} ms.`, fix: null },
+          { key: "version", title: "Same CarlaOS", outcome: "ok", detail: "Both have 0.6.0.", fix: null },
+          { key: "sunshine", title: "Sunshine", outcome: "ok", detail: "Running and accepting the companion.", fix: null },
+          { key: "moonlight", title: "Moonlight on the Ally", outcome: "ok", detail: "Installed.", fix: null },
+          paired
+            ? { key: "paired", title: "Paired for streaming", outcome: "ok", detail: "Moonlight on the Ally and Sunshine on the desktop know each other.", fix: null }
+            : { key: "paired", title: "Paired for streaming", outcome: "fail", detail: "Moonlight on the Ally is not paired with Sunshine there, so streams cannot start. CarlaOS pairs them over the link; nobody types a PIN.", fix: "pair" },
+          { key: "waking", title: "Waking from the Ally", outcome: "ok", detail: "The Ally can wake it when a game from it is chosen.", fix: null },
+          { key: "connection", title: "Connection", outcome: "ok", detail: "Measured 310 Mbit/s, 3 ms. A stream now would get 1080p, 60 pictures a second, 25 Mbit/s.", fix: null },
+        ]
+      : [
+          { key: "answer", title: "Answers", outcome: "fail", detail: "It did not answer. It is probably asleep or off; CarlaOS can wake it.", fix: host?.canWake === false ? null : "wake" },
+          skip("version", "Same CarlaOS"),
+          skip("sunshine", "Sunshine"),
+          { key: "moonlight", title: "Moonlight on the Ally", outcome: "ok", detail: "Installed.", fix: null },
+          skip("paired", "Paired for streaming"),
+          { key: "waking", title: "Waking from the Ally", outcome: "ok", detail: "The Ally can wake it when a game from it is chosen.", fix: null },
+          skip("connection", "Connection"),
+        ],
+  };
+}
+
 const previewPictures = new Map<string, string>();
 const previewPower = new Map<string, PowerView>();
 const powerKey = (gameId: string, place: string) => `${place === "local" || place === "cloud" ? place : "stream"}:${gameId}`;
@@ -250,19 +287,19 @@ export const library = {
   },
 
   /** Link a desktop with the code it shows. Resolves with a warning, if any. */
-  async link(address: string, code: string): Promise<{ name: string; games: number; warning: string | null }> {
+  async link(address: string, code: string): Promise<{ id: string; name: string; games: number; warning: string | null }> {
     if (!inTauri) {
       await new Promise((r) => setTimeout(r, 400));
       if (code === "000000") throw "That is not the code on the desktop.";
       const host: Host = { ...sampleHosts[0], id: "home", address, state: "ready", lastSeen: "now" };
       set({ hosts: [...state.hosts.filter((h) => h.id !== host.id), host] });
-      return { name: host.name, games: state.games.filter((g) => g.places.includes(host.id)).length, warning: null };
+      return { id: host.id, name: host.name, games: state.games.filter((g) => g.places.includes(host.id)).length, warning: null };
     }
     const linked = await invoke<Linked>("hosts_link", { address, code });
     const host = fromHost(linked.host);
     set({ hosts: [...state.hosts.filter((h) => h.id !== host.id), host] });
     await reload();
-    return { name: host.name, games: linked.games, warning: linked.warning };
+    return { id: host.id, name: host.name, games: linked.games, warning: linked.warning };
   },
 
   async removeHost(id: string) {
@@ -323,6 +360,28 @@ export const library = {
     if (inTauri) return invoke<HostPicture>("hosts_set_picture", { id, setting });
     previewPictures.set(id, setting);
     return previewPicture(id);
+  },
+
+  /** Check a desktop step by step. Administrator only. */
+  async checkHost(id: string): Promise<CheckReport> {
+    if (inTauri) return invoke<CheckReport>("hosts_check", { id });
+    await new Promise((r) => setTimeout(r, 900));
+    return previewCheck(id);
+  },
+
+  /** Do one fix a check offered; resolves with a fresh check. Administrator only. */
+  async repairHost(id: string, fix: CheckFix): Promise<CheckReport> {
+    if (inTauri) {
+      const report = await invoke<CheckReport>("hosts_repair", { id, fix });
+      void refreshHosts().catch(() => undefined);
+      return report;
+    }
+    await new Promise((r) => setTimeout(r, 1200));
+    if (fix === "pair") previewPaired.add(id);
+    if (fix === "wake") set({ hosts: state.hosts.map((h) => (h.id === id ? { ...h, state: "ready", route: "local", latencyMs: 6, lastSeen: "now" } : h)) });
+    const report = previewCheck(id);
+    report.repaired = [fix === "pair" ? "Paired Moonlight with Sunshine there again." : fix === "wake" ? `Woke ${report.name}.` : "Done."];
+    return report;
   },
 
   /** Send a desktop to sleep. */

@@ -157,6 +157,17 @@ export type HostPicture = {
   } | null;
 };
 
+/// One step of checking a desktop, as the Rust side words it.
+export type CheckFix = "pair" | "wake" | "update" | "relink";
+export type CheckStep = {
+  key: string;
+  title: string;
+  outcome: "ok" | "warn" | "fail" | "skipped";
+  detail: string;
+  fix: CheckFix | null;
+};
+export type CheckReport = { id: string; name: string; steps: CheckStep[]; repaired: string[] };
+
 /// A companion found on the network, not linked yet.
 export type FoundHost = { address: string; name: string; id: string };
 
