@@ -23,6 +23,27 @@ Settings, Manage games, Consoles and emulators, Add a console (behind the PIN):
 
 Any other emulator works the same way: fill the fields in by hand.
 
+## Consoles on a desktop
+
+A desktop can run heavier emulators than the Ally (Switch, PlayStation 3,
+Wii U at full speed). Set them up there once, at the desktop, and every game
+file is streamed to the Ally like any other game:
+
+```
+carla-companion console add "GameCube" "C:\Emulators\Dolphin\Dolphin.exe" "D:\Games\GameCube"
+carla-companion consoles
+carla-companion console drop ID
+```
+
+For the emulators listed above, the endings and options are filled in by
+themselves; `--endings iso,chd` and `--options "..."` change them. The games
+appear on the Ally within five minutes, or at once after "Look for games
+again" on the desktop's page there, with the console's name on the badge.
+When a stream starts, the desktop starts the emulator with that game file, and
+the stream ends when the emulator closes, so set the emulator to close when
+the game is quit. The same rules hold as on the Ally: no emulator, system
+files or games are brought or downloaded by CarlaOS.
+
 ## What the player sees
 
 The games are in My Games with the console's name on the badge and the Offline
@@ -36,8 +57,9 @@ Removing a console removes its cards. No file is deleted.
 
 ## Limits for now
 
-- Consoles are set up on the Ally. Emulated games on a desktop can be streamed
-  by adding them there one by one with `carla-companion add`.
+- A game set up both on the Ally and on a desktop shows as two cards, one
+  played on the Ally and one streamed, because the two machines keep their
+  game files in different places.
 - No cover pictures yet for emulated games.
 - Not tried with real emulators: the suggested options come from each
   emulator's documentation and may need adjusting for a particular version.
