@@ -18,7 +18,8 @@
         "decorations": false,
         "resizable": false,
         "width": 1920,
-        "height": 1080
+        "height": 1080,
+        "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --autoplay-policy=no-user-gesture-required"
       }
     ],
     "security": {

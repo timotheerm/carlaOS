@@ -248,8 +248,19 @@ impl Files {
         Ok(devices.len() != before)
     }
 
+    /// Games added by hand. One that was added as a shortcut, before the
+    /// companion could follow one, is given as the program behind it.
     pub fn extras(&self) -> Vec<Extra> {
-        self.read("games.json").unwrap_or_default()
+        let mut extras: Vec<Extra> = self.read("games.json").unwrap_or_default();
+        for extra in extras.iter_mut().filter(|e| carla_core::library::shortcut::is_shortcut(&e.exe)) {
+            if let Ok(seen) = carla_core::library::ports::inspect(&extra.exe) {
+                extra.exe = seen.exe;
+                if extra.args.trim().is_empty() {
+                    extra.args = seen.args;
+                }
+            }
+        }
+        extras
     }
 
     /// Add a program as a game. Adding the same program again updates it.
@@ -264,6 +275,11 @@ impl Files {
         if let Some(cover) = cover.filter(|c| !c.is_file()) {
             return Err(format!("{} is not a picture on this desktop.", cover.display()));
         }
+        // Windows cannot start a shortcut as a program, so a shortcut is
+        // followed to the program behind it, with the options it passes.
+        let seen = carla_core::library::ports::inspect(exe)?;
+        let args = if args.trim().is_empty() { seen.args.as_str() } else { args };
+        let exe = seen.exe.as_path();
         let extra = Extra {
             key: carla_core::library::manual_key(&exe.to_string_lossy()),
             title: title.to_string(),

@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::library::{saves, Kind, ManualGame, Store, LOCAL};
+use crate::library::{ports, saves, Kind, ManualGame, Store, LOCAL};
 use crate::link::quality::Setting;
 
 /// One thing the administrator asked for.
@@ -54,7 +54,7 @@ impl Done {
 }
 
 /// Everything that can be asked, for the help text and to refuse the rest.
-pub const OPS: &[&str] = &["status", "games", "rescan", "add_game", "remove_game", "save_folder", "desktops", "cleanup_scan", "cleanup_apply", "cleanup_undo", "update", "restart", "startup", "picture"];
+pub const OPS: &[&str] = &["status", "games", "rescan", "add_game", "remove_game", "save_folder", "desktops", "cleanup_scan", "cleanup_apply", "cleanup_undo", "update", "restart", "startup", "picture", "art_find", "art_set", "art_clear", "art_key"];
 
 fn text(args: &Value, name: &str) -> Result<String, String> {
     args[name].as_str().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string).ok_or_else(|| format!("The request is missing \"{name}\"."))
@@ -78,31 +78,37 @@ pub fn catalogue(store: &mut Store, op: &str, args: &Value, now: i64) -> Option<
                     "on_ally": g.places.iter().any(|p| p == LOCAL),
                     "desktops": g.places.iter().filter(|p| *p != LOCAL).count(),
                     "minutes": g.playtime_minutes, "added_by_hand": g.manual, "save_folder": save_folder,
+                    "origin": g.origin, "picture": if g.own_art { "chosen" } else if g.cover.is_some() || g.hero.is_some() { "found" } else { "none" },
                 }));
             }
             Ok(Value::Array(out))
         }),
         "add_game" => (|| {
-            let exe = PathBuf::from(text(args, "exe")?);
-            if !exe.is_absolute() || !exe.is_file() {
-                return Err(format!("{} is not a program on the Ally. Give its full path there.", exe.display()));
+            let chosen = PathBuf::from(text(args, "exe")?);
+            if !chosen.is_absolute() || !chosen.is_file() {
+                return Err(format!("{} is not a program on the Ally. Give its full path there.", chosen.display()));
             }
-            let kind = match args["kind"].as_str().unwrap_or("game") {
-                "game" => Kind::Game,
-                "port" => Kind::Port,
-                "homebrew" => Kind::Homebrew,
-                other => return Err(format!("\"{other}\" is not a kind of game. Use game, port or homebrew.")),
+            // A shortcut is followed to its program, and a port CarlaOS knows
+            // gets the console it is from.
+            let seen = ports::inspect(&chosen)?;
+            let kind = match args["kind"].as_str() {
+                None => seen.kind,
+                Some("game") => Kind::Game,
+                Some("port") => Kind::Port,
+                Some("homebrew") => Kind::Homebrew,
+                Some(other) => return Err(format!("\"{other}\" is not a kind of game. Use game, port or homebrew.")),
             };
             let game = ManualGame {
                 title: text(args, "title")?,
-                exe,
-                args: args["args"].as_str().unwrap_or_default().to_string(),
+                exe: seen.exe,
+                args: args["args"].as_str().map(str::to_string).unwrap_or(seen.args),
                 kind,
                 cover: None,
                 description: args["description"].as_str().unwrap_or_default().to_string(),
+                origin: args["origin"].as_str().map(str::to_string).unwrap_or(if kind == Kind::Port { seen.origin } else { String::new() }),
             };
             let id = store.add_manual(&game, now)?;
-            Ok(json!({ "id": id, "title": game.title }))
+            Ok(json!({ "id": id, "title": game.title, "kind": kind, "origin": game.origin.trim(), "port": seen.port }))
         })(),
         "remove_game" => (|| {
             let id = text(args, "id")?;
@@ -181,6 +187,14 @@ mod tests {
         let id = added["id"].as_str().unwrap().to_string();
         let games = ask("games", Value::Null).unwrap();
         assert_eq!((games[0]["title"].as_str(), games[0]["kind"].as_str(), games[0]["on_ally"].as_bool(), games[0]["added_by_hand"].as_bool()), (Some("Paper Lanterns"), Some("homebrew"), Some(true), Some(true)));
+
+        assert_eq!(games[0]["picture"].as_str(), Some("none"));
+        // A port CarlaOS knows by its program is filed as one, with its console.
+        let soh = dir.join("soh.exe");
+        std::fs::write(&soh, b"program").unwrap();
+        let port = ask("add_game", json!({ "title": "Ocarina of Time", "exe": soh })).unwrap();
+        assert_eq!((port["kind"].as_str(), port["origin"].as_str(), port["port"].as_str()), (Some("port"), Some("Nintendo 64"), Some("Ship of Harkinian")));
+        ask("remove_game", json!({ "id": port["id"] })).unwrap();
 
         // Its save folder, which must be a real and sensible one.
         assert!(ask("save_folder", json!({ "id": id, "folder": "/" })).is_err());

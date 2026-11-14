@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 
-use super::{steam, Install};
+use super::{shortcut, steam, Install};
 
 /// How long a game may take to appear after being asked to start. Steam can
 /// sit on "updating" or "syncing saves" for a while first.
@@ -85,13 +85,62 @@ pub fn start(install: &Install, steam_root: Option<&Path>) -> io::Result<Option<
                 .exe
                 .as_deref()
                 .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "this game has no program to start"))?;
+            // Windows cannot start a shortcut as a program. Games are added by
+            // the program behind their shortcut; one that still names the
+            // shortcut is followed here.
+            let followed = if shortcut::is_shortcut(exe) {
+                Some(shortcut::read(exe).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?)
+            } else {
+                None
+            };
+            let (exe, args) = match &followed {
+                Some(link) => (link.target.as_path(), if install.args.trim().is_empty() { link.args.as_str() } else { install.args.as_str() }),
+                None => (exe, install.args.as_str()),
+            };
+            let dir = [followed.as_ref().and_then(|l| l.dir.as_deref()), Some(install.install_path.as_path()), exe.parent()].into_iter().flatten().find(|d| d.is_dir());
             let mut command = Command::new(exe);
-            command.args(split_args(&install.args));
-            if install.install_path.is_dir() {
-                command.current_dir(&install.install_path);
+            command.args(split_args(args));
+            if let Some(dir) = dir {
+                command.current_dir(dir);
             }
-            command.spawn().map(Some)
+            match command.spawn() {
+                Ok(child) => Ok(Some(child)),
+                // Some programs can only be started the way the desktop starts
+                // them: one that asks for administrator rights, or a file that
+                // is opened by another program.
+                Err(e) if cfg!(windows) && needs_the_desktop(&e) => open_program(exe, args, dir).map(|()| None),
+                Err(e) => Err(e),
+            }
         }
+    }
+}
+
+/// Windows' "this needs to be elevated" and "this is not a program".
+fn needs_the_desktop(e: &io::Error) -> bool {
+    matches!(e.raw_os_error(), Some(740 | 193))
+}
+
+/// Start a program the way a double click does. The path and the options
+/// travel in the environment, not in the command, so nothing in them is read
+/// as part of the command.
+fn open_program(exe: &Path, args: &str, dir: Option<&Path>) -> io::Result<()> {
+    let mut script = "Start-Process -FilePath $env:CARLA_START".to_string();
+    if !args.trim().is_empty() {
+        script.push_str(" -ArgumentList $env:CARLA_START_ARGS");
+    }
+    if dir.is_some() {
+        script.push_str(" -WorkingDirectory $env:CARLA_START_DIR");
+    }
+    let mut command = Command::new("powershell.exe");
+    command.args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", &script]).env("CARLA_START", exe).env("CARLA_START_ARGS", args.trim());
+    if let Some(dir) = dir {
+        command.env("CARLA_START_DIR", dir);
+    }
+    let status = command.status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(io::Error::other("Windows would not start it"))
     }
 }
 
@@ -331,6 +380,32 @@ mod tests {
         assert!(p.any_inside(exe.parent().unwrap()));
         assert!(!p.any_inside(Path::new("/definitely/not/a/real/folder")));
         assert!(!p.any_inside(Path::new("/")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_game_that_still_names_its_shortcut_starts_the_program_behind_it() {
+        let dir = std::env::temp_dir().join(format!("carla-launch-lnk-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let link = dir.join("Sleep.lnk");
+        std::fs::write(&link, shortcut::sample("/bin/sleep", "0.2", "", true)).unwrap();
+        let install = Install {
+            game_id: "manual:x".into(),
+            title: "Sleep".into(),
+            source: "manual".into(),
+            source_id: "x".into(),
+            install_path: dir.clone(),
+            exe: Some(link.clone()),
+            args: String::new(),
+        };
+        let mut child = start(&install, None).unwrap().expect("the program itself");
+        assert!(child.wait().unwrap().success(), "started with the shortcut's own options");
+        // A file that only looks like a shortcut is refused, not run.
+        std::fs::write(&link, b"#!/bin/sh\nexit 0\n").unwrap();
+        assert!(start(&install, None).is_err());
+        assert!(needs_the_desktop(&io::Error::from_raw_os_error(740)) && !needs_the_desktop(&io::Error::from_raw_os_error(2)));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[cfg(unix)]

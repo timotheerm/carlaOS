@@ -125,6 +125,9 @@ impl Library {
         let consoles = self.store().consoles()?;
         let emulated: Vec<_> = consoles.iter().flat_map(emulation::scan).collect();
         let mut store = self.store();
+        // Games added as a shortcut, before CarlaOS could follow one, start
+        // from the program behind it from now on.
+        let _ = store.mend_shortcuts();
         for (source, games) in &found {
             store.sync(LOCAL, source, games, now())?;
         }
@@ -365,6 +368,15 @@ pub fn library_add_manual(
     admin.require()?;
     if !game.exe.is_file() {
         return Err("That program could not be found.".to_string());
+    }
+    // A shortcut is followed to the program behind it: Windows cannot start
+    // a shortcut the way it starts a program.
+    let seen = carla_core::library::ports::inspect(&game.exe)?;
+    if seen.shortcut {
+        game.exe = seen.exe;
+        if game.args.trim().is_empty() {
+            game.args = seen.args;
+        }
     }
     if let Some(picture) = game.cover.take() {
         game.cover = Some(keep_artwork(&library.0.art_dir, &picture)?);

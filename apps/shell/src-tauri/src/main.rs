@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod admin;
+mod art;
 mod boot;
 mod consoles;
 mod details;
@@ -96,6 +97,13 @@ fn main() {
             quick::quick_end_game,
             quick::quick_show_desktop,
             details::library_updates,
+            art::art_find,
+            art::art_use,
+            art::art_pick,
+            art::art_clear,
+            art::art_key,
+            art::art_set_key,
+            art::library_inspect,
             details::meta_search,
             details::meta_fetch,
             hosts::hosts_update,

@@ -9,12 +9,16 @@ export function PinPad({
   unlock,
   setPin,
   lede,
+  notThis,
 }: {
   pinSet: boolean;
   unlock: (pin: string) => Promise<UnlockResult>;
   setPin: (pin: string) => Promise<void>;
   /** Why this part is locked, in one sentence. */
   lede: string;
+  /** Something else the person may be holding and tempted to type here,
+   *  such as the code from a desktop, and when that is asked for. */
+  notThis?: string;
 }) {
   const [digits, setDigits] = useState("");
   const [confirming, setConfirming] = useState(false);
@@ -89,6 +93,7 @@ export function PinPad({
     <div className="pin">
       <h1>{title}</h1>
       <p className="lede">{pinSet ? lede : "Four digits. It keeps this part of CarlaOS away from whoever is just playing."}</p>
+      {notThis && <p className="pin__aside">{notThis}</p>}
       <div className="pin__dots" role="status" aria-label={`${digits.length} of ${PIN_LENGTH} digits entered`}>
         {Array.from({ length: PIN_LENGTH }, (_, n) => (
           <i key={n} className={n < digits.length ? "on" : undefined} />

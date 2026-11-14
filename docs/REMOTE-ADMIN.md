@@ -70,3 +70,7 @@ is refused. A command normally answers within a second or two.
   picture on the Ally, under Manage games.
 - Tested between an Ally stand-in and a companion over the real protocol on
   one machine. Not yet run between two Windows machines.
+
+## Pictures
+
+`carla-companion ally art ...` finds and chooses a game's pictures from the desktop. See [ARTWORK.md](ARTWORK.md).

@@ -189,8 +189,10 @@ export function Cloud({ services, notify }: { services: CloudService[]; notify: 
             data-fid={`cloud:${s.id}`}
             onClick={() => notify(`${s.name} opens from here in a later build.`)}
           >
+            <span className="cloud__kind">{s.kind}</span>
             <span className="host__name">{s.name}</span>
             <span className="host__line host__line--quiet">{s.note}</span>
+            <span className="cloud__glow" aria-hidden />
           </button>
         ))}
       </div>
@@ -206,6 +208,8 @@ export function Settings({
   onDesktops,
   onUpdates,
   onStartup,
+  sounds,
+  onSounds,
   hostCount,
   onRefresh,
   refreshing,
@@ -217,6 +221,8 @@ export function Settings({
   onDesktops: () => void;
   onUpdates: () => void;
   onStartup: () => void;
+  sounds: boolean;
+  onSounds: () => void;
   hostCount: number;
   onRefresh: () => void;
   refreshing: boolean;
@@ -232,6 +238,10 @@ export function Settings({
       <button className="setting" data-focus data-autofocus data-fid="set:theme" onClick={onTheme}>
         <span>Appearance</span>
         <span className="setting__value">{theme === "light" ? "Light" : "Dark"}</span>
+      </button>
+      <button className="setting" data-focus data-quiet data-fid="set:sounds" onClick={onSounds}>
+        <span>Sounds</span>
+        <span className="setting__value">{sounds ? "On" : "Off"}</span>
       </button>
       <button className="setting" data-focus data-fid="set:refresh" onClick={onRefresh}>
         <span>Refresh library</span>

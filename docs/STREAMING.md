@@ -28,8 +28,11 @@ On the Ally:
 
 1. Install CarlaOS (`CarlaOS-Ally-<version>-setup.exe`) and
    [Moonlight](https://github.com/moonlight-stream/moonlight-qt).
-2. Settings, Desktops (administrator PIN), Add a desktop. The desktop is found
-   by itself; choose it and enter the code.
+2. Settings, Desktops. The Ally first asks for its own four-digit
+   administrator PIN (chosen on the Ally the first time; it is not the code
+   from the desktop).
+3. Add a desktop. The desktop is found by itself; choose it and enter the
+   six-digit code it shows.
 
 That is all. The Ally and Sunshine are paired without anyone typing a PIN, and
 the desktop's Steam games appear in the library with their covers.

@@ -91,6 +91,35 @@ fn run(app: &AppHandle, library: &Library, command: &Command) -> (Result<Value, 
             }
             Ok(json!({ "enabled": carla_core::boot::enabled() }))
         })()),
+        "art_find" => plain((|| {
+            let id = args["id"].as_str().ok_or("The request is missing \"id\".")?;
+            let (title, found) = crate::art::find(library, id, args["term"].as_str().unwrap_or_default())?;
+            let key_set = library.store().setting("steamgriddb_key")?.is_some();
+            Ok(json!({ "id": id, "title": title, "candidates": found.candidates, "notes": found.notes, "key_set": key_set }))
+        })()),
+        "art_set" => {
+            let done = (|| {
+                let id = args["id"].as_str().ok_or("The request is missing \"id\".")?;
+                let candidate = serde_json::from_value(args["candidate"].clone()).map_err(|_| "The request does not say which picture.".to_string())?;
+                let shape = crate::art::apply(library, id, &candidate)?;
+                let title = library.store().list()?.into_iter().find(|g| g.id == id).map(|g| g.title).unwrap_or_default();
+                Ok(json!({ "id": id, "title": title, "shape": shape }))
+            })();
+            crate::library::allow_pictures(app, &library.0.art_dir);
+            let _ = app.emit(CHANGED_EVENT, ());
+            plain(done)
+        }
+        "art_clear" => {
+            let done = (|| {
+                let id = args["id"].as_str().ok_or("The request is missing \"id\".")?;
+                let title = library.store().list()?.into_iter().find(|g| g.id == id).map(|g| g.title).ok_or("The Ally has no game with that id.")?;
+                crate::art::clear(library, id)?;
+                Ok(json!({ "id": id, "title": title }))
+            })();
+            let _ = app.emit(CHANGED_EVENT, ());
+            plain(done)
+        }
+        "art_key" => plain(crate::art::set_key(library, args["key"].as_str().unwrap_or_default()).map(|kept| json!({ "key_set": kept }))),
         "restart" => match not_while_playing(library) {
             Ok(()) => (Ok(json!({ "restarting": true })), After::Restart),
             Err(e) => plain(Err(e)),
