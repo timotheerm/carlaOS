@@ -509,6 +509,76 @@ button {
   font-weight: 600;
 }
 
+/* A primary action in a list of settings. */
+.setting--primary {
+  border: 0.18rem solid var(--accent);
+}
+
+/* The steps of checking a desktop. */
+.checks {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.check {
+  display: grid;
+  grid-template-columns: 2.4rem 16rem 1fr;
+  align-items: baseline;
+  gap: 0.2rem 1rem;
+  padding: 0.8rem 1.4rem;
+  border-radius: var(--radius-card);
+  background: var(--surface);
+  font-weight: 600;
+}
+
+.check__mark {
+  display: grid;
+  place-items: center;
+  width: 2rem;
+  height: 2rem;
+  border-radius: 50%;
+  font-weight: 800;
+  align-self: center;
+}
+
+.check__title {
+  font-weight: 800;
+}
+
+.check__detail {
+  color: var(--text-quiet);
+}
+
+.check--ok .check__mark {
+  background: color-mix(in srgb, var(--ok) 30%, var(--surface));
+  color: var(--ok);
+}
+
+.check--warn .check__mark {
+  background: color-mix(in srgb, var(--warn) 30%, var(--surface));
+  color: var(--warn);
+}
+
+.check--fail {
+  background: color-mix(in srgb, var(--warn) 18%, var(--surface));
+}
+
+.check--fail .check__mark {
+  background: var(--warn);
+  color: var(--surface);
+}
+
+.check--fail .check__detail {
+  color: inherit;
+}
+
+.check--skipped {
+  opacity: 0.55;
+}
+
 /* ---------- game detail ---------- */
 .detail {
   display: grid;

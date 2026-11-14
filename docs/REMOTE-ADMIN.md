@@ -29,6 +29,10 @@ carla-companion ally restart          close CarlaOS on the Ally and start it aga
 carla-companion ally startup [on|off] whether CarlaOS opens when the Ally is turned on
 carla-companion ally picture DESKTOP [auto|auto120|sharp|balanced|light|lightest|smooth]
                                       the picture of streams from a desktop (see STREAM-PICTURE.md)
+carla-companion ally check DESKTOP [--repair]
+                                      check streaming from a desktop step by step, as the Ally
+                                      sees it; --repair wakes it, pairs streaming again or
+                                      updates it (see STREAMING.md, "When a stream does not start")
 ```
 
 With more than one Ally linked, name it first:

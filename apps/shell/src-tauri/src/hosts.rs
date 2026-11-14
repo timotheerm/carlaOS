@@ -12,10 +12,11 @@ use carla_core::library::{HostRow, Scanned};
 use carla_core::link::client::{self, Error, Link};
 use carla_core::link::discover::{self, Found};
 use carla_core::library::Streamed;
+use carla_core::link::check::{self, Facts, Fix, Outcome, Report};
 use carla_core::link::moonlight;
 use carla_core::link::quality::{self, Choice, Setting};
 use carla_core::link::{wake, State as HostState, Status, Updating, PORT};
-use carla_core::secret;
+use carla_core::{secret, VERSION};
 use serde::Serialize;
 use tauri::{AppHandle, State};
 
@@ -323,6 +324,164 @@ fn pair_moonlight(link: &Link) -> Result<(), String> {
     }
 }
 
+/// Desktops Moonlight was seen paired with since CarlaOS started, by address.
+/// Asking Moonlight costs a second or two, so it is asked once per desktop,
+/// and again after a stream from it failed to start.
+fn paired_cache() -> std::sync::MutexGuard<'static, Option<std::collections::HashSet<String>>> {
+    static PAIRED: Mutex<Option<std::collections::HashSet<String>>> = Mutex::new(None);
+    PAIRED.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn known_paired(address: &str) -> bool {
+    paired_cache().as_ref().is_some_and(|set| set.contains(address))
+}
+
+fn note_paired(address: &str, paired: bool) {
+    let mut cache = paired_cache();
+    let set = cache.get_or_insert_with(Default::default);
+    if paired {
+        set.insert(address.to_string());
+    } else {
+        set.remove(address);
+    }
+}
+
+/// Make sure Moonlight is paired with a desktop before streaming from it,
+/// pairing it again over the link when it is not: after Sunshine was
+/// reinstalled, its clients cleared, or Moonlight set up afresh. The player
+/// then never meets Moonlight's own PIN screen.
+fn ensure_paired(exe: &std::path::Path, link: &Link) -> Result<(), String> {
+    if known_paired(&link.address) {
+        return Ok(());
+    }
+    if moonlight::paired(exe, &link.address) {
+        note_paired(&link.address, true);
+        return Ok(());
+    }
+    pair_moonlight(link).map_err(|e| format!("Streaming from this desktop needs pairing again, and it did not work: {e}"))?;
+    note_paired(&link.address, true);
+    Ok(())
+}
+
+/// Forget that a desktop was paired, after a stream from it ended at once.
+pub(crate) fn stream_failed(library: &Library, place: &str) {
+    if let Some(host) = library.store().hosts().ok().and_then(|hosts| hosts.into_iter().find(|h| h.id == place)) {
+        let mut cache = paired_cache();
+        if let Some(set) = cache.as_mut() {
+            set.remove(&host.address);
+            for a in &host.addresses {
+                set.remove(a);
+            }
+        }
+    }
+}
+
+/// Check one desktop step by step. With `repair`, also fix what CarlaOS can
+/// fix by itself (wake it, pair streaming, update it) and check again.
+pub(crate) fn check_host(library: &Library, host: &HostRow, repair: bool) -> Report {
+    let gather = |host: &HostRow| {
+        let exe = moonlight::find();
+        let answer = reach(host);
+        let (answer, link) = match answer {
+            Ok((link, status, ms)) => {
+                seen(library, host, &link, &status);
+                (Ok((status, link.address.clone(), ms)), Some(link))
+            }
+            Err(e) => (Err(e), None),
+        };
+        let paired = match (&exe, &link) {
+            (Some(exe), Some(link)) => {
+                let paired = moonlight::paired(exe, &link.address);
+                note_paired(&link.address, paired);
+                Some(paired)
+            }
+            _ => None,
+        };
+        let measure = link.as_ref().and_then(|link| quality::measure(&|bytes| link.probe(bytes).ok(), wake::is_tailscale(&link.address)));
+        let setting = library.store().host_quality(&host.id).map(|(s, _)| s).unwrap_or_default();
+        let fresh = library.store().hosts().ok().and_then(|hs| hs.into_iter().find(|h| h.id == host.id)).unwrap_or_else(|| host.clone());
+        let facts = Facts { ally_version: VERSION, answer, can_wake: !fresh.macs.is_empty(), moonlight: exe.is_some(), paired, measure, setting };
+        (check::steps(&facts), link, fresh)
+    };
+    let (mut steps, mut link, mut fresh) = gather(host);
+    let mut repaired = Vec::new();
+    if repair {
+        let failing = |steps: &[check::Step], fix: Fix| steps.iter().any(|s| s.fix == Some(fix) && matches!(s.outcome, Outcome::Fail | Outcome::Warn));
+        let mut again = false;
+        if failing(&steps, Fix::Wake) {
+            match wake_and_wait(&fresh, &|| false) {
+                Ok(_) => repaired.push(format!("Woke {}.", fresh.name)),
+                Err(e) => repaired.push(format!("Could not wake it: {e}")),
+            }
+            again = true;
+        }
+        if again {
+            (steps, link, fresh) = gather(&fresh);
+            again = false;
+        }
+        if let Some(l) = link.as_ref().filter(|_| failing(&steps, Fix::Pair)) {
+            match pair_moonlight(l) {
+                Ok(()) => {
+                    note_paired(&l.address, true);
+                    repaired.push("Paired Moonlight with Sunshine there again.".to_string());
+                }
+                Err(e) => repaired.push(format!("Pairing did not work: {e}")),
+            }
+            again = true;
+        }
+        if let Some(l) = link.as_ref().filter(|_| failing(&steps, Fix::Update)) {
+            match l.update() {
+                Ok(u) if u.updating => repaired.push(format!("The desktop is updating to {}; it is away for a minute.", u.version)),
+                Ok(u) => repaired.push(format!("The desktop already has the newest release, {}.", u.version)),
+                Err(e) => repaired.push(format!("The desktop did not update: {e}")),
+            }
+        }
+        if again {
+            (steps, _, fresh) = gather(&fresh);
+        }
+    }
+    Report { id: fresh.id.clone(), name: fresh.name.clone(), steps, repaired }
+}
+
+/// Check a desktop step by step: what works, what does not, and what would fix it.
+#[tauri::command(async)]
+pub fn hosts_check(admin: State<'_, Admin>, library: State<'_, Library>, id: String) -> Result<Report, String> {
+    admin.require()?;
+    let host = library.store().hosts()?.into_iter().find(|h| h.id == id).ok_or("That desktop is no longer set up.")?;
+    Ok(check_host(&library, &host, false))
+}
+
+/// Do one of the fixes a check offered, then check again.
+#[tauri::command(async)]
+pub fn hosts_repair(admin: State<'_, Admin>, library: State<'_, Library>, id: String, fix: Fix) -> Result<Report, String> {
+    admin.require()?;
+    let host = library.store().hosts()?.into_iter().find(|h| h.id == id).ok_or("That desktop is no longer set up.")?;
+    let note = match fix {
+        Fix::Wake => match wake_and_wait(&host, &|| false) {
+            Ok(_) => format!("Woke {}.", host.name),
+            Err(e) => return Err(e),
+        },
+        Fix::Pair => {
+            let (link, ..) = reach(&host).map_err(|e| e.to_string())?;
+            pair_moonlight(&link)?;
+            note_paired(&link.address, true);
+            "Paired Moonlight with Sunshine there again.".to_string()
+        }
+        Fix::Update => {
+            let u = hosts_update(admin, library.clone(), id)?;
+            if u.updating {
+                format!("The desktop is updating to {}; it is away for a minute.", u.version)
+            } else {
+                format!("The desktop already has the newest release, {}.", u.version)
+            }
+        }
+        Fix::Relink => return Err("Linking again needs a new code from the desktop: choose Add a desktop.".to_string()),
+    };
+    let mut report = check_host(&library, &host, false);
+    report.repaired.push(note);
+    Ok(report)
+}
+
 #[tauri::command(async)]
 pub fn hosts_link(app: AppHandle, admin: State<'_, Admin>, library: State<'_, Library>, address: String, code: String) -> Result<Linked, String> {
     admin.require()?;
@@ -348,6 +507,7 @@ pub fn hosts_link(app: AppHandle, admin: State<'_, Admin>, library: State<'_, Li
     };
     library.store().save_host(&host, now())?;
     let warning = pair_moonlight(&link).err();
+    note_paired(&link.address, warning.is_none());
     let games = sync_games(&library, &host, &link).unwrap_or(0);
     allow_pictures(&app, &art_dir(&library));
     Ok(Linked { host: refresh(&library, &host), games, warning })
@@ -524,6 +684,7 @@ pub(crate) fn start_stream(library: &Library, game_id: &str, place: &str, waking
             Err(e) => return Err(e.to_string()),
         }
     }
+    ensure_paired(&exe, &link)?;
     let choice = picture_for(library, &host, &link);
     let moonlight = moonlight::stream(&exe, &link.address, choice.picture()).map_err(|e| format!("Moonlight could not be started: {e}."))?;
     Ok((moonlight, woke))

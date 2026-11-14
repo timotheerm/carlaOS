@@ -120,6 +120,17 @@ fn run(app: &AppHandle, library: &Library, command: &Command) -> (Result<Value, 
             plain(done)
         }
         "art_key" => plain(crate::art::set_key(library, args["key"].as_str().unwrap_or_default()).map(|kept| json!({ "key_set": kept }))),
+        "check" => plain((|| {
+            let wanted = args["desktop"].as_str().map(str::trim).filter(|s| !s.is_empty()).ok_or("The request is missing \"desktop\".")?;
+            let repair = args["repair"].as_bool() == Some(true);
+            if repair {
+                not_while_playing(library)?;
+            }
+            let hosts = library.store().hosts()?;
+            let host = hosts.iter().find(|h| h.id == wanted || h.name.eq_ignore_ascii_case(wanted)).ok_or_else(|| format!("The Ally is not linked to a desktop called \"{wanted}\"."))?;
+            let report = crate::hosts::check_host(library, host, repair);
+            value(serde_json::to_value(report))
+        })()),
         "restart" => match not_while_playing(library) {
             Ok(()) => (Ok(json!({ "restarting": true })), After::Restart),
             Err(e) => plain(Err(e)),
