@@ -150,11 +150,12 @@ pub(crate) fn sync_games(library: &Library, host: &HostRow, link: &Link) -> Resu
     let have_cover: std::collections::HashSet<String> =
         library.store().list()?.into_iter().filter(|g| g.cover.is_some()).map(|g| g.id).collect();
     let dir = art_dir(library);
-    // Steam games, and programs the administrator added on the desktop.
+    // Games from the stores, programs the administrator added on the desktop,
+    // and game files of the consoles set up there.
     let from = |source: &'static str| -> Vec<Scanned> {
         games
         .iter()
-        .filter(|g| g.source == source && g.id == format!("{source}:{}", g.source_id))
+        .filter(|g| g.source == source && g.id == format!("{source}:{}", g.source_id) && g.emulated == (source == "emu"))
         .map(|g| {
             // Fetch a picture only for games that have none here yet.
             let mut cover = None;
@@ -168,12 +169,14 @@ pub(crate) fn sync_games(library: &Library, host: &HostRow, link: &Link) -> Resu
                     }
                 }
             }
-            Scanned { source_id: g.source_id.clone(), title: g.title.clone(), cover, update: g.update, ..Scanned::default() }
+            // A console's name comes from the desktop; only an emulated game has one.
+            let platform = if g.emulated { g.platform.chars().take(40).collect() } else { String::new() };
+            Scanned { source_id: g.source_id.clone(), title: g.title.clone(), cover, platform, emulated: g.emulated, update: g.update, ..Scanned::default() }
         })
         .collect()
     };
     let mut total = 0;
-    for source in ["steam", "epic", "gog", "manual"] {
+    for source in ["steam", "epic", "gog", "manual", "emu"] {
         let found = from(source);
         total += found.len();
         library.store().sync(&host.id, source, &found, now())?;

@@ -6,6 +6,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use carla_core::library::emulation::{self, Console};
 use carla_core::display::Mode;
 use carla_core::link::{self, enrol};
 use carla_core::remote::{Command, Done};
@@ -306,6 +307,41 @@ impl Files {
         let found = extras.iter().position(|e| e.key == key).map(|i| extras.remove(i).title);
         if found.is_some() {
             self.write("games.json", &extras)?;
+        }
+        Ok(found)
+    }
+
+    /// The consoles set up on this desktop: an emulator and its folder of
+    /// game files each.
+    pub fn consoles(&self) -> Vec<Console> {
+        self.read("consoles.json").unwrap_or_default()
+    }
+
+    /// Set up a console. The same emulator with the same folder again
+    /// replaces the earlier one.
+    pub fn add_console(&self, console: Console) -> Result<Console, String> {
+        if !console.emulator.is_absolute() || !console.folder.is_absolute() {
+            return Err("Give the full path of the emulator and of the folder of games.".to_string());
+        }
+        let mut console = emulation::checked(console)?;
+        // Starts with a letter the Ally's own consoles never use, so a game
+        // here and a game there cannot be taken for the same one by accident.
+        let key = carla_core::library::manual_key(&format!("{}|{}", console.emulator.display(), console.folder.display()));
+        console.id = format!("d{}", &key[..8]);
+        let mut consoles = self.consoles();
+        consoles.retain(|c| c.id != console.id);
+        consoles.push(console.clone());
+        consoles.sort_by_key(|c| c.name.to_lowercase());
+        self.write("consoles.json", &consoles)?;
+        Ok(console)
+    }
+
+    /// Forget a console. Returns its name when it was there.
+    pub fn drop_console(&self, id: &str) -> Result<Option<String>, String> {
+        let mut consoles = self.consoles();
+        let found = consoles.iter().position(|c| c.id == id).map(|i| consoles.remove(i).name);
+        if found.is_some() {
+            self.write("consoles.json", &consoles)?;
         }
         Ok(found)
     }

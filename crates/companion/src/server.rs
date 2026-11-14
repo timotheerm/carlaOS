@@ -6,6 +6,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use carla_core::library::achievements::Achievement;
+use carla_core::library::emulation;
 use carla_core::library::Scanned;
 use carla_core::link::enrol::{Exchange, Shared, Side};
 use carla_core::link::quality;
@@ -196,7 +197,7 @@ impl Server {
         };
         let games = games
             .into_iter()
-            .map(|app| RemoteGame { id: format!("steam:{}", app.appid), source: "steam".to_string(), source_id: app.appid, title: app.title, has_cover: false, update: None })
+            .map(|app| RemoteGame { id: format!("steam:{}", app.appid), source: "steam".to_string(), source_id: app.appid, title: app.title, has_cover: false, update: None, platform: String::new(), emulated: false })
             .collect();
         json(&RemoteLibrary { games, free_bytes: (self.installs.free)(), problem })
     }
@@ -280,7 +281,9 @@ impl Server {
         match games.as_ref() {
             Some((at, list)) if !fresh && at.elapsed() < SCAN_AGE => list.clone(),
             _ => {
-                let list = (self.scan)();
+                let mut list = (self.scan)();
+                // Game files of the consoles set up here, each starting its emulator.
+                list.extend(self.files.consoles().iter().flat_map(emulation::scan).map(|game| ("emu", game)));
                 *games = Some((Instant::now(), list.clone()));
                 list
             }
@@ -306,6 +309,8 @@ impl Server {
             source_id: g.source_id,
             title: g.title,
             has_cover: g.cover.is_some(),
+            platform: if g.emulated { g.platform } else { String::new() },
+            emulated: g.emulated,
             update: g.update,
         });
         let extras = self.files.extras().into_iter().filter(|e| e.exe.is_file()).map(|e| RemoteGame {
@@ -314,6 +319,8 @@ impl Server {
             source_id: e.key,
             title: e.title,
             has_cover: e.cover.is_some_and(|c| c.is_file()),
+            platform: String::new(),
+            emulated: false,
             update: None,
         });
         steam.chain(extras).collect()
@@ -1012,6 +1019,43 @@ mod tests {
         assert!(matches!(link.prepare(&id), Err(Error::Host(_))));
         assert_eq!(desk.files.drop_extra(&added.key).unwrap().as_deref(), Some("Paper Lanterns Deluxe"));
         assert_eq!(desk.files.drop_extra(&added.key).unwrap(), None);
+    }
+
+    #[test]
+    fn games_of_a_console_set_up_here_are_listed_and_streamed_through_its_emulator() {
+        use carla_core::library::emulation::Console;
+        let desk = desk("console", false);
+        let link = linked(&desk);
+        let base = desk.files.dir().join("Emulation");
+        let (emulator, folder) = (base.join("Dolphin").join("Dolphin.exe"), base.join("GameCube"));
+        std::fs::create_dir_all(emulator.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(&emulator, b"program").unwrap();
+        std::fs::write(folder.join("Tin Knight (USA).rvz"), b"x").unwrap();
+        std::fs::write(folder.join("readme.txt"), b"x").unwrap();
+        let typed = Console { id: String::new(), name: "GameCube".into(), emulator: emulator.clone(), options: "-b -e \"{game}\"".into(), folder: folder.clone(), endings: vec!["rvz".into()] };
+        assert!(desk.files.add_console(Console { folder: "relative".into(), ..typed.clone() }).is_err());
+        let console = desk.files.add_console(typed.clone()).unwrap();
+        assert!(console.id.starts_with('d'), "never the same as a console of the Ally");
+        // The same emulator and folder again replaces it.
+        desk.files.add_console(Console { name: "Nintendo GameCube".into(), ..typed }).unwrap();
+        assert_eq!(desk.files.consoles().len(), 1);
+
+        let games = link.games().unwrap();
+        let knight = games.iter().find(|g| g.source == "emu").expect("listed");
+        assert_eq!((knight.title.as_str(), knight.platform.as_str(), knight.emulated), ("Tin Knight", "Nintendo GameCube", true));
+        assert!(knight.id.starts_with(&format!("emu:{}-", console.id)));
+        assert!(games.iter().filter(|g| g.source != "emu").all(|g| !g.emulated && g.platform.is_empty()));
+
+        link.prepare(&knight.id).unwrap();
+        let pending = desk.files.take_pending(now_for_tests()).unwrap();
+        let file = folder.join("Tin Knight (USA).rvz").to_string_lossy().into_owned();
+        assert_eq!((pending.source.as_str(), pending.exe.as_deref()), ("emu", Some(emulator.as_path())));
+        assert_eq!(pending.args, format!("-b -e \"{file}\""));
+
+        assert_eq!(desk.files.drop_console(&console.id).unwrap().as_deref(), Some("Nintendo GameCube"));
+        assert!(link.games().unwrap().iter().all(|g| g.source != "emu"));
+        assert!(matches!(link.prepare(&knight.id), Err(Error::Host(_))));
     }
 
     #[test]

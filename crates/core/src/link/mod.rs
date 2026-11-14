@@ -80,13 +80,20 @@ pub struct Updating {
 /// One game installed on a desktop.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoteGame {
-    /// Catalogue id, the same on every machine (`steam:<app id>`, or
-    /// `manual:<key>` for a program the administrator added there).
+    /// Catalogue id, the same on every machine (`steam:<app id>`), or
+    /// `manual:<key>` for a program the administrator added there, or
+    /// `emu:<console>-<key>` for a game file of a console set up there.
     pub id: String,
     pub source: String,
     pub source_id: String,
     pub title: String,
     pub has_cover: bool,
+    /// The console's name for a game played through an emulator there
+    /// ("GameCube"); empty for everything else.
+    #[serde(default)]
+    pub platform: String,
+    #[serde(default)]
+    pub emulated: bool,
     /// The store there has an update to finish before the game starts.
     #[serde(default)]
     pub update: Option<crate::library::Update>,
