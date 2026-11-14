@@ -38,7 +38,10 @@ const g = (
   origin?: string,
 ): Game => ({ id, title, platform, kind, hue, places, playtimeMinutes, lastPlayed, added, description, favourite: false, origin });
 
-export const games: Game[] = [
+// One game whose desktop has an update to finish, so the preview shows it.
+const waiting: Record<string, Game["updates"]> = { "ashen-crown": [{ place: "home", state: "needed", bytes: 2_400_000_000, done: 0 }] };
+
+export const games: Game[] = ([
   g("neon-harbor", "Neon Harbor", "Steam", "game", 330, ["local", "home"], 1260, "2026-11-10", "2026-09-02",
     "A rain-soaked detective story set across one endless night in a floating city."),
   g("petal-kart", "Petal Kart", "Steam", "game", 345, ["local"], 420, "2026-11-09", "2026-10-11",
@@ -69,7 +72,7 @@ export const games: Game[] = [
     "A community-built native version of a classic seaside adventure.", "Nintendo 64"),
   g("open-quarry", "Open Quarry", "Standalone", "port", 30, ["local", "home"], 15, "2026-09-05", "2026-09-05",
     "An open-source reimplementation of a beloved mining shooter."),
-];
+] as Game[]).map((game) => ({ ...game, updates: waiting[game.id] ?? [] }));
 
 export const cloud: CloudService[] = [
   { id: "gfn", name: "GeForce NOW", note: "Your own PC games, on a rented cloud PC", hue: 110, kind: "Cloud PC" },

@@ -18,6 +18,7 @@ use serde::Serialize;
 
 use crate::files::{Config, Extra, Files, Pending, SaveFolder};
 use crate::sunshine::Streamer;
+use crate::virtual_screen::{self, Driver};
 
 /// How long a scan of the installed games is reused.
 const SCAN_AGE: Duration = Duration::from_secs(60);
@@ -73,6 +74,8 @@ pub struct Server {
     updater: fn() -> Result<Option<String>, String>,
     /// How long an Ally asking for requests is kept waiting when there are none.
     admin_hold: Duration,
+    /// Makes a stream a virtual screen of its own, when there is a driver.
+    screens: Option<Box<dyn Driver + Send + Sync>>,
     replay: Mutex<Replay>,
     exchanges: Mutex<HashMap<String, Waiting>>,
     games: Mutex<Option<(Instant, Vec<Found>)>>,
@@ -146,6 +149,7 @@ impl Server {
             sleep,
             updater: || Err("This companion cannot update itself.".to_string()),
             admin_hold: Duration::from_secs(20),
+            screens: None,
             replay: Mutex::default(),
             exchanges: Mutex::default(),
             games: Mutex::default(),
@@ -156,6 +160,12 @@ impl Server {
     /// Let linked devices ask this companion to update itself.
     pub fn with_updater(mut self, updater: fn() -> Result<Option<String>, String>) -> Self {
         self.updater = updater;
+        self
+    }
+
+    /// Give each stream a virtual screen of its own through this driver.
+    pub fn with_virtual_screens(mut self, driver: Box<dyn Driver + Send + Sync>) -> Self {
+        self.screens = Some(driver);
         self
     }
 
@@ -236,6 +246,7 @@ impl Server {
             source_id: g.source_id,
             title: g.title,
             has_cover: g.cover.is_some(),
+            update: g.update,
         });
         let extras = self.files.extras().into_iter().filter(|e| e.exe.is_file()).map(|e| RemoteGame {
             id: format!("manual:{}", e.key),
@@ -243,6 +254,7 @@ impl Server {
             source_id: e.key,
             title: e.title,
             has_cover: e.cover.is_some_and(|c| c.is_file()),
+            update: None,
         });
         steam.chain(extras).collect()
     }
@@ -351,6 +363,7 @@ impl Server {
                 install_path: extra.exe.parent().map(PathBuf::from).unwrap_or_default(),
                 exe: Some(extra.exe),
                 args: extra.args,
+                screen: prepare.screen,
                 at: now,
             },
             (None, Some((source, game))) => Pending {
@@ -361,6 +374,7 @@ impl Server {
                 install_path: game.install_path,
                 exe: game.exe,
                 args: game.args,
+                screen: prepare.screen,
                 at: now,
             },
             (None, None) => return refuse(404, &format!("That game is no longer installed on {}.", self.config.name)),
@@ -374,6 +388,12 @@ impl Server {
         }
         self.streamer().and_then(|s| s.ensure_app(&self.launcher)).map_err(|e| (503, e))?;
         self.files.set_pending(&pending).map_err(|e| (500, e))?;
+        // Sunshine looks at the screens as soon as Moonlight connects, before
+        // the launcher runs: the stream's own screen has to be there by then.
+        // Without it the launcher switches the desktop's screen instead.
+        if let (Some(driver), Some(want), true) = (&self.screens, prepare.screen, self.config.virtual_screen) {
+            let _ = virtual_screen::enter(driver.as_ref(), &self.files, want);
+        }
         json(&self.status(now))
     }
 
@@ -485,6 +505,20 @@ impl Server {
             ("POST", "/v1/stream/pair") => self.pair(req.body, req.from),
             ("POST", "/v1/power/sleep") => self.sleep(now),
             ("POST", "/v1/stream/end") => self.end(now),
+            // Only the launcher of a stream that is going on listens.
+            ("POST", "/v1/stream/reveal") => {
+                let streaming = self.files.streaming(now);
+                if streaming {
+                    self.files.ask_reveal(now).map_err(|e| (500, e))?;
+                }
+                json(&serde_json::json!({ "revealed": streaming }))
+            }
+            // Read afresh: this is asked just before a game is started.
+            ("GET", path) if path.starts_with("/v1/games/update/") => {
+                let id = &path["/v1/games/update/".len()..];
+                let fresh = self.games(true).into_iter().find(|(source, g)| format!("{source}:{}", g.source_id) == id);
+                json(&fresh.and_then(|(_, g)| g.update))
+            }
             ("GET", "/v1/admin/next") => self.admin_next(req.device.unwrap_or_default()),
             ("POST", "/v1/admin/done") => self.admin_done(req.device.unwrap_or_default(), req.body),
             ("POST", "/v1/update") => self.update(now),
@@ -632,6 +666,9 @@ mod tests {
         }
     }
 
+    /// What Steam on the test desktop still has to do for the second game.
+    const UPDATE: carla_core::library::Update = carla_core::library::Update { state: carla_core::library::UpdateState::Needed, bytes: 1_000, done: 0 };
+
     /// How often any test desktop was put to sleep.
     static SLEEPS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
@@ -654,7 +691,7 @@ mod tests {
         let scan = Box::new(move || {
             vec![
                 ("steam", Scanned { source_id: "10".into(), title: "First Game".into(), install_path: dir.join("first"), cover: Some(dir.join("cover.jpg")), ..Scanned::default() }),
-                ("steam", Scanned { source_id: "20".into(), title: "Second Game".into(), install_path: dir.join("second"), ..Scanned::default() }),
+                ("steam", Scanned { source_id: "20".into(), title: "Second Game".into(), install_path: dir.join("second"), update: Some(UPDATE), ..Scanned::default() }),
                 ("gog", Scanned { source_id: "30".into(), title: "Third Game".into(), install_path: dir.join("third"), exe: Some(dir.join("third").join("third.exe")), args: "-windowed".into(), ..Scanned::default() }),
             ]
         });
@@ -681,6 +718,32 @@ mod tests {
     fn linked(desk: &Desk) -> Link {
         let code = desk.files.new_code().unwrap().code;
         client::enrol("127.0.0.1", desk.port, &code, "Ally").unwrap().1
+    }
+
+    #[test]
+    fn the_ally_says_what_picture_it_will_ask_for_and_can_lift_the_curtain() {
+        use carla_core::display::Mode;
+        let desk = desk("picture", false);
+        let link = linked(&desk);
+        link.prepare_for("steam:10", Some(Mode::new(1920, 1200, 60))).unwrap();
+        let pending = desk.files.take_pending(crate::files::now()).unwrap();
+        assert_eq!(pending.screen, Some(Mode::new(1920, 1200, 60)));
+        // An Ally from before this existed says nothing, which is fine.
+        link.prepare("steam:10").unwrap();
+        assert_eq!(desk.files.take_pending(crate::files::now()).unwrap().screen, None);
+        // What Steam there still has to do, in the list and asked afresh.
+        let games = link.games().unwrap();
+        assert_eq!(games.iter().map(|g| g.update).collect::<Vec<_>>(), [None, Some(UPDATE), None]);
+        assert_eq!(link.pending_update("steam:20").unwrap(), Some(UPDATE));
+        assert_eq!(link.pending_update("steam:10").unwrap(), None);
+        assert_eq!(link.pending_update("steam:99").unwrap(), None);
+        // Nothing to lift without a stream.
+        link.reveal().unwrap();
+        assert!(!desk.files.take_reveal(crate::files::now()));
+        desk.files.beat(crate::files::now());
+        link.reveal().unwrap();
+        assert!(desk.files.take_reveal(crate::files::now()));
+        assert!(!desk.files.take_reveal(crate::files::now()), "asked once, done once");
     }
 
     #[test]

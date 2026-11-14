@@ -6,14 +6,61 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use super::vdf;
-use super::Scanned;
+use super::{Scanned, Update, UpdateState};
 
 /// Things Steam installs alongside games that are not games.
 const NOT_GAMES: &[&str] = &["228980"]; // Steamworks Common Redistributables
 const NOT_GAME_NAMES: &[&str] = &["Proton ", "Steam Linux Runtime", "Steamworks Common", "SteamVR"];
 
-/// `StateFlags` bit for "fully installed".
+/// `StateFlags` bits, as Steam writes them into each app's manifest.
+const UPDATE_REQUIRED: u32 = 2;
 const FULLY_INSTALLED: u32 = 4;
+const UPDATE_RUNNING: u32 = 256;
+const UPDATE_PAUSED: u32 = 512;
+const UPDATE_STARTED: u32 = 1024;
+/// Downloading, staging and committing.
+const UPDATE_WORKING: u32 = 0x10_0000 | 0x20_0000 | 0x40_0000;
+
+/// The update Steam still has to finish for an app, from its manifest.
+/// Steam notes this when it has looked for updates, which it does while it
+/// runs: a desktop whose Steam has been closed for a week knows nothing new.
+fn update(state: &vdf::Value) -> Option<Update> {
+    let number = |key: &str| state.text(key).and_then(|t| t.parse::<u64>().ok()).unwrap_or(0);
+    let flags = number("StateFlags") as u32;
+    let (build, target) = (number("buildid"), number("TargetBuildID"));
+    let behind = target != 0 && target != build;
+    if flags & (UPDATE_REQUIRED | UPDATE_RUNNING | UPDATE_PAUSED | UPDATE_STARTED | UPDATE_WORKING) == 0 && !behind {
+        return None;
+    }
+    let (bytes, done) = (number("BytesToDownload"), number("BytesDownloaded"));
+    let state = if flags & UPDATE_PAUSED != 0 {
+        UpdateState::Paused
+    } else if flags & (UPDATE_RUNNING | UPDATE_WORKING) != 0 || (flags & UPDATE_STARTED != 0 && done > 0) {
+        UpdateState::Running
+    } else {
+        UpdateState::Needed
+    };
+    Some(Update { state, bytes, done: done.min(bytes) })
+}
+
+/// Installed once already. A first download is not a game yet.
+fn installed(state: &vdf::Value) -> bool {
+    let flags: u32 = state.text("StateFlags").and_then(|f| f.parse().ok()).unwrap_or(0);
+    let built = state.text("buildid").is_some_and(|b| b != "0" && !b.is_empty());
+    flags & FULLY_INSTALLED != 0 || (built && update(state).is_some())
+}
+
+/// The update Steam has to finish for one app, read now.
+pub fn update_of(root: &Path, appid: &str) -> Option<Update> {
+    if appid.is_empty() || !appid.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    library_folders(root).into_iter().find_map(|folder| {
+        let text = fs::read_to_string(folder.join("steamapps").join(format!("appmanifest_{appid}.acf"))).ok()?;
+        let manifest = vdf::parse(&text)?;
+        Some(manifest.get("AppState").and_then(update))
+    })?
+}
 
 /// Where Steam is installed on this machine, if it is.
 pub fn find_root() -> Option<PathBuf> {
@@ -105,8 +152,10 @@ pub fn scan(root: &Path) -> Vec<Scanned> {
             else {
                 continue;
             };
-            let flags: u32 = state.text("StateFlags").and_then(|f| f.parse().ok()).unwrap_or(0);
-            if flags & FULLY_INSTALLED == 0
+            let folder = apps.join("common").join(dir);
+            // A game that is being updated is still a game the player has.
+            if !installed(state)
+                || (update(state).is_some() && !folder.is_dir())
                 || NOT_GAMES.contains(&appid)
                 || NOT_GAME_NAMES.iter().any(|n| title.starts_with(n))
                 || found.iter().any(|s| s.source_id == appid)
@@ -116,9 +165,10 @@ pub fn scan(root: &Path) -> Vec<Scanned> {
             found.push(Scanned {
                 source_id: appid.to_string(),
                 title: title.to_string(),
-                install_path: apps.join("common").join(dir),
+                install_path: folder,
                 cover: art(root, appid, "library_600x900.jpg"),
                 hero: art(root, appid, "library_hero.jpg"),
+                update: update(state),
                 ..Scanned::default()
             });
         }
@@ -170,6 +220,59 @@ mod tests {
         assert_eq!(games[1].install_path, root.join("steamapps").join("common").join("Portal 2"));
         assert_eq!(games[1].cover.as_deref(), Some(hashed.join("library_600x900.jpg").as_path()));
         assert_eq!(games[0].cover, None);
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    fn state(flags: u32, extra: &str) -> vdf::Value {
+        let text = format!("\"AppState\"\n{{\n\"appid\" \"620\"\n\"StateFlags\" \"{flags}\"\n{extra}\n}}\n");
+        vdf::parse(&text).unwrap().get("AppState").unwrap().clone()
+    }
+
+    #[test]
+    fn an_update_steam_has_to_finish_is_read_from_the_manifest() {
+        assert_eq!(update(&state(4, r#""buildid" "100" "TargetBuildID" "100""#)), None);
+        assert_eq!(update(&state(4, r#""buildid" "100" "TargetBuildID" "0""#)), None, "0 means no other version is wanted");
+        // Steam has seen a newer version and not started.
+        let needed = update(&state(6, r#""buildid" "100" "TargetBuildID" "101" "BytesToDownload" "2000000000" "BytesDownloaded" "0""#)).unwrap();
+        assert_eq!((needed.state, needed.percent(), needed.left().as_deref()), (UpdateState::Needed, Some(0), Some("2.0 GB")));
+        // The flag can lag behind the version numbers.
+        assert_eq!(update(&state(4, r#""buildid" "100" "TargetBuildID" "101""#)).map(|u| (u.state, u.percent())), Some((UpdateState::Needed, None)));
+        // Downloading.
+        let running = update(&state(1026, r#""buildid" "100" "BytesToDownload" "1000" "BytesDownloaded" "430""#)).unwrap();
+        assert_eq!((running.state, running.percent()), (UpdateState::Running, Some(43)));
+        assert_eq!(update(&state(4 | 2 | 256, "")).map(|u| u.state), Some(UpdateState::Running));
+        assert_eq!(update(&state(1026 | 512, r#""BytesToDownload" "1000" "BytesDownloaded" "430""#)).map(|u| u.state), Some(UpdateState::Paused));
+        assert_eq!(update(&state(1026, r#""BytesToDownload" "900000000" "BytesDownloaded" "560000000""#)).unwrap().left().as_deref(), Some("340 MB"));
+    }
+
+    #[test]
+    fn a_game_being_updated_stays_in_the_library_and_a_first_download_does_not() {
+        let base = std::env::temp_dir().join(format!("carla-steam-update-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let apps = base.join("Steam").join("steamapps");
+        let write = |appid: &str, name: &str, flags: u32, build: u32, folder: bool| {
+            fs::create_dir_all(&apps).unwrap();
+            if folder {
+                fs::create_dir_all(apps.join("common").join(name)).unwrap();
+            }
+            fs::write(
+                apps.join(format!("appmanifest_{appid}.acf")),
+                format!("\"AppState\"\n{{\n\"appid\" \"{appid}\"\n\"name\" \"{name}\"\n\"StateFlags\" \"{flags}\"\n\"installdir\" \"{name}\"\n\"buildid\" \"{build}\"\n\"TargetBuildID\" \"9\"\n\"BytesToDownload\" \"100\"\n\"BytesDownloaded\" \"25\"\n}}\n"),
+            )
+            .unwrap();
+        };
+        write("10", "Up To Date", 4, 9, true);
+        write("20", "Being Updated", 1026, 8, true);
+        write("30", "First Download", 1026, 0, true);
+        write("40", "Folder Gone", 1026, 8, false);
+        let root = base.join("Steam");
+        let games = scan(&root);
+        let found: Vec<_> = games.iter().map(|g| (g.title.as_str(), g.update.map(|u| (u.state, u.percent())))).collect();
+        assert_eq!(found, [("Being Updated", Some((UpdateState::Running, Some(25)))), ("Up To Date", None)]);
+        assert_eq!(update_of(&root, "20").map(|u| u.state), Some(UpdateState::Running));
+        assert_eq!(update_of(&root, "10"), None);
+        assert_eq!(update_of(&root, "999"), None);
+        assert_eq!(update_of(&root, "../10"), None);
         let _ = fs::remove_dir_all(&base);
     }
 }

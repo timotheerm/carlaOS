@@ -66,6 +66,9 @@ shell ── signed HTTP, port 47600 ───▶  companion ── https://loca
   stream before its first picture, which Moonlight reports as "Something went
   wrong on your host PC when starting the stream".) What the launcher did is
   written to `%LOCALAPPDATA%\CarlaOS\companion\launcher.log`.
+- **Only the game, at the Ally's size.** For the length of the stream the
+  desktop's screen takes the Ally's size and a loading screen covers the
+  desktop until the game shows. See [STREAM-SCREEN.md](STREAM-SCREEN.md).
 - **Leaving a stream does not close the game.** The player may have unsaved
   progress. Streaming the same game again picks it up; asking for a different
   one is refused with "X is still running on HOME PC".
@@ -168,7 +171,7 @@ and documentation, but has only run against stand-ins:
 
 - Waking a real desktop, and reaching one through Tailscale.
 
-Known limits: Steam games only on desktops; waking only from the same network
+Known limits: waking only from the same network
 as the desktop.
 
 Before the first real stream from HOME PC, check the AMD driver: Sunshine has

@@ -6,7 +6,7 @@ import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { games as sampleGames, hosts as sampleHosts } from "../data/sample";
 import { sampleArt, sampleDetails, sampleMatches } from "../data/sample";
-import type { ArtChoice, ArtSearch, CheckFix, CheckReport, Console, ConsoleHint, Details, Inspected, FoundHost, Game, Host, HostPicture, HostState, Kind, Match, NewGame, SaveSync, Saves, Session } from "../data/types";
+import type { ArtChoice, ArtSearch, CheckFix, CheckReport, Console, ConsoleHint, Details, Inspected, FoundHost, Game, Host, HostPicture, HostState, Kind, Match, NewGame, SaveSync, Saves, Session, Waiting } from "../data/types";
 import { inTauri } from "../native";
 import { when } from "../ui/parts";
 
@@ -27,10 +27,11 @@ type GameView = {
   cover: string | null;
   hero: string | null;
   manual: boolean;
+  updates?: Waiting[];
   origin: string;
   own_art: boolean;
 };
-type SessionView = { game_id: string; title: string; phase: Session["phase"]; stream: boolean };
+type SessionView = { game_id: string; title: string; phase: Session["phase"]; stream: boolean; note?: string | null };
 // What the Rust side sends for one linked desktop.
 type HostView = {
   id: string;
@@ -106,12 +107,13 @@ const fromView = (g: GameView): Game => ({
   cover: g.cover ? convertFileSrc(g.cover) : undefined,
   hero: g.hero ? convertFileSrc(g.hero) : undefined,
   manual: g.manual,
+  updates: g.updates ?? [],
   origin: g.origin || undefined,
   ownArt: g.own_art,
 });
 
 const fromSession = (s: SessionView | null): Session | null =>
-  s && { gameId: s.game_id, title: s.title, phase: s.phase, stream: s.stream };
+  s && { gameId: s.game_id, title: s.title, phase: s.phase, stream: s.stream, note: s.note ?? null };
 
 const awake = (state: HostState) => state === "ready" || state === "busy" || state === "not_ready";
 
@@ -499,6 +501,15 @@ export const library = {
     const game = state.games.find((g) => g.id === gameId);
     if (!game) return { achievements: [], achievementsFrom: null, milestones: [], saves: null, sync: [], sessions: 0 };
     return { ...sampleDetails(game), saves: preview(gameId) };
+  },
+
+  /** What the stores still have to do before a game starts, asked now. */
+  async updates(gameId: string): Promise<Waiting[]> {
+    if (!inTauri) return state.games.find((g) => g.id === gameId)?.updates ?? [];
+    const updates = await invoke<Waiting[]>("library_updates", { gameId });
+    // The cards show it too, without waiting for the next look through the library.
+    set({ games: state.games.map((g) => (g.id === gameId ? { ...g, updates } : g)) });
+    return updates;
   },
 
   /** Bring a game's saves in step with the desktops now. One line per desktop that takes part. */

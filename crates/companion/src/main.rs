@@ -9,8 +9,11 @@
 mod ally;
 mod files;
 mod launcher;
+mod screen;
 mod server;
+mod stage;
 mod sunshine;
+mod virtual_screen;
 
 use std::io::{BufRead, Write};
 use std::net::{Ipv4Addr, UdpSocket};
@@ -48,6 +51,22 @@ const HELP: &str = "CarlaOS desktop companion
   carla-companion saves restore KEY COPY
                              put a safe copy back
   carla-companion ally ...   administer a linked Ally from here (carla-companion ally help)
+  carla-companion stream     what a stream does to this desktop's screen, and its modes
+  carla-companion stream screen on|off
+                             switch the screen to the Ally's size during a stream
+  carla-companion stream curtain on|off
+                             cover the desktop with a loading screen until the game shows
+  carla-companion stream virtual on|off
+                             give each stream a virtual screen of its own, at the
+                             Ally's size, with the desktop's monitor dark meanwhile
+  carla-companion stream virtual install
+                             install the Virtual Display Driver that this needs
+  carla-companion stream virtual test [WIDTHxHEIGHT [RATE]]
+                             try it for fifteen seconds, without an Ally
+  carla-companion stream test [WIDTHxHEIGHT [RATE]]
+                             try both for ten seconds, without an Ally
+  carla-companion stream restore
+                             put the screens back now
   carla-companion sleep-test put this desktop to sleep now, the way the Ally would
   carla-companion status     show whether everything is ready
   carla-companion serve      run quietly (what happens when Windows starts)
@@ -256,6 +275,7 @@ fn build(files: &Files, config: Config) -> Server {
         sleep_soon,
     )
     .with_updater(update_from_afar)
+    .with_virtual_screens(Box::new(virtual_screen::Vdd))
 }
 
 /// A linked Ally asked this desktop to update. Answer as soon as it is known
@@ -304,6 +324,10 @@ fn serve(files: &Files, config: Config) -> Result<(), String> {
     let port = config.port;
     let http = tiny_http::Server::http((Ipv4Addr::UNSPECIFIED, port)).map_err(|e| e.to_string())?;
     let server = Arc::new(build(files, config));
+    // A screen left switched by a stream that was cut off is put back.
+    screen::watch(files.clone());
+    // Likewise a virtual screen; and the driver's own one is taken away.
+    virtual_screen::watch(files.clone());
     if let Ok(socket) = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, port)) {
         let hello = server.hello();
         std::thread::spawn(move || discover::answer(&socket, &hello));
@@ -382,6 +406,136 @@ fn saves(files: &Files, args: &[String]) -> Result<i32, String> {
             }
             Backups::new(&files.save_copies(), &f.key).restore(&f.folder, copy, files::now())?;
             println!("That copy of {} is back in place. What was there before is kept as a new safe copy.", f.title);
+            Ok(0)
+        }
+        _ => {
+            println!("{HELP}");
+            Ok(0)
+        }
+    }
+}
+
+fn on_off(word: Option<&String>) -> Result<bool, String> {
+    match word.map(String::as_str) {
+        Some("on") => Ok(true),
+        Some("off") => Ok(false),
+        _ => Err("Say on or off.".to_string()),
+    }
+}
+
+/// "1920x1080" and an optional rate.
+fn parse_mode(size: Option<&String>, rate: Option<&String>) -> Result<carla_core::display::Mode, String> {
+    let wrong = || "Say the size like this: carla-companion stream test 1920x1080 60".to_string();
+    let Some(size) = size else { return Ok(carla_core::display::Mode::new(1920, 1080, 60)) };
+    let (w, h) = size.to_lowercase().split_once('x').map(|(w, h)| (w.parse::<u32>(), h.parse::<u32>())).ok_or_else(wrong)?;
+    let hz = rate.map(|r| r.parse::<u32>()).unwrap_or(Ok(60)).map_err(|_| wrong())?;
+    Ok(carla_core::display::Mode::new(w.map_err(|_| wrong())?, h.map_err(|_| wrong())?, hz))
+}
+
+/// The commands about what a stream does to this desktop.
+fn stream(files: &Files, args: &[String]) -> Result<i32, String> {
+    use carla_core::display;
+    let mut config = configured(files)?;
+    let words = |on: bool| if on { "on" } else { "off" };
+    match args.first().map(String::as_str) {
+        None => {
+            println!("Switch the screen to the Ally's size during a stream: {}", words(config.match_screen));
+            println!("Cover the desktop until the game shows:               {}", words(config.curtain));
+            use virtual_screen::Driver;
+            let installed = virtual_screen::Vdd.present();
+            println!(
+                "A virtual screen of its own for each stream:          {}{}",
+                words(config.virtual_screen),
+                if installed { "" } else { " (the driver is not installed: carla-companion stream virtual install)" }
+            );
+            if files.virtual_screen().is_some() {
+                println!("A virtual screen is on for a stream. It is taken away when the stream ends.");
+            }
+            match display::current() {
+                Some(now) => println!("The screen now:  {}", now.words()),
+                None => println!("The screen now:  not known"),
+            }
+            if let Some(to) = files.switched() {
+                println!("Switched for a stream to {}. It is put back when the stream ends.", to.words());
+            }
+            let modes = display::modes();
+            for (name, want) in [("the Ally (1920x1080 at 60)", display::Mode::new(1920, 1080, 60)), ("a 16:10 laptop (1920x1200 at 60)", display::Mode::new(1920, 1200, 60))] {
+                match display::choose(&modes, want) {
+                    Some(to) => println!("For {name} it would take {}.", to.words()),
+                    None => println!("For {name} it has no suitable mode and would be left as it is."),
+                }
+            }
+            let mut sizes: Vec<(u32, u32)> = modes.iter().map(|m| (m.width, m.height)).collect();
+            sizes.sort_unstable();
+            sizes.dedup();
+            println!("Sizes it has:    {}", sizes.iter().rev().map(|(w, h)| format!("{w}x{h}")).collect::<Vec<_>>().join(", "));
+            Ok(0)
+        }
+        Some("screen") => {
+            config.match_screen = on_off(args.get(1))?;
+            files.save_config(&config)?;
+            println!("From the next stream on, the screen is {}.", if config.match_screen { "switched to the Ally's size" } else { "left as it is" });
+            Ok(0)
+        }
+        Some("curtain") => {
+            config.curtain = on_off(args.get(1))?;
+            files.save_config(&config)?;
+            println!("From the next stream on, the desktop is {}.", if config.curtain { "covered until the game shows" } else { "shown as it is" });
+            Ok(0)
+        }
+        Some("virtual") => match args.get(1).map(String::as_str) {
+            Some("install") => {
+                println!("Installing the Virtual Display Driver (open source, signed; Windows asks to allow it)...");
+                virtual_screen::install()?;
+                config.virtual_screen = true;
+                files.save_config(&config)?;
+                // The driver starts with a screen of its own switched on: off with it.
+                std::thread::sleep(std::time::Duration::from_secs(3));
+                virtual_screen::settle(&virtual_screen::Vdd, files, files::now());
+                println!("Done. From the next stream on, it has a screen of its own at the Ally's size.");
+                println!("After a graphics driver update, run this again if streams fall back to the desktop's screen.");
+                Ok(0)
+            }
+            Some("test") => {
+                let want = parse_mode(args.get(2), args.get(3))?;
+                println!("For fifteen seconds: a virtual screen as for a {}x{} stream. The monitor goes dark meanwhile.", want.width, want.height);
+                let to = virtual_screen::enter(&virtual_screen::Vdd, files, want)?;
+                std::thread::sleep(std::time::Duration::from_secs(15));
+                virtual_screen::leave(&virtual_screen::Vdd, files);
+                println!("The virtual screen was on at {} and is gone; the desktop's screens are back.", to.words());
+                Ok(0)
+            }
+            _ => {
+                config.virtual_screen = on_off(args.get(1))?;
+                files.save_config(&config)?;
+                if config.virtual_screen {
+                    use virtual_screen::Driver;
+                    if virtual_screen::Vdd.present() {
+                        println!("From the next stream on, it has a virtual screen of its own.");
+                    } else {
+                        println!("On, but the driver is not installed yet: carla-companion stream virtual install");
+                    }
+                } else {
+                    virtual_screen::leave(&virtual_screen::Vdd, files);
+                    println!("From the next stream on, the desktop's own screen is used.");
+                }
+                Ok(0)
+            }
+        },
+        Some("test") => {
+            let want = parse_mode(args.get(1), args.get(2))?;
+            println!("For ten seconds: the screen as for a {}x{} stream, and the loading screen.", want.width, want.height);
+            match launcher::rehearse(files, &screen::Main, want, std::time::Duration::from_secs(10))? {
+                Some(to) => println!("The screen was switched to {} and put back.", to.words()),
+                None => println!("The screen was left as it is: it was already right, or has no suitable mode (see carla-companion stream)."),
+            }
+            Ok(0)
+        }
+        Some("restore") => {
+            virtual_screen::leave(&virtual_screen::Vdd, files);
+            display::restore()?;
+            let _ = files.set_switched(None);
+            println!("The screen is back to what the Windows settings say.");
             Ok(0)
         }
         _ => {
@@ -494,6 +648,7 @@ fn run(args: &[String]) -> Result<i32, String> {
             }
         }
         Some("saves") => saves(&files, &args[1..]),
+        Some("stream") => stream(&files, &args[1..]),
         Some("ally") => {
             // The companion in the background hands the request to the Ally.
             // If its port is free, it is not running.
