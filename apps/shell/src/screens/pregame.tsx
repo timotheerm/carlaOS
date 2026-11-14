@@ -1,7 +1,7 @@
 // The page of one game, shown before it starts, the way a console does: how
 // long it has been played, what has been achieved, and how the saves are.
 import { useEffect, useState } from "react";
-import type { Achievement, Details, Game, SaveSync, Saves } from "../data/types";
+import { POWERS, POWER_TEXT, type Achievement, type Details, type Game, type PowerView, type SaveSync, type Saves } from "../data/types";
 import { library, message } from "../library/store";
 import { Clock, Heart, Lock, SaveIcon, Sparkle, Trophy } from "../ui/icons";
 import { Badges, Cover, Empty, Row, amount, day, placeLabel, size, when } from "../ui/parts";
@@ -127,6 +127,55 @@ function SavesPanel({ game, saves, sync, onSaves, notify }: { game: Game; saves:
   );
 }
 
+// How hard the Ally works for this game, chosen before it starts. Also in
+// the quick menu while it runs.
+function PowerPanel({ game, place, notify }: { game: Game; place: string; notify: Ctx["notify"] }) {
+  const [view, setView] = useState<PowerView | null>(null);
+  useEffect(() => {
+    let current = true;
+    library.power(game.id, place).then((v) => current && setView(v), () => undefined);
+    return () => {
+      current = false;
+    };
+  }, [game.id, place]);
+  if (!view) return null;
+  const choose = (next: Partial<Pick<PowerView, "power" | "screen">>) =>
+    library.setPower(game.id, place, next.power ?? view.power, next.screen ?? view.screen).then(setView, (e) => notify(message(e)));
+  return (
+    <div className="powerpanel">
+      <p className="lede">
+        {place === "cloud"
+          ? "The game runs far away, so the Ally only shows it: Quiet is plenty and the battery lasts much longer."
+          : "Choose how hard the Ally works for this game. It can be changed while playing too, in the quick menu (hold View and Menu)."}
+      </p>
+      <div className="powers" role="radiogroup" aria-label="Power">
+        {POWERS.map((p) => (
+          <button
+            key={p}
+            role="radio"
+            aria-checked={view.power === p}
+            className={view.power === p ? `power power--${p} power--on` : `power power--${p}`}
+            data-focus
+            data-fid={`power:${p}`}
+            onClick={() => void choose({ power: p })}
+          >
+            <span className="power__name">{POWER_TEXT[p].name}</span>
+            <span className="power__about">{POWER_TEXT[p].about}</span>
+          </button>
+        ))}
+      </div>
+      {view.setsScreen && (
+        <button className="setting" data-focus data-fid="power:screen" onClick={() => void choose({ screen: view.screen === "smooth" ? "saver" : "smooth" })}>
+          <span>Screen</span>
+          <span className="setting__value">
+            {view.screen === "smooth" ? "Smooth: as fast as the screen goes" : "60 Hz: plenty for most games, and the battery lasts longer"}
+          </span>
+        </button>
+      )}
+    </div>
+  );
+}
+
 export function GameDetail({ gameId, onToggleFavourite, ...ctx }: Ctx & { gameId: string; onToggleFavourite: (id: string) => void }) {
   const game = ctx.games.find((g) => g.id === gameId);
   const [details, setDetails] = useState<Details | null>(null);
@@ -213,6 +262,12 @@ export function GameDetail({ gameId, onToggleFavourite, ...ctx }: Ctx & { gameId
         <Row title={`CarlaOS milestones · ${earned(milestones)} of ${milestones.length}`}>
           <Trophies list={milestones} prefix="mile" milestone />
         </Row>
+      )}
+      {(local || game.places.includes("cloud")) && (
+        <section className="row">
+          <h2 className="row__title">Power</h2>
+          <PowerPanel game={game} place={local ? "local" : "cloud"} notify={ctx.notify} />
+        </section>
       )}
       {details && (
         <section className="row">

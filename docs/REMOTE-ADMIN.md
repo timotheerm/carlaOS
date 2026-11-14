@@ -18,6 +18,8 @@ carla-companion ally games            every game in its library, with ids
 carla-companion ally rescan           look for installed games again
 carla-companion ally add "NAME" "C:\path\on\the\ally\game.exe" [--args "…"] [--kind game|port|homebrew] [--about "…"]
 carla-companion ally cloud LINK [NAME] add a cloud game by its link (see CLOUD.md)
+carla-companion ally power ID [quiet|balanced|turbo] [smooth|saver] [--stream|--cloud] [--forget]
+                                      how hard the Ally works for a game (see POWER.md)
 carla-companion ally remove ID        take a game added by hand off its library
 carla-companion ally saves ID "C:\path\on\the\ally\saves"
 carla-companion ally saves ID --forget

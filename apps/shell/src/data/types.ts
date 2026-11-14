@@ -134,3 +134,22 @@ export type HostPicture = {
 export type FoundHost = { address: string; name: string; id: string };
 
 export type CloudService = { id: string; name: string; note: string; hue: number; kind: string };
+
+/** How hard the Ally works for a game. */
+export type Power = "quiet" | "balanced" | "turbo";
+export const POWERS: Power[] = ["quiet", "balanced", "turbo"];
+export const POWER_TEXT: Record<Power, { name: string; short: string; about: string }> = {
+  quiet: { name: "Quiet", short: "Longest battery", about: "The fan stays down and the battery lasts longest. Best for small games, streams and cloud games." },
+  balanced: { name: "Balanced", short: "Most games", about: "Enough for most games, without draining the battery." },
+  turbo: { name: "Turbo", short: "Most power", about: "Everything the Ally has, for the most demanding games. Best when plugged in." },
+};
+/** A game's power level and screen speed. */
+export type PowerView = {
+  power: Power;
+  /** "smooth": as fast as the screen goes. "saver": 60 times a second. */
+  screen: "smooth" | "saver";
+  /** Chosen for this game, rather than what every game gets. */
+  chosen: boolean;
+  /** A stream picks its own screen speed. */
+  setsScreen: boolean;
+};

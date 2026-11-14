@@ -19,6 +19,8 @@ use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder
 
 use crate::device::{self, Battery, Sound};
 use crate::library::{locked, Library};
+use crate::power::{self, PowerView};
+use carla_core::power::{Power, Profile, Screen};
 
 const WINDOW: &str = "quick";
 /// Sent to the menu for each step the controller takes through it.
@@ -40,14 +42,22 @@ pub struct QuickState {
     sound: Option<Sound>,
     brightness: Option<u8>,
     battery: Option<Battery>,
+    /// The running game's power level and screen speed.
+    power: Option<PowerView>,
 }
 
 fn state(library: &Library) -> QuickState {
-    let (title, stream, since) = match locked(&library.0.active).as_ref() {
-        Some(active) => (Some(active.view.title.clone()), active.place != LOCAL && active.place != CLOUD, Some(active.since)),
-        None => (None, false, None),
+    let (title, stream, since, game) = match locked(&library.0.active).as_ref() {
+        Some(active) => (
+            Some(active.view.title.clone()),
+            active.place != LOCAL && active.place != CLOUD,
+            Some(active.since),
+            Some((active.view.game_id.clone(), active.place.clone())),
+        ),
+        None => (None, false, None, None),
     };
-    QuickState { title, stream, since, sound: device::sound(), brightness: device::brightness(), battery: device::battery() }
+    let power = game.and_then(|(id, place)| power::view(library, &id, &place).ok());
+    QuickState { title, stream, since, sound: device::sound(), brightness: device::brightness(), battery: device::battery(), power }
 }
 
 fn window_handle(window: &tauri::WebviewWindow) -> isize {
@@ -167,6 +177,16 @@ pub fn quick_set_sound(library: State<'_, Library>, level: u8, muted: bool) -> R
 pub fn quick_set_brightness(library: State<'_, Library>, level: u8) -> Result<QuickState, String> {
     // Never quite dark: the menu must stay readable to turn it back up.
     device::set_brightness(level.clamp(5, 100))?;
+    Ok(state(&library))
+}
+
+/// Change the running game's power level or screen speed. It is remembered
+/// for the next time.
+#[tauri::command(async)]
+pub fn quick_set_power(library: State<'_, Library>, power: Power, screen: Screen) -> Result<QuickState, String> {
+    let game = locked(&library.0.active).as_ref().map(|a| (a.view.game_id.clone(), a.place.clone()));
+    let (id, place) = game.ok_or("No game is running.")?;
+    power::set(&library, &id, &place, Profile { power, screen })?;
     Ok(state(&library))
 }
 

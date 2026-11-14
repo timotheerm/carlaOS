@@ -21,7 +21,7 @@ const POLL: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionView {
-    game_id: String,
+    pub(crate) game_id: String,
     pub(crate) title: String,
     /// "waking" while a sleeping desktop comes up, "starting" until the game's
     /// program (or the stream) has been seen, then "running".
@@ -206,6 +206,12 @@ pub(crate) fn play(app: AppHandle, library: &Library, mut install: Install, plac
     // second game, and the player sees at once that something is happening.
     claim(library, &view, &place)?;
     let _ = app.emit(SESSION_EVENT, Some(view.clone()));
+    // The game's power level and screen speed, before it starts, so it
+    // starts with them.
+    let kind = carla_core::power::Kind::of(&place);
+    if let Ok(profile) = carla_core::power::profile(&library.store(), &game_id, kind) {
+        crate::power::apply(profile, kind);
+    }
     let started_running = if cloud {
         // A browser profile kept only for cloud gaming, so the services stay
         // signed in from one game to the next.
@@ -234,6 +240,7 @@ pub(crate) fn play(app: AppHandle, library: &Library, mut install: Install, plac
         Ok(running) => running,
         Err(e) => {
             *locked(&library.0.active) = None;
+            crate::power::rest();
             let _ = app.emit(SESSION_EVENT, None::<SessionView>);
             return Err(e);
         }
@@ -251,6 +258,7 @@ pub(crate) fn play(app: AppHandle, library: &Library, mut install: Install, plac
         Err(e) => {
             running.stop(false);
             *locked(&library.0.active) = None;
+            crate::power::rest();
             let _ = app.emit(SESSION_EVENT, None::<SessionView>);
             return Err(e);
         }
@@ -287,6 +295,7 @@ pub(crate) fn play(app: AppHandle, library: &Library, mut install: Install, plac
         // A desktop that was asleep before the stream may sleep again.
         let sleep_again = played && matches!(running, Running::Stream { woke: true, .. });
         *locked(&library.0.active) = None;
+        crate::power::rest();
         crate::quick::ended(&app);
         let _ = app.emit(SESSION_EVENT, None::<SessionView>);
         if let Some(window) = app.get_webview_window("main") {

@@ -37,6 +37,10 @@ be allowed first: Settings, Desktops, this desktop, \"Administer this Ally\".
   carla-companion ally startup [on|off] whether CarlaOS opens when the Ally is turned on
   carla-companion ally picture DESKTOP [auto|auto120|sharp|balanced|light|lightest|smooth]
                                         the picture of streams from a desktop to the Ally
+  carla-companion ally power ID [quiet|balanced|turbo] [smooth|saver] [--stream|--cloud] [--forget]
+                                        how hard the Ally works for a game, and whether its
+                                        screen runs smooth (as fast as it goes) or at 60 to save
+                                        battery; --stream for when it is streamed from a desktop
   carla-companion ally art ID [NAME]    look for pictures of a game and show them here,
                                         numbered, in the browser; NAME searches for
                                         something other than the game's own name
@@ -82,6 +86,20 @@ pub fn request(words: &[String]) -> Result<Request, String> {
             Ok(Request { op: if *way == "apply" { "cleanup_apply" } else { "cleanup_undo" }, args: json!({ "ids": ids }), patience: slow })
         }
         ["cloud", link, name @ ..] => Ok(Request { op: "add_cloud", args: json!({ "link": link, "title": name.join(" ") }), patience: quick }),
+        ["power", id, rest @ ..] => {
+            let mut args = json!({ "id": id });
+            for word in rest {
+                match *word {
+                    "--stream" => args["kind"] = json!("stream"),
+                    "--cloud" => args["kind"] = json!("cloud"),
+                    "--forget" => args["forget"] = json!(true),
+                    w if carla_core::power::Power::parse(w).is_some() => args["power"] = json!(w.to_ascii_lowercase()),
+                    w if carla_core::power::Screen::parse(w).is_some() => args["screen"] = json!(w.to_ascii_lowercase()),
+                    _ => return usage(),
+                }
+            }
+            Ok(Request { op: "power", args, patience: quick })
+        }
         ["remove", id] => Ok(Request { op: "remove_game", args: json!({ "id": id }), patience: quick }),
         ["saves", id, "--forget"] => Ok(Request { op: "save_folder", args: json!({ "id": id }), patience: quick }),
         ["saves", id, folder] => Ok(Request { op: "save_folder", args: json!({ "id": id, "folder": folder }), patience: quick }),
@@ -225,6 +243,17 @@ pub fn show(op: &str, out: &Value) -> String {
             word(&out["id"]),
             word(&out["id"]),
             word(&out["service"])
+        ),
+        "power" => format!(
+            "{}: {}, screen {}{}.",
+            word(&out["title"]),
+            match word(&out["power"]) {
+                "quiet" => "Quiet (longest battery)",
+                "turbo" => "Turbo (most power)",
+                _ => "Balanced",
+            },
+            if out["screen"] == "saver" { "at 60 to save battery" } else { "as smooth as it goes" },
+            if out["chosen"].as_bool() == Some(true) { "" } else { ", like every game until you choose" }
         ),
         "art_set" => format!("{} has its new {}.", word(&out["title"]), if out["shape"] == "wide" { "wide picture" } else { "cover" }),
         "art_clear" => format!("{} is back to the picture it had by itself.", word(&out["title"])),
@@ -423,12 +452,15 @@ mod tests {
         assert_eq!(request(&words(r#"art manual:1 ocarina of time"#)).unwrap().args, json!({ "id": "manual:1", "term": "ocarina of time" }));
         assert_eq!(request(&words("art steam:10")).unwrap().args, json!({ "id": "steam:10", "term": "" }));
         assert_eq!(request(&words("art key none")).unwrap().args, json!({ "key": "" }));
+        assert_eq!(request(&words("power X Turbo --cloud")).unwrap().args, json!({ "id": "X", "power": "turbo", "kind": "cloud" }));
+        assert!(request(&words("power X max")).is_err());
+        assert_eq!(show("power", &json!({ "title": "Hookshot", "power": "quiet", "screen": "saver", "chosen": true })), "Hookshot: Quiet (longest battery), screen at 60 to save battery.");
         assert_eq!(request(&words("cloud https://www.xbox.com/play/games/x/1 Forza 5")).unwrap().args, json!({ "link": "https://www.xbox.com/play/games/x/1", "title": "Forza 5" }));
         for wrong in ["cleanup apply", "add OnlyAName", "add A B --colour pink", "remove", "format c:", "saves", "startup maybe", "picture", "picture HOME ultra", "art", "art use 2"] {
             assert!(request(&words(wrong)).is_err(), "{wrong:?} is not a request");
         }
         // Everything that can be typed is something the Ally knows.
-        for line in ["status", "games", "rescan", "add A B", "remove X", "saves X Y", "desktops", "cleanup", "cleanup apply X", "cleanup undo X", "update", "restart", "startup", "startup on", "picture HOME", "picture HOME auto120", "picture HOME light", "art X", "art X zelda", "art clear X", "art key abcdef0123456789", "cloud https://www.xbox.com/play", "cloud https://www.xbox.com/play Forza Horizon"] {
+        for line in ["status", "games", "rescan", "add A B", "remove X", "saves X Y", "desktops", "cleanup", "cleanup apply X", "cleanup undo X", "update", "restart", "startup", "startup on", "picture HOME", "picture HOME auto120", "picture HOME light", "art X", "art X zelda", "art clear X", "art key abcdef0123456789", "cloud https://www.xbox.com/play", "cloud https://www.xbox.com/play Forza Horizon", "power X", "power X turbo saver --stream", "power X --forget"] {
             assert!(carla_core::remote::OPS.contains(&request(&words(line)).unwrap().op), "{line}");
         }
     }

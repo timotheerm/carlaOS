@@ -10,6 +10,7 @@ pub mod boot;
 pub mod debloat;
 pub mod library;
 pub mod link;
+pub mod power;
 pub mod quick;
 pub mod remote;
 pub mod secret;

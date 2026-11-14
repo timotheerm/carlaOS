@@ -6,7 +6,7 @@ import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { games as sampleGames, hosts as sampleHosts } from "../data/sample";
 import { sampleArt, sampleDetails, sampleMatches } from "../data/sample";
-import type { ArtChoice, ArtSearch, Console, ConsoleHint, Details, Inspected, FoundHost, Game, Host, HostPicture, HostState, Kind, Match, NewGame, SaveSync, Saves, Session } from "../data/types";
+import type { ArtChoice, ArtSearch, Console, ConsoleHint, Details, Inspected, FoundHost, Game, Host, HostPicture, HostState, Kind, Match, NewGame, Power, PowerView, SaveSync, Saves, Session } from "../data/types";
 import { inTauri } from "../native";
 import { when } from "../ui/parts";
 
@@ -176,6 +176,8 @@ async function refreshHosts() {
 }
 
 const previewPictures = new Map<string, string>();
+const previewPower = new Map<string, PowerView>();
+const powerKey = (gameId: string, place: string) => `${place === "local" || place === "cloud" ? place : "stream"}:${gameId}`;
 function previewPicture(id: string): HostPicture {
   return {
     setting: previewPictures.get(id) ?? "auto",
@@ -285,6 +287,21 @@ export const library = {
     if (inTauri) await invoke("hosts_set_admin", { id, allowed });
     else if (allowed) previewAdmin.add(id);
     else previewAdmin.delete(id);
+  },
+
+  /** How hard the Ally works for a game played there, and its screen speed. */
+  async power(gameId: string, place: string): Promise<PowerView> {
+    if (inTauri) return invoke<PowerView>("power_get", { gameId, place });
+    const local = place === "local";
+    return previewPower.get(powerKey(gameId, place)) ?? { power: local ? "balanced" : "quiet", screen: "smooth", chosen: false, setsScreen: local || place === "cloud" };
+  },
+
+  /** Choose them. Anyone may. Takes effect at once if the game is running. */
+  async setPower(gameId: string, place: string, power: Power, screen: PowerView["screen"]): Promise<PowerView> {
+    if (inTauri) return invoke<PowerView>("power_set", { gameId, place, power, screen });
+    const view = { power, screen, chosen: true, setsScreen: place === "local" || place === "cloud" };
+    previewPower.set(powerKey(gameId, place), view);
+    return view;
   },
 
   /** A desktop's picture setting and what its last stream got. */
