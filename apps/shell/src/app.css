@@ -721,6 +721,15 @@ button {
   font-weight: 800;
 }
 
+.pin__aside {
+  margin: 0;
+  max-width: 44rem;
+  padding: 0.8rem 1.4rem;
+  border-radius: 1.2rem;
+  border: 0.15rem solid var(--accent);
+  font-weight: 700;
+}
+
 .pin__dots {
   display: flex;
   gap: 1.25rem;

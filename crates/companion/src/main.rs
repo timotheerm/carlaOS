@@ -198,7 +198,9 @@ fn setup(files: &Files) -> Result<Config, String> {
 fn show_code(files: &Files) -> Result<(), String> {
     let code = files.new_code()?;
     println!("Code for linking an Ally:\n\n    {} {}\n", &code.code[..3], &code.code[3..]);
-    println!("On the Ally: Settings, Desktops, Add a desktop. The code works for {} minutes.", enrol::CODE_LIFETIME / 60);
+    println!("On the Ally: Settings, Desktops, Add a desktop, choose this desktop, then type these six digits.");
+    println!("The Ally first asks for its own four-digit administrator PIN. That one is chosen on the Ally; it is not this code.");
+    println!("The code works for {} minutes.", enrol::CODE_LIFETIME / 60);
     Ok(())
 }
 
