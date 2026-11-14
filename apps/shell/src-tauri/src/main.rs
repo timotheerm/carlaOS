@@ -105,6 +105,8 @@ fn main() {
             cloud::cloud_inspect,
             cloud::cloud_add,
             cloud::cloud_open,
+            quick::quick_show_desktop,
+            details::library_updates,
             art::art_find,
             art::art_use,
             art::art_pick,

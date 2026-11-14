@@ -195,6 +195,16 @@ pub fn quick_close(app: AppHandle) {
     close(&app);
 }
 
+/// Take away the loading screen the desktop shows during a stream, for when
+/// something behind it needs an answer.
+#[tauri::command(async)]
+pub fn quick_show_desktop(app: AppHandle, library: State<'_, Library>) -> Result<(), String> {
+    let place = locked(&library.0.active).as_ref().map(|a| a.place.clone()).filter(|p| p != LOCAL && p != CLOUD).ok_or("No game is being streamed.")?;
+    crate::hosts::reveal(&library, &place)?;
+    close(&app);
+    Ok(())
+}
+
 /// Close the game. For a stream the desktop is asked to close it too, so it
 /// does not keep running there unseen.
 #[tauri::command(async)]

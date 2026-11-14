@@ -6,6 +6,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use carla_core::display::Mode;
 use carla_core::link::{self, enrol};
 use carla_core::remote::{Command, Done};
 use carla_core::secret;
@@ -49,6 +50,20 @@ pub struct Config {
     pub sunshine_user: String,
     /// Sealed, hex.
     pub sunshine_password: String,
+    /// Switch this desktop's screen to the Ally's size during a stream.
+    #[serde(default = "yes")]
+    pub match_screen: bool,
+    /// Cover the desktop with a loading screen until the game shows.
+    #[serde(default = "yes")]
+    pub curtain: bool,
+    /// Give each stream a virtual screen of its own, when the Virtual
+    /// Display Driver is installed.
+    #[serde(default = "yes")]
+    pub virtual_screen: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 impl Config {
@@ -60,6 +75,9 @@ impl Config {
             sunshine_url: "https://localhost:47990".to_string(),
             sunshine_user: String::new(),
             sunshine_password: String::new(),
+            match_screen: true,
+            curtain: true,
+            virtual_screen: true,
         }
     }
 
@@ -139,6 +157,18 @@ pub struct Pending {
     pub exe: Option<PathBuf>,
     #[serde(default)]
     pub args: String,
+    /// The picture the Ally said it would ask for.
+    #[serde(default)]
+    pub screen: Option<Mode>,
+    pub at: i64,
+}
+
+/// Written by the launcher for as long as a stream lasts, game or not, with
+/// the time it last looked. Sunshine ends the launcher without warning when
+/// a stream is quit, so this going stale is how the companion in the
+/// background knows to tidy up after it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Streaming {
     pub at: i64,
 }
 
@@ -157,6 +187,11 @@ pub const ASK_LIFETIME: i64 = 60;
 pub const PENDING_LIFETIME: i64 = 120;
 /// The launcher writes this often; twice as old means it is gone.
 pub const PLAYING_BEAT: i64 = 5;
+
+/// A launcher that has said nothing for this long is gone. Generous: a game
+/// that is loading can hold the whole machine up for a while, and putting the
+/// screen back under a running stream is worse than doing it a little late.
+pub const STREAM_SILENCE: i64 = 30;
 
 #[derive(Debug, Clone)]
 pub struct Files {
@@ -419,6 +454,69 @@ impl Files {
     /// When an Ally last asked for requests.
     pub fn ally_listening(&self, device: &str) -> Option<i64> {
         self.read(&format!("ally-listening-{device}.json"))
+    }
+
+    /// The launcher says a stream is going on.
+    pub fn beat(&self, now: i64) {
+        let _ = self.write("stream.json", &Streaming { at: now });
+    }
+
+    /// The stream is over, said by the launcher itself.
+    pub fn stream_over(&self) {
+        self.remove("stream.json");
+    }
+
+    /// Whether a launcher said so a moment ago.
+    pub fn streaming(&self, now: i64) -> bool {
+        self.read::<Streaming>("stream.json").is_some_and(|s| now - s.at <= STREAM_SILENCE)
+    }
+
+    /// Note that the screen was switched for a stream, and to what, before
+    /// it is switched: whatever happens next, someone knows to put it back.
+    pub fn set_switched(&self, to: Option<Mode>) -> Result<(), String> {
+        match to {
+            Some(mode) => self.write("screen.json", &mode),
+            None => {
+                self.remove("screen.json");
+                Ok(())
+            }
+        }
+    }
+
+    /// What the screen was switched to for a stream, while it still is.
+    pub fn switched(&self) -> Option<Mode> {
+        self.read("screen.json")
+    }
+
+    /// Note when a virtual screen was made for a stream, before it is made;
+    /// `None` once it is gone.
+    pub fn set_virtual_screen(&self, at: Option<i64>) -> Result<(), String> {
+        match at {
+            Some(at) => self.write("virtual.json", &at),
+            None => {
+                self.remove("virtual.json");
+                Ok(())
+            }
+        }
+    }
+
+    /// When the virtual screen that is on now was made for a stream.
+    pub fn virtual_screen(&self) -> Option<i64> {
+        self.read("virtual.json")
+    }
+
+    /// Ask the launcher to take its loading screen away.
+    pub fn ask_reveal(&self, now: i64) -> Result<(), String> {
+        self.write("reveal.json", &now)
+    }
+
+    /// Whether that was asked a moment ago. Asked once, done once.
+    pub fn take_reveal(&self, now: i64) -> bool {
+        let asked: Option<i64> = self.read("reveal.json");
+        if asked.is_some() {
+            self.remove("reveal.json");
+        }
+        asked.is_some_and(|at| now - at <= PLAYING_BEAT * 2)
     }
 
     /// Ask the launcher to close the game it is watching.

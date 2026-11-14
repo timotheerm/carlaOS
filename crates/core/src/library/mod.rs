@@ -70,6 +70,43 @@ impl Kind {
     }
 }
 
+/// How far a store's update of an installed game has come.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UpdateState {
+    /// The store knows of a newer version and has not started on it.
+    Needed,
+    /// Being downloaded or put in place now.
+    Running,
+    /// Started, then paused.
+    Paused,
+}
+
+/// An update a store has to finish before it will start a game.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Update {
+    pub state: UpdateState,
+    /// Bytes to download in all. 0 when the store has not said.
+    #[serde(default)]
+    pub bytes: u64,
+    /// Bytes downloaded so far.
+    #[serde(default)]
+    pub done: u64,
+}
+
+impl Update {
+    /// How far the download is, when that is known.
+    pub fn percent(&self) -> Option<u8> {
+        (self.bytes > 0).then(|| (self.done.min(self.bytes) * 100 / self.bytes) as u8)
+    }
+
+    /// What is left to download, in words: "1.2 GB", "340 MB".
+    pub fn left(&self) -> Option<String> {
+        let left = self.bytes.checked_sub(self.done).filter(|_| self.bytes > 0)?;
+        Some(if left >= 1_000_000_000 { format!("{:.1} GB", left as f64 / 1e9) } else { format!("{} MB", (left / 1_000_000).max(1)) })
+    }
+}
+
 /// One installed game as a scanner found it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Scanned {
@@ -88,6 +125,8 @@ pub struct Scanned {
     pub platform: String,
     /// Played through an emulator.
     pub emulated: bool,
+    /// The store has an update to finish before the game starts.
+    pub update: Option<Update>,
 }
 
 /// The stores CarlaOS looks through by itself.
@@ -100,6 +139,16 @@ pub fn scan_store(store: &str, steam_root: Option<&std::path::Path>) -> Vec<Scan
         "epic" => epic::manifests().as_deref().map(epic::scan).unwrap_or_default(),
         "gog" => gog::scan(),
         _ => Vec::new(),
+    }
+}
+
+/// Whether a store has an update to finish for one installed game, read
+/// afresh. For the moment just before a game starts, and while it does.
+pub fn update_of(source: &str, source_id: &str, steam_root: Option<&std::path::Path>) -> Option<Update> {
+    match source {
+        "steam" => steam::update_of(steam_root?, source_id),
+        "epic" => epic::manifests().and_then(|dir| epic::update_of(&dir, source_id)),
+        _ => None,
     }
 }
 
@@ -121,6 +170,14 @@ pub struct ManualGame {
     pub origin: String,
 }
 
+/// An update that has to finish in one place before the game starts there.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Waiting {
+    pub place: String,
+    #[serde(flatten)]
+    pub update: Update,
+}
+
 /// One title as the interface shows it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct GameView {
@@ -132,6 +189,8 @@ pub struct GameView {
     pub kind: Kind,
     /// Places it can be started from, [`LOCAL`] first.
     pub places: Vec<String>,
+    /// The places where a store has an update to finish first.
+    pub updates: Vec<Waiting>,
     pub playtime_minutes: u64,
     /// Unix seconds.
     pub last_played: Option<i64>,

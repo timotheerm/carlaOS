@@ -10,7 +10,8 @@ use std::time::{Duration, Instant};
 
 use super::{random, SUNSHINE_APP};
 
-/// Picture settings for a stream. The Ally's screen is 1080p.
+/// Picture settings for a stream. Made for the screen it is shown on: see
+/// `quality::Level::picture_on`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Picture {
     pub width: u32,
@@ -51,8 +52,10 @@ pub fn stream_args(address: &str, picture: Picture) -> Vec<String> {
         picture.fps.to_string(),
         "--bitrate".to_string(),
         picture.kbps.to_string(),
+        // Fills the screen without switching it to another mode: the Ally's
+        // own screen is never changed, the desktop's is (see `display`).
         "--display-mode".to_string(),
-        "fullscreen".to_string(),
+        "borderless".to_string(),
         // Leaving the stream must not close the game on the desktop: the
         // player may have unsaved progress and can pick it up again.
         "--no-quit-after".to_string(),
@@ -112,7 +115,7 @@ mod tests {
         assert!(args.windows(2).any(|w| w == ["--resolution", "1920x1080"]));
         assert!(args.windows(2).any(|w| w == ["--fps", "60"]));
         assert!(args.windows(2).any(|w| w == ["--bitrate", "25000"]));
-        assert!(args.windows(2).any(|w| w == ["--display-mode", "fullscreen"]));
+        assert!(args.windows(2).any(|w| w == ["--display-mode", "borderless"]), "the Ally's screen keeps its mode");
         assert!(args.contains(&"--no-quit-after".to_string()));
     }
 
