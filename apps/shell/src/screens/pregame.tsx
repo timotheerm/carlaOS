@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import type { Achievement, Details, Game, SaveSync, Saves } from "../data/types";
 import { library, message } from "../library/store";
 import { Clock, Heart, Lock, SaveIcon, Sparkle, Trophy } from "../ui/icons";
-import { Badges, Cover, Empty, Row, amount, day, placeLabel, size, when } from "../ui/parts";
+import { Badges, Cover, Empty, Row, amount, day, placeLabel, size, updateLine, when } from "../ui/parts";
 import type { Ctx } from "./screens";
 
 // More than this many tiles in one row stops being a pleasure to scroll.
@@ -140,6 +140,8 @@ export function GameDetail({ gameId, onToggleFavourite, ...ctx }: Ctx & { gameId
       .syncSaves(gameId)
       .then((sync) => (sync.length ? library.details(gameId) : null))
       .then((d) => current && d && setDetails(d), () => undefined);
+    // Whether a store has an update to finish first is asked afresh too.
+    library.updates(gameId).catch(() => undefined);
     return () => {
       current = false;
     };
@@ -162,6 +164,11 @@ export function GameDetail({ gameId, onToggleFavourite, ...ctx }: Ctx & { gameId
           <Badges game={game} hosts={ctx.hosts} />
           <h1 className="detail__title">{game.title}</h1>
           {game.description && <p className="detail__desc">{game.description}</p>}
+          {(game.updates ?? []).map((u) => (
+            <p key={u.place} className="detail__update">
+              {updateLine(u, ctx.hosts)}
+            </p>
+          ))}
           <div className="stats">
             <Stat icon={<Clock />} label={game.playtimeMinutes ? "played" : "Not played yet"} value={game.playtimeMinutes ? amount(game.playtimeMinutes) : "New"} />
             <Stat icon={<Sparkle />} label="Last played" value={day(game.lastPlayed ? Math.floor(new Date(game.lastPlayed).getTime() / 1000) : null)} />

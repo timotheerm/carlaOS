@@ -20,7 +20,7 @@ type State = {
   battery: { percent: number; charging: boolean } | null;
 };
 type Press = "up" | "down" | "left" | "right" | "select" | "back";
-type Row = "resume" | "sound" | "brightness" | "end";
+type Row = "resume" | "sound" | "brightness" | "desktop" | "end";
 
 const SAMPLE: State = {
   title: "Neon Harbor",
@@ -87,13 +87,16 @@ export function QuickMenu() {
       }
       return;
     }
-    const rows: Row[] = ["resume", ...(state.sound ? ["sound" as const] : []), ...(state.brightness !== null ? ["brightness" as const] : []), "end"];
+    const rows: Row[] = ["resume", ...(state.sound ? ["sound" as const] : []), ...(state.brightness !== null ? ["brightness" as const] : []), ...(state.stream ? ["desktop" as const] : []), "end"];
     const at = Math.max(0, rows.indexOf(row));
     if (press === "up") setRow(rows[Math.max(0, at - 1)]);
     else if (press === "down") setRow(rows[Math.min(rows.length - 1, at + 1)]);
     else if (press === "back") close();
     else if (row === "resume" && press === "select") close();
-    else if (row === "end" && press === "select") {
+    else if (row === "desktop" && press === "select") {
+      if (inTauri) invoke("quick_show_desktop").catch((e) => setNote(message(e)));
+      else setNote("The desktop's loading screen would be taken away now.");
+    } else if (row === "end" && press === "select") {
       setSure(false);
       setConfirming(true);
     } else if (row === "sound" && state.sound) {
@@ -182,6 +185,12 @@ export function QuickMenu() {
             <span className="quick__name">Brightness</span>
             <Level value={brightness} />
             <span className="quick__value">{brightness}%</span>
+          </div>
+        )}
+        {state.stream && (
+          <div className={cls("desktop")}>
+            <span className="quick__name">Show the desktop</span>
+            <span className="quick__value">when the game is waiting for an answer there</span>
           </div>
         )}
         <div className={row === "end" || confirming ? "quick__row quick__row--on quick__row--end" : "quick__row quick__row--end"}>

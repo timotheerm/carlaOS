@@ -15,6 +15,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use super::moonlight::Picture;
+use crate::display::{self, Mode};
 
 /// The pictures CarlaOS streams, lightest first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -51,6 +52,22 @@ impl Level {
             Level::Smooth => (1920, 1080, 120, 40_000),
         };
         Picture { width, height, fps, kbps }
+    }
+
+    /// The picture made for one screen: its own shape, and its own size
+    /// when that is no larger than this level carries. A screen that does
+    /// not show 120 pictures a second is not sent them.
+    pub fn picture_on(self, screen: Option<Mode>) -> Picture {
+        let base = self.picture();
+        let Some(screen) = screen.filter(|s| s.width > 0 && s.height > 0) else { return base };
+        // Room for a 16:10 screen of the same width.
+        let most = (base.width, base.width * 5 / 8);
+        let (width, height) = display::fit((screen.width, screen.height), most);
+        let slow = base.fps > 60 && screen.hz < 100;
+        let (fps, kbps) = if slow { (60, Level::Sharp.picture().kbps) } else { (base.fps, base.kbps) };
+        // A larger picture needs more to look the same, a smaller one less.
+        let scaled = u64::from(kbps) * u64::from(width) * u64::from(height) / (u64::from(base.width) * u64::from(base.height));
+        Picture { width, height, fps, kbps: (scaled as u32).clamp(kbps / 2, kbps * 3 / 2) }
     }
 
     /// The picture in words, for the administrator.
@@ -188,6 +205,11 @@ pub struct Choice {
 impl Choice {
     pub fn picture(&self) -> Picture {
         self.level.picture()
+    }
+
+    /// The picture for the screen it will be shown on.
+    pub fn picture_on(&self, screen: Option<Mode>) -> Picture {
+        self.level.picture_on(screen)
     }
 
     /// What was measured, in words. Empty when nothing was.
@@ -333,6 +355,28 @@ mod tests {
         let poor = Measure { latency_ms: 80, jitter_ms: 100, kbps: Some(1_000), away: true };
         let fixed = choose(Setting::Fixed(Level::Sharp), Some(poor), true);
         assert_eq!((fixed.level, fixed.automatic), (Level::Sharp, false));
+    }
+
+    #[test]
+    fn the_picture_is_made_for_the_screen_it_is_shown_on() {
+        let on = |level: Level, w, h, hz| level.picture_on(Some(Mode::new(w, h, hz)));
+        // The Ally: what every level always was.
+        for level in LEVELS {
+            assert_eq!(on(level, 1920, 1080, 120), level.picture());
+            assert_eq!(level.picture_on(None), level.picture());
+        }
+        // A 16:10 laptop keeps its shape and gets a little more to fill it.
+        let laptop = on(Level::Sharp, 2560, 1600, 60);
+        assert_eq!((laptop.width, laptop.height, laptop.fps), (1920, 1200, 60));
+        assert_eq!(laptop.kbps, 27_777);
+        assert_eq!((on(Level::Light, 2560, 1600, 60).width, on(Level::Light, 2560, 1600, 60).height), (1280, 800));
+        // A small screen is not sent more than it shows.
+        let small = on(Level::Sharp, 1366, 768, 60);
+        assert_eq!((small.width, small.height), (1366, 768));
+        assert!(small.kbps < Level::Sharp.picture().kbps && small.kbps >= Level::Sharp.picture().kbps / 2);
+        // 120 a second is wasted on a screen that shows 60.
+        let slow = on(Level::Smooth, 1920, 1080, 60);
+        assert_eq!((slow.fps, slow.kbps), (60, 25_000));
     }
 
     #[test]

@@ -26,6 +26,7 @@ export function Playing({ session, game, from, onEnd }: { session: Session; game
             ? "CarlaOS comes back by itself when the stream ends."
             : "CarlaOS comes back by itself when you quit the game."}
       </p>
+      {session.note && session.phase !== "running" && <p className="lede playing__note">{session.note}</p>}
       {waiting && (
         <span className="playing__dots" aria-hidden>
           <i />
