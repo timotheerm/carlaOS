@@ -1,4 +1,4 @@
-import type { Achievement, CloudService, Details, Game, Host, Match } from "./types";
+import type { Achievement, ArtChoice, CloudService, Details, Game, Host, Match } from "./types";
 
 // Invented titles on purpose: the prototype must not ship or imply real artwork.
 export const hosts: Host[] = [
@@ -35,7 +35,8 @@ const g = (
   lastPlayed: string | undefined,
   added: string,
   description: string,
-): Game => ({ id, title, platform, kind, hue, places, playtimeMinutes, lastPlayed, added, description, favourite: false });
+  origin?: string,
+): Game => ({ id, title, platform, kind, hue, places, playtimeMinutes, lastPlayed, added, description, favourite: false, origin });
 
 export const games: Game[] = [
   g("neon-harbor", "Neon Harbor", "Steam", "game", 330, ["local", "home"], 1260, "2026-11-10", "2026-09-02",
@@ -64,16 +65,16 @@ export const games: Game[] = [
     "A wind-up knight explores a toy-box kingdom."),
   g("lowpoly-rally", "Lowpoly Rally", "PlayStation 2", "emulated", 25, ["local"], 60, "2026-07-30", "2026-07-29",
     "Arcade rally racing with chunky cars and big jumps."),
-  g("ocean-sixty-four", "Harbour 64", "Native port", "port", 205, ["local"], 410, "2026-10-25", "2026-10-02",
-    "A community-built native version of a classic seaside adventure."),
-  g("open-quarry", "Open Quarry", "Native port", "port", 30, ["local", "home"], 15, "2026-09-05", "2026-09-05",
+  g("ocean-sixty-four", "Harbour 64", "Standalone", "port", 205, ["local"], 410, "2026-10-25", "2026-10-02",
+    "A community-built native version of a classic seaside adventure.", "Nintendo 64"),
+  g("open-quarry", "Open Quarry", "Standalone", "port", 30, ["local", "home"], 15, "2026-09-05", "2026-09-05",
     "An open-source reimplementation of a beloved mining shooter."),
 ];
 
 export const cloud: CloudService[] = [
-  { id: "gfn", name: "GeForce NOW", note: "Rented cloud PC", hue: 110 },
-  { id: "xcloud", name: "Xbox Cloud Gaming", note: "Game Pass in the cloud", hue: 130 },
-  { id: "boosteroid", name: "Boosteroid", note: "Rented cloud PC", hue: 210 },
+  { id: "gfn", name: "GeForce NOW", note: "Your own PC games, on a rented cloud PC", hue: 110, kind: "Cloud PC" },
+  { id: "xcloud", name: "Xbox Cloud Gaming", note: "Game Pass games, streamed", hue: 130, kind: "Game Pass" },
+  { id: "boosteroid", name: "Boosteroid", note: "Your own PC games, on a rented cloud PC", hue: 210, kind: "Cloud PC" },
 ];
 
 // ---- what the browser preview shows on a game's page ----
@@ -157,10 +158,40 @@ export function sampleDetails(game: Game): Details {
 
 export function sampleMatches(term: string): Match[] {
   const all = [
-    { id: "101", name: "Paper Lanterns" },
-    { id: "102", name: "Paper Lanterns: The Long Night" },
-    { id: "103", name: "Lantern Keeper" },
+    { id: "steam:101", name: "Paper Lanterns", from: "Steam" },
+    { id: "steam:102", name: "Paper Lanterns: The Long Night", from: "Steam" },
+    { id: "wiki:103", name: "Lantern Keeper", from: "Wikipedia" },
   ];
   const words = term.toLowerCase().split(/\s+/).filter(Boolean);
-  return words.length ? all.filter((m) => words.some((w) => m.name.toLowerCase().includes(w))) : all;
+  const hits = words.length ? all.filter((m) => words.some((w) => w.length > 3 && m.name.toLowerCase().includes(w))) : all;
+  // Anything else is "found" under its own name, so the form can be tried.
+  return hits.length ? hits : [{ id: "wiki:900", name: term.trim(), from: "Wikipedia" }, { id: "steam:901", name: `${term.trim()} HD`, from: "Steam" }];
+}
+
+// ---- pictures the browser preview offers to choose from ----
+
+// A drawn stand-in for a cover, so the picture chooser can be tried without
+// fetching anything: invented, like the games.
+function drawn(title: string, hue: number, wide: boolean, variant: number): string {
+  const [w, h] = wide ? [920, 430] : [600, 900];
+  const a = (hue + variant * 47) % 360;
+  const b = (a + 40 + variant * 13) % 360;
+  const shapes = Array.from({ length: 5 }, (_, i) => {
+    const x = ((i * 173 + variant * 91) % w).toFixed(0);
+    const y = ((i * 239 + variant * 57) % h).toFixed(0);
+    const r = 60 + ((i * 53 + variant * 31) % 140);
+    return `<circle cx="${x}" cy="${y}" r="${r}" fill="hsl(${(a + i * 24) % 360} 80% ${62 + i * 5}%)" opacity="0.35"/>`;
+  }).join("");
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${w} ${h}"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="hsl(${a} 68% 70%)"/><stop offset="1" stop-color="hsl(${b} 48% 34%)"/></linearGradient></defs><rect width="${w}" height="${h}" fill="url(#g)"/>${shapes}<text x="${w * 0.08}" y="${h * 0.86}" font-family="Nunito, Segoe UI, sans-serif" font-weight="800" font-size="${wide ? 64 : 68}" fill="#fff">${title.replace(/&/g, "and").slice(0, 16)}</text></svg>`;
+  return `data:image/svg+xml,${encodeURIComponent(svg)}`;
+}
+
+export function sampleArt(game: Game, term: string): ArtChoice[] {
+  const title = term.trim() || game.title;
+  const from = ["SteamGridDB", "Wikipedia", "Steam", "Box art", "SteamGridDB", "Steam", "SteamGridDB", "Wikipedia"];
+  return from.map((source, i) => {
+    const wide = i >= 6;
+    const picture = drawn(title, game.hue, wide, i);
+    return { candidate: { source, label: title, shape: wide ? "wide" : "tall", thumb: picture, full: picture }, preview: picture };
+  });
 }

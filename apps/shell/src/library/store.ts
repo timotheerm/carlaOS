@@ -5,8 +5,8 @@ import { useSyncExternalStore } from "react";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { games as sampleGames, hosts as sampleHosts } from "../data/sample";
-import { sampleDetails, sampleMatches } from "../data/sample";
-import type { Console, ConsoleHint, Details, FoundHost, Game, Host, HostPicture, HostState, Kind, Match, NewGame, SaveSync, Saves, Session } from "../data/types";
+import { sampleArt, sampleDetails, sampleMatches } from "../data/sample";
+import type { ArtChoice, ArtSearch, Console, ConsoleHint, Details, Inspected, FoundHost, Game, Host, HostPicture, HostState, Kind, Match, NewGame, SaveSync, Saves, Session } from "../data/types";
 import { inTauri } from "../native";
 import { when } from "../ui/parts";
 
@@ -27,6 +27,8 @@ type GameView = {
   cover: string | null;
   hero: string | null;
   manual: boolean;
+  origin: string;
+  own_art: boolean;
 };
 type SessionView = { game_id: string; title: string; phase: Session["phase"]; stream: boolean };
 // What the Rust side sends for one linked desktop.
@@ -63,6 +65,17 @@ function preview(gameId: string): Saves | null {
 // Desktops allowed to administer the Ally, as the browser preview pretends.
 const previewAdmin = new Set<string>();
 
+// The SteamGridDB key as the browser preview pretends it: kept or not.
+let previewKey = false;
+
+// "C:\\Games\\Paper Lanterns\\lanterns.exe" suggests "Paper Lanterns".
+function previewTitle(exe: string): string {
+  const parts = exe.split(/[\\/]/).filter(Boolean);
+  const file = (parts.pop() ?? "").replace(/\.[^.]+$/, "");
+  const folder = parts.pop() ?? "";
+  return (/^(game|launcher|start|play)$/i.test(file) || file.length < 3 ? folder || file : file).replace(/[_-]+/g, " ").trim();
+}
+
 // Consoles as the browser preview pretends them.
 let previewConsoles: Console[] = [
   { id: "c0", name: "PlayStation 2", emulator: "C:\\Emulators\\PCSX2\\pcsx2-qt.exe", options: '-batch -fullscreen -- "{game}"', folder: "D:\\My Games\\PS2", endings: ["chd", "iso"] },
@@ -93,6 +106,8 @@ const fromView = (g: GameView): Game => ({
   cover: g.cover ? convertFileSrc(g.cover) : undefined,
   hero: g.hero ? convertFileSrc(g.hero) : undefined,
   manual: g.manual,
+  origin: g.origin || undefined,
+  ownArt: g.own_art,
 });
 
 const fromSession = (s: SessionView | null): Session | null =>
@@ -344,7 +359,7 @@ export const library = {
       ? invoke<string | null>("library_pick", { what })
       : Promise.resolve(
           what === "program"
-            ? "C:\\Games\\Example\\example.exe"
+            ? "C:\\Users\\Carla\\Desktop\\Hookshot.lnk"
             : what === "emulator"
               ? "C:\\Emulators\\Dolphin-x64\\Dolphin.exe"
               : what === "folder"
@@ -382,11 +397,12 @@ export const library = {
     } else previewConsoles = previewConsoles.filter((c) => c.id !== id);
   },
 
-  async addManual(game: NewGame) {
+  /** Add a game by hand. Resolves with its id. */
+  async addManual(game: NewGame): Promise<string> {
     if (inTauri) {
-      await invoke<string>("library_add_manual", { game });
+      const id = await invoke<string>("library_add_manual", { game });
       await reload();
-      return;
+      return id;
     }
     const now = new Date().toISOString();
     const added: Game = {
@@ -394,6 +410,7 @@ export const library = {
       title: game.title,
       description: game.description,
       platform: "Standalone",
+      origin: game.origin || undefined,
       kind: game.kind,
       hue: hue(game.title),
       places: ["local"],
@@ -404,6 +421,7 @@ export const library = {
       cover: game.cover ?? undefined,
     };
     set({ games: [...state.games.filter((g) => g.id !== added.id), added] });
+    return added.id;
   },
 
   async removeManual(id: string) {
@@ -468,7 +486,74 @@ export const library = {
     else previewSaves.set(gameId, null);
   },
 
-  /** Look a game up in the public store by name. Administrator only. */
+  /** What CarlaOS makes of a program or shortcut that was chosen. Administrator only. */
+  async inspect(path: string): Promise<Inspected> {
+    if (inTauri) return invoke<Inspected>("library_inspect", { path });
+    // The preview knows one port, to show what recognising one looks like.
+    const port = /hookshot|soh/i.test(path);
+    return {
+      exe: path.replace(/\.lnk$/i, ".exe"),
+      args: "",
+      title: port ? "The Legend of Zelda: Ocarina of Time" : previewTitle(path),
+      kind: port ? "port" : "game",
+      origin: port ? "Nintendo 64" : "",
+      port: port ? "Hookshot" : "",
+      shortcut: /\.lnk$/i.test(path),
+    };
+  },
+
+  /** Look for pictures of a game, several to choose from. Administrator only. */
+  async findArt(gameId: string, term: string): Promise<ArtSearch> {
+    if (inTauri) {
+      const found = await invoke<{ candidates: ArtChoice[]; notes: string[]; key_set: boolean }>("art_find", { gameId, term });
+      return { candidates: found.candidates.map((c) => ({ ...c, preview: convertFileSrc(c.preview) })), notes: found.notes, keySet: found.key_set };
+    }
+    await new Promise((r) => setTimeout(r, 400));
+    const game = state.games.find((g) => g.id === gameId);
+    const all = game ? sampleArt(game, term) : [];
+    return { candidates: previewKey ? all : all.filter((c) => c.candidate.source !== "SteamGridDB"), notes: [], keySet: previewKey };
+  },
+
+  /** Give a game one of the pictures that were found. */
+  async useArt(gameId: string, choice: ArtChoice) {
+    if (inTauri) {
+      await invoke("art_use", { gameId, candidate: choice.candidate });
+      await reload();
+      return;
+    }
+    const wide = choice.candidate.shape === "wide";
+    set({ games: state.games.map((g) => (g.id === gameId ? { ...g, ownArt: true, ...(wide ? { hero: choice.preview } : { cover: choice.preview }) } : g)) });
+  },
+
+  /** Use a picture that is on the Ally. Resolves with whether one was chosen. */
+  async pickArt(gameId: string, wide: boolean): Promise<boolean> {
+    if (!inTauri) return false;
+    const chosen = await invoke<boolean>("art_pick", { gameId, wide });
+    if (chosen) await reload();
+    return chosen;
+  },
+
+  /** Go back to the pictures the game had by itself. */
+  async clearArt(gameId: string) {
+    if (inTauri) {
+      await invoke("art_clear", { gameId });
+      await reload();
+    } else set({ games: state.games.map((g) => (g.id === gameId ? { ...g, ownArt: false, cover: undefined, hero: undefined } : g)) });
+  },
+
+  /** Whether a SteamGridDB key is kept. */
+  async artKey(): Promise<boolean> {
+    return inTauri ? invoke<boolean>("art_key") : previewKey;
+  },
+
+  /** Keep a SteamGridDB key, or forget it when empty. Resolves with whether one is kept. */
+  async setArtKey(key: string): Promise<boolean> {
+    if (inTauri) return invoke<boolean>("art_set_key", { key });
+    if (key && !/^[a-z0-9]{16,64}$/i.test(key)) throw "That does not look like a SteamGridDB key.";
+    return (previewKey = !!key);
+  },
+
+  /** Look a game up on Steam and Wikipedia by name. Administrator only. */
   async findOnline(term: string): Promise<Match[]> {
     if (inTauri) return invoke<Match[]>("meta_search", { term });
     await new Promise((r) => setTimeout(r, 300));
@@ -483,7 +568,7 @@ export const library = {
     }
     await new Promise((r) => setTimeout(r, 300));
     const name = sampleMatches("").find((m) => m.id === id)?.name ?? "Example";
-    return { name, description: "A short hand-drawn puzzle game about lighting the way home.", cover: null, preview: null };
+    return { name, description: "A hero wakes in a forest, finds a sword and a song, and sets out across a kingdom and through time itself.", cover: null, preview: null };
   },
 };
 

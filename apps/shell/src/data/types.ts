@@ -21,11 +21,32 @@ export type Game = {
   cover?: string; // picture URL, when there is real artwork
   hero?: string;
   manual?: boolean; // added by hand, so it can be removed
+  origin?: string; // the console a port first came out on: "Nintendo 64"
+  ownArt?: boolean; // the administrator chose its pictures
 };
 
 export type Session = { gameId: string; title: string; phase: "waking" | "starting" | "running"; stream: boolean };
 
-export type NewGame = { title: string; exe: string; args: string; kind: Kind; cover: string | null; description: string };
+export type NewGame = { title: string; exe: string; args: string; kind: Kind; cover: string | null; description: string; origin: string };
+
+/// What CarlaOS makes of a program or shortcut the administrator chose.
+export type Inspected = {
+  exe: string; // the program behind a shortcut, when it was one
+  args: string;
+  title: string;
+  kind: Kind;
+  origin: string;
+  port: string; // what a port CarlaOS knows calls itself
+  shortcut: boolean;
+};
+
+/// One picture found for a game, to choose from.
+export type ArtChoice = {
+  candidate: { source: string; label: string; shape: "tall" | "wide"; thumb: string; full: string };
+  preview: string; // what to show: a small copy on this machine
+};
+
+export type ArtSearch = { candidates: ArtChoice[]; notes: string[]; keySet: boolean };
 
 export type Achievement = {
   id: string;
@@ -72,7 +93,7 @@ export type Console = {
 export type ConsoleHint = { name: string; options: string; endings: string[] };
 
 /// A game found in the public store, for filling in details.
-export type Match = { id: string; name: string };
+export type Match = { id: string; name: string; from: string };
 
 export type HostState = "ready" | "busy" | "not_ready" | "asleep" | "off" | "unreachable" | "unknown";
 
@@ -112,4 +133,4 @@ export type HostPicture = {
 /// A companion found on the network, not linked yet.
 export type FoundHost = { address: string; name: string; id: string };
 
-export type CloudService = { id: string; name: string; note: string; hue: number };
+export type CloudService = { id: string; name: string; note: string; hue: number; kind: string };

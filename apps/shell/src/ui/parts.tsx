@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import type { Game, Host, HostState } from "../data/types";
 import { Heart, OnDevice, Source, Streamed } from "./icons";
+import { banner } from "./platform";
 
 export function playtime(minutes: number): string {
   if (minutes === 0) return "Not played yet";
@@ -47,24 +48,37 @@ export function placeLabel(place: string, hosts: Host[]): string {
   return hosts.find((h) => h.id === place)?.name ?? place;
 }
 
-// Placeholder artwork: a soft gradient from the game's hue. Real covers replace
-// this in the library milestone.
-export function Cover({ game, wide = false }: { game: Game; wide?: boolean }) {
-  const picture = wide ? (game.hero ?? game.cover) : game.cover;
+// The console a game is from, as a band along the bottom of its picture.
+function Band({ game }: { game: Game }) {
+  const band = banner(game);
+  if (!band) return null;
+  return (
+    <span className="cover__band" style={{ background: band.colour, color: band.ink }}>
+      {band.label}
+    </span>
+  );
+}
+
+// A game's picture. Without real artwork: a soft gradient from the game's
+// hue with its name on it.
+export function Cover({ game, wide = false, band = true }: { game: Game; wide?: boolean; band?: boolean }) {
+  const picture = wide ? (game.hero ?? game.cover) : (game.cover ?? game.hero);
+  const banded = band && banner(game) !== null;
+  const shape = `${wide ? "cover cover--wide" : "cover"}${banded ? " cover--banded" : ""}`;
   if (picture) {
     return (
-      <div className={wide ? "cover cover--wide cover--art" : "cover cover--art"} aria-hidden>
-        <img src={picture} alt="" loading="lazy" draggable={false} />
+      <div className={`${shape} cover--art`} aria-hidden>
+        {/* A tall cover in a wide frame sits whole on a soft copy of itself. */}
+        {wide && !game.hero && <img className="cover__behind" src={picture} alt="" draggable={false} />}
+        <img className={wide && !game.hero ? "cover__whole" : undefined} src={picture} alt="" loading="lazy" draggable={false} />
+        {band && <Band game={game} />}
       </div>
     );
   }
   return (
-    <div
-      className={wide ? "cover cover--wide" : "cover"}
-      style={{ "--hue": game.hue } as React.CSSProperties}
-      aria-hidden
-    >
+    <div className={shape} style={{ "--hue": game.hue } as React.CSSProperties} aria-hidden>
       <span className="cover__title">{game.title}</span>
+      {band && <Band game={game} />}
     </div>
   );
 }
@@ -78,7 +92,7 @@ export function Badges({ game, hosts }: { game: Game; hosts?: Host[] }) {
     <span className="badges">
       <span className="badge" title={`From ${game.platform}`}>
         <Source kind={game.kind} />
-        {game.platform}
+        {game.kind === "port" && game.platform === "Standalone" ? "Port" : game.platform}
       </span>
       {local && (
         <span className="badge badge--offline" title="Installed on this Ally. Plays without a desktop.">

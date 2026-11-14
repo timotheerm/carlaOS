@@ -148,7 +148,7 @@ pub fn saves_forget_folder(admin: State<'_, Admin>, library: State<'_, Library>,
     library.store().set_save_path(&game_id, None)
 }
 
-/// Search the public store for a game's details, by the name typed.
+/// Search Steam and Wikipedia for a game's details, by the name typed.
 #[tauri::command(async)]
 pub fn meta_search(admin: State<'_, Admin>, term: String) -> Result<Vec<Match>, String> {
     admin.require()?;
@@ -169,8 +169,8 @@ pub fn meta_fetch(app: AppHandle, admin: State<'_, Admin>, library: State<'_, Li
     let details = meta::details(&id)?;
     let dir = library.0.art_dir.join("fetched");
     let cover = meta::cover(&id, details.header.as_deref()).ok().and_then(|bytes| {
-        let ext = if bytes.starts_with(&[0xFF, 0xD8]) { "jpg" } else { "png" };
-        let path = dir.join(format!("{id}.{ext}"));
+        let ext = meta::picture_kind(&bytes)?;
+        let path = dir.join(format!("{}.{ext}", id.replace(':', "-")));
         std::fs::create_dir_all(&dir).ok()?;
         std::fs::write(&path, bytes).ok()?;
         Some(path.to_string_lossy().into_owned())

@@ -19,8 +19,9 @@ be allowed first: Settings, Desktops, this desktop, \"Administer this Ally\".
   carla-companion ally                  how the Ally is doing
   carla-companion ally games            every game in its library, with ids
   carla-companion ally rescan           look for installed games again
-  carla-companion ally add NAME PROGRAM [--args OPTIONS] [--kind game|port|homebrew] [--about TEXT]
-                                        add a program that is on the Ally as a game
+  carla-companion ally add NAME PROGRAM [--args OPTIONS] [--kind game|port|homebrew] [--about TEXT] [--console NAME]
+                                        add a program that is on the Ally as a game; a shortcut
+                                        is followed, and --console says what a port is from
   carla-companion ally remove ID        take a game added by hand off its library
   carla-companion ally saves ID FOLDER  say where a game keeps its saves on the Ally
   carla-companion ally saves ID --forget
@@ -33,6 +34,13 @@ be allowed first: Settings, Desktops, this desktop, \"Administer this Ally\".
   carla-companion ally startup [on|off] whether CarlaOS opens when the Ally is turned on
   carla-companion ally picture DESKTOP [auto|auto120|sharp|balanced|light|lightest|smooth]
                                         the picture of streams from a desktop to the Ally
+  carla-companion ally art ID [NAME]    look for pictures of a game and show them here,
+                                        numbered, in the browser; NAME searches for
+                                        something other than the game's own name
+  carla-companion ally art use NUMBER   give the game the picture with that number
+  carla-companion ally art clear ID     go back to the picture the game had by itself
+  carla-companion ally art key KEY      a free SteamGridDB key, for many more pictures
+                                        (carla-companion ally art key none forgets it)
 
 With more than one Ally linked, say which first: carla-companion ally --device ID games
 (see carla-companion devices).";
@@ -73,6 +81,10 @@ pub fn request(words: &[String]) -> Result<Request, String> {
         ["remove", id] => Ok(Request { op: "remove_game", args: json!({ "id": id }), patience: quick }),
         ["saves", id, "--forget"] => Ok(Request { op: "save_folder", args: json!({ "id": id }), patience: quick }),
         ["saves", id, folder] => Ok(Request { op: "save_folder", args: json!({ "id": id, "folder": folder }), patience: quick }),
+        ["art", "use", _] | ["art"] => Err("Look for pictures first: carla-companion ally art ID (ids are in carla-companion ally games).".to_string()),
+        ["art", "clear", id] => Ok(Request { op: "art_clear", args: json!({ "id": id }), patience: quick }),
+        ["art", "key", key] => Ok(Request { op: "art_key", args: json!({ "key": if *key == "none" { "" } else { key } }), patience: quick }),
+        ["art", id, name @ ..] => Ok(Request { op: "art_find", args: json!({ "id": id, "term": name.join(" ") }), patience: Duration::from_secs(90) }),
         ["add", title, exe, rest @ ..] if rest.len() % 2 == 0 => {
             let mut args = json!({ "title": title, "exe": exe });
             for pair in rest.chunks(2) {
@@ -80,6 +92,7 @@ pub fn request(words: &[String]) -> Result<Request, String> {
                     "--args" => "args",
                     "--kind" => "kind",
                     "--about" => "description",
+                    "--console" => "origin",
                     _ => return usage(),
                 };
                 args[name] = json!(pair[1]);
@@ -172,7 +185,41 @@ pub fn show(op: &str, out: &Value) -> String {
             text
         }
         "rescan" => format!("The Ally looked again: {} games.", out["games"]),
-        "add_game" => format!("{} was added to the Ally. Its id is {}.", word(&out["title"]), word(&out["id"])),
+        "add_game" => {
+            let mut text = format!("{} was added to the Ally. Its id is {}.", word(&out["title"]), word(&out["id"]));
+            if !word(&out["port"]).is_empty() {
+                text.push_str(&format!("\nRecognised as {}, a native port of a {} game.", word(&out["port"]), word(&out["origin"])));
+            }
+            text.push_str(&format!("\nFor a picture: carla-companion ally art {}", word(&out["id"])));
+            text
+        }
+        "art_find" => {
+            let mut lines: Vec<String> = out["candidates"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .enumerate()
+                .map(|(i, c)| format!("{:>3}  {}  {}  {}", i + 1, if c["shape"] == "wide" { "wide " } else { "cover" }, word(&c["source"]), word(&c["label"])))
+                .collect();
+            if lines.is_empty() {
+                lines.push(format!("No pictures were found for {}. Try another name: carla-companion ally art {} \"NAME\"", word(&out["title"]), word(&out["id"])));
+            } else {
+                lines.insert(0, format!("Pictures for {}:", word(&out["title"])));
+                lines.push("Choose one: carla-companion ally art use NUMBER".to_string());
+            }
+            lines.extend(out["notes"].as_array().into_iter().flatten().map(|n| format!("Note: {}", word(n))));
+            if out["key_set"].as_bool() == Some(false) {
+                lines.push("For many more: get a free key at steamgriddb.com (Preferences, API), then carla-companion ally art key KEY".to_string());
+            }
+            lines.join("\n")
+        }
+        "art_set" => format!("{} has its new {}.", word(&out["title"]), if out["shape"] == "wide" { "wide picture" } else { "cover" }),
+        "art_clear" => format!("{} is back to the picture it had by itself.", word(&out["title"])),
+        "art_key" => if out["key_set"].as_bool() == Some(true) {
+            "The Ally keeps the SteamGridDB key and asks it for pictures from now on.".to_string()
+        } else {
+            "The Ally forgot the SteamGridDB key.".to_string()
+        },
         "remove_game" => format!("{} was taken off the Ally's library. Nothing was deleted from its disk.", word(&out["title"])),
         "save_folder" => match out["folder"].as_str() {
             Some(folder) => format!("Saves of {} are in {folder} on the Ally.", word(&out["title"])),
@@ -251,6 +298,63 @@ pub fn ask(files: &Files, device: &str, request: &Request) -> Result<Value, Stri
     }
 }
 
+/// The pictures last looked for, kept so that one can be chosen by number.
+const CHOICES: &str = "art-choices.json";
+
+fn escape(text: &str) -> String {
+    text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+}
+
+/// A page of the pictures found, each under its number, for the browser.
+pub fn sheet(out: &Value) -> String {
+    let mut page = format!(
+        "<!doctype html><meta charset=\"utf-8\"><title>Pictures for {title}</title>\
+<style>body{{background:#1e1220;color:#f8ecef;font:16px system-ui,sans-serif;margin:2rem}}h1{{color:#f2a7bb}}\
+.all{{display:flex;flex-wrap:wrap;gap:1.25rem}}figure{{margin:0;width:220px}}figure.wide{{width:460px}}\
+img{{width:100%;border-radius:14px;background:#2c1b2f;display:block}}b{{color:#f2a7bb;font-size:1.4rem}}\
+figcaption{{padding:.4rem .2rem;color:#b9a6b3}}code{{color:#f8ecef}}</style>\
+<h1>Pictures for {title}</h1><p>Choose one with <code>carla-companion ally art use NUMBER</code>. A picture that does not load does not exist.</p><div class=\"all\">",
+        title = escape(word(&out["title"]))
+    );
+    for (i, c) in out["candidates"].as_array().into_iter().flatten().enumerate() {
+        // Only pictures from where the Ally looked, whatever the answer says.
+        if !carla_core::library::meta::trusted_picture(word(&c["thumb"])) {
+            continue;
+        }
+        page.push_str(&format!(
+            "<figure class=\"{}\"><img src=\"{}\" loading=\"lazy\" alt=\"\"><figcaption><b>{}</b> {} · {}</figcaption></figure>",
+            if c["shape"] == "wide" { "wide" } else { "tall" },
+            escape(word(&c["thumb"])),
+            i + 1,
+            escape(word(&c["source"])),
+            escape(word(&c["label"]))
+        ));
+    }
+    page + "</div>"
+}
+
+/// Show a page in the administrator's browser. Nothing is lost if it does
+/// not open: the list is printed as well.
+fn open_page(path: &std::path::Path) {
+    let opened = if cfg!(windows) {
+        std::process::Command::new("rundll32.exe").arg("url.dll,FileProtocolHandler").arg(path).spawn()
+    } else {
+        std::process::Command::new("xdg-open").arg(path).spawn()
+    };
+    if opened.is_err() {
+        println!("Open {} to see them.", path.display());
+    }
+}
+
+/// "art use 3": the third of the pictures last looked for.
+pub fn chosen(files: &Files, number: &str) -> Result<Request, String> {
+    let none = "Look for pictures first: carla-companion ally art ID";
+    let last: Value = std::fs::read(files.dir().join(CHOICES)).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).ok_or(none)?;
+    let candidates = last["candidates"].as_array().ok_or(none)?;
+    let candidate = number.parse::<usize>().ok().and_then(|n| candidates.get(n.checked_sub(1)?)).ok_or_else(|| format!("Say a number from 1 to {}.", candidates.len()))?;
+    Ok(Request { op: "art_set", args: json!({ "id": last["id"], "candidate": candidate }), patience: Duration::from_secs(90) })
+}
+
 pub fn run(files: &Files, words: &[String], serving: bool) -> Result<i32, String> {
     let (named, words) = match words {
         [flag, id, rest @ ..] if flag == "--device" => (Some(id.as_str()), rest),
@@ -260,7 +364,10 @@ pub fn run(files: &Files, words: &[String], serving: bool) -> Result<i32, String
         println!("{HELP}");
         return Ok(0);
     }
-    let request = request(words)?;
+    let request = match words {
+        [art, use_, number] if art == "art" && use_ == "use" => chosen(files, number)?,
+        _ => request(words)?,
+    };
     let device = device(files, named)?;
     if !serving {
         return Err("The companion is not running on this desktop, so the Ally cannot fetch anything. Start it (carla-companion) and try again.".to_string());
@@ -268,7 +375,16 @@ pub fn run(files: &Files, words: &[String], serving: bool) -> Result<i32, String
     if files.ally_listening(&device).is_none_or(|at| now() - at > 90) {
         println!("Waiting for the Ally to ask for requests…");
     }
-    println!("{}", show(request.op, &ask(files, &device, &request)?));
+    let out = ask(files, &device, &request)?;
+    if request.op == "art_find" && out["candidates"].as_array().is_some_and(|c| !c.is_empty()) {
+        // Remembered for "art use NUMBER", and shown as pictures.
+        let _ = std::fs::write(files.dir().join(CHOICES), serde_json::to_vec(&out).unwrap_or_default());
+        let page = files.dir().join("art-choices.html");
+        if std::fs::write(&page, sheet(&out)).is_ok() {
+            open_page(&page);
+        }
+    }
+    println!("{}", show(request.op, &out));
     Ok(0)
 }
 
@@ -291,11 +407,14 @@ mod tests {
         assert_eq!(request(&words(r#"saves manual:1 "D:\Saves\One""#)).unwrap().args, json!({ "id": "manual:1", "folder": r"D:\Saves\One" }));
         let apply = request(&words("cleanup apply app.news app.weather")).unwrap();
         assert_eq!((apply.op, apply.args), ("cleanup_apply", json!({ "ids": ["app.news", "app.weather"] })));
-        for wrong in ["cleanup apply", "add OnlyAName", "add A B --colour pink", "remove", "format c:", "saves", "startup maybe", "picture", "picture HOME ultra"] {
+        assert_eq!(request(&words(r#"art manual:1 ocarina of time"#)).unwrap().args, json!({ "id": "manual:1", "term": "ocarina of time" }));
+        assert_eq!(request(&words("art steam:10")).unwrap().args, json!({ "id": "steam:10", "term": "" }));
+        assert_eq!(request(&words("art key none")).unwrap().args, json!({ "key": "" }));
+        for wrong in ["cleanup apply", "add OnlyAName", "add A B --colour pink", "remove", "format c:", "saves", "startup maybe", "picture", "picture HOME ultra", "art", "art use 2"] {
             assert!(request(&words(wrong)).is_err(), "{wrong:?} is not a request");
         }
         // Everything that can be typed is something the Ally knows.
-        for line in ["status", "games", "rescan", "add A B", "remove X", "saves X Y", "desktops", "cleanup", "cleanup apply X", "cleanup undo X", "update", "restart", "startup", "startup on", "picture HOME", "picture HOME auto120", "picture HOME light"] {
+        for line in ["status", "games", "rescan", "add A B", "remove X", "saves X Y", "desktops", "cleanup", "cleanup apply X", "cleanup undo X", "update", "restart", "startup", "startup on", "picture HOME", "picture HOME auto120", "picture HOME light", "art X", "art X zelda", "art clear X", "art key abcdef0123456789"] {
             assert!(carla_core::remote::OPS.contains(&request(&words(line)).unwrap().op), "{line}");
         }
     }
@@ -310,6 +429,31 @@ mod tests {
         let applied = show("cleanup_apply", &json!({ "done": ["a", "b"], "failed": [{ "id": "c", "title": "News", "error": "It is in use." }], "restart": true }));
         assert_eq!(applied, "2 applied.\nNot applied: News (It is in use.)\nSome of it only takes full effect after the Ally restarts.");
         assert!(show("update", &json!({ "version": null })).contains("already"));
+        assert!(show("add_game", &json!({ "id": "manual:1", "title": "Ocarina of Time", "kind": "port", "origin": "Nintendo 64", "port": "Hookshot" })).contains("Recognised as Hookshot, a native port of a Nintendo 64 game."));
+    }
+
+    #[test]
+    fn pictures_are_listed_shown_and_chosen_by_number() {
+        let dir = std::env::temp_dir().join(format!("carla-ally-art-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let files = Files::new(dir.clone());
+        assert!(chosen(&files, "1").is_err(), "nothing was looked for yet");
+        let found = json!({ "id": "manual:1", "title": "Zelda <Ocarina>", "key_set": false, "notes": [], "candidates": [
+            { "source": "Wikipedia", "label": "The Legend of Zelda: Ocarina of Time", "shape": "wide", "thumb": "https://upload.wikimedia.org/a.jpg", "full": "https://upload.wikimedia.org/a.jpg" },
+            { "source": "Box art", "label": "Ocarina \"USA\"", "shape": "tall", "thumb": "https://thumbnails.libretro.com/b.png", "full": "https://thumbnails.libretro.com/b.png" },
+            { "source": "Odd", "label": "x", "shape": "tall", "thumb": "https://evil.example/c.png\" onerror=\"x", "full": "https://evil.example/c.png" }] });
+        let listed = show("art_find", &found);
+        assert!(listed.contains("  1  wide   Wikipedia  The Legend of Zelda: Ocarina of Time") && listed.contains("  2  cover  Box art") && listed.contains("steamgriddb.com"), "{listed}");
+        let page = sheet(&found);
+        assert!(page.contains("Pictures for Zelda &lt;Ocarina&gt;") && page.contains("<b>2</b> Box art · Ocarina &quot;USA&quot;"));
+        assert!(!page.contains("evil.example"), "only pictures from where the Ally looked are shown");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(CHOICES), serde_json::to_vec(&found).unwrap()).unwrap();
+        let pick = chosen(&files, "2").unwrap();
+        assert_eq!((pick.op, &pick.args["id"], &pick.args["candidate"]["source"]), ("art_set", &json!("manual:1"), &json!("Box art")));
+        assert!(chosen(&files, "0").is_err() && chosen(&files, "9").is_err() && chosen(&files, "two").is_err());
+        assert!(show("art_find", &json!({ "id": "x", "title": "Nothing", "candidates": [] })).contains("No pictures were found for Nothing"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

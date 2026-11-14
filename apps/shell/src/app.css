@@ -1,5 +1,7 @@
 /* ---------- frame ---------- */
 .shell {
+  position: relative;
+  isolation: isolate;
   height: 100%;
   display: grid;
   grid-template-rows: auto 1fr auto;
@@ -1562,4 +1564,364 @@ button {
 
 .quick__note {
   color: var(--text);
+}
+
+/* ---------- the game in focus colours the whole screen ---------- */
+.ambient {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.ambient__layer {
+  position: absolute;
+  inset: -6rem;
+  background-size: cover;
+  background-position: center 30%;
+  filter: blur(3.5rem) saturate(1.25);
+  opacity: 0;
+  transition: opacity 700ms var(--ease);
+  will-change: opacity;
+}
+
+.ambient__layer--hue {
+  background:
+    radial-gradient(60% 70% at 78% 18%, hsl(calc(var(--hue) + 40) 85% 80%), transparent 70%),
+    radial-gradient(70% 80% at 15% 85%, hsl(calc(var(--hue) - 30) 60% 62%), transparent 70%),
+    hsl(var(--hue) 55% 72%);
+  filter: none;
+}
+
+.ambient__layer--on {
+  opacity: 0.5;
+}
+
+:root[data-theme="dark"] .ambient__layer--on {
+  opacity: 0.42;
+}
+
+/* Keeps text readable over any picture: the page colour, thicker lower down. */
+.ambient__veil {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--bg) 35%, transparent), color-mix(in srgb, var(--bg) 82%, transparent) 70%, var(--bg));
+}
+
+.shell--playing .ambient__layer--on {
+  opacity: 0.8;
+}
+
+.shell--playing .ambient__veil {
+  background: radial-gradient(60% 60% at 50% 45%, color-mix(in srgb, var(--bg) 78%, transparent), color-mix(in srgb, var(--bg) 40%, transparent));
+}
+
+/* ---------- which console a game is from ---------- */
+.cover {
+  position: relative;
+  overflow: hidden;
+}
+
+.cover__band {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: grid;
+  place-items: center;
+  min-height: 2.3rem;
+  padding: 0.3rem 0.6rem;
+  font-size: 0.95rem;
+  font-weight: 800;
+  letter-spacing: 0.09em;
+  line-height: 1.1;
+  text-align: center;
+  text-transform: uppercase;
+  box-shadow: 0 -0.15rem 0.6rem rgb(0 0 0 / 22%);
+}
+
+.cover--banded {
+  padding-bottom: 3.2rem;
+}
+
+.cover--art.cover--banded {
+  padding: 0;
+}
+
+.cover--wide .cover__band {
+  left: auto;
+  right: 1.25rem;
+  bottom: 1.25rem;
+  min-height: 2.5rem;
+  padding: 0.3rem 1.1rem;
+  border-radius: var(--radius-pill);
+  font-size: 1.05rem;
+}
+
+.hero .cover__band {
+  bottom: auto;
+  top: 1.5rem;
+  right: 1.5rem;
+}
+
+/* A tall cover in a wide frame: whole, on a soft copy of itself. */
+.cover__behind {
+  position: absolute;
+  inset: -2rem;
+  width: calc(100% + 4rem) !important;
+  height: calc(100% + 4rem) !important;
+  filter: blur(2rem) saturate(1.2);
+  opacity: 0.75;
+}
+
+.cover--art img.cover__whole {
+  position: relative;
+  object-fit: contain;
+  filter: drop-shadow(0 0.75rem 1.5rem rgb(0 0 0 / 35%));
+  padding: 1.5rem;
+}
+
+.hero .cover--art img.cover__whole {
+  object-position: 85% center;
+}
+
+/* ---------- choosing a game's pictures ---------- */
+.setting--art {
+  display: grid;
+  grid-template-columns: 3.2rem 1fr auto;
+  align-items: center;
+  gap: 1.25rem;
+  padding-block: 0.6rem;
+}
+
+.setting__thumb .cover {
+  border-radius: 0.5rem;
+  padding: 0;
+}
+
+.setting__thumb .cover__title {
+  display: none;
+}
+
+.artpage {
+  padding-bottom: 2rem;
+}
+
+.artpage__head {
+  display: grid;
+  grid-template-columns: 15rem 1fr;
+  gap: 3rem;
+  align-items: center;
+}
+
+.artpage__now .cover {
+  box-shadow: var(--shadow);
+}
+
+.artpage__text {
+  display: grid;
+  gap: 1rem;
+}
+
+.artpage__text h1 {
+  margin: 0;
+  font-size: 3rem;
+  font-weight: 800;
+  line-height: 1.05;
+  letter-spacing: -0.02em;
+}
+
+.artpage__text .lede {
+  margin: 0;
+  max-width: 52ch;
+}
+
+.artpage__search {
+  display: flex;
+  gap: 1rem;
+  align-items: center;
+}
+
+.artpage__search .field {
+  flex: 1;
+  max-width: 34rem;
+}
+
+.arts {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 1.5rem;
+}
+
+.arts--wide {
+  grid-template-columns: repeat(3, 1fr);
+}
+
+.art {
+  position: relative;
+  aspect-ratio: 2 / 3;
+  border-radius: var(--radius-card);
+  overflow: hidden;
+  background: var(--accent-soft);
+  scroll-margin: 2rem;
+}
+
+.arts--wide .art {
+  aspect-ratio: 92 / 43;
+}
+
+.art img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.art:focus {
+  transform: scale(1.05);
+  z-index: 1;
+}
+
+.art:disabled {
+  opacity: 0.55;
+}
+
+.art--busy:disabled {
+  opacity: 1;
+  animation: art-busy 900ms var(--ease) infinite alternate;
+}
+
+@keyframes art-busy {
+  to {
+    transform: scale(0.96);
+  }
+}
+
+.art__from {
+  position: absolute;
+  left: 0.5rem;
+  bottom: 0.5rem;
+  padding: 0.15rem 0.6rem;
+  border-radius: var(--radius-pill);
+  background: rgb(255 255 255 / 90%);
+  color: #3a2a33;
+  font-size: 0.85rem;
+  font-weight: 800;
+}
+
+.field--short {
+  width: 16rem;
+}
+
+.chip small {
+  margin-left: 0.5rem;
+  opacity: 0.65;
+  font-size: 0.8em;
+  font-weight: 700;
+}
+
+/* ---------- a game on its way in ---------- */
+.playing__cover {
+  width: 15rem;
+  margin-bottom: 0.75rem;
+  border-radius: var(--radius-card);
+  box-shadow: 0 1.5rem 4rem rgb(0 0 0 / 30%);
+  animation: playing-in 600ms var(--ease);
+}
+
+.playing--waiting .playing__cover {
+  animation:
+    playing-in 600ms var(--ease),
+    playing-breathe 2.4s ease-in-out 600ms infinite alternate;
+}
+
+@keyframes playing-in {
+  from {
+    opacity: 0;
+    transform: scale(0.86) translateY(1.5rem);
+  }
+}
+
+@keyframes playing-breathe {
+  to {
+    transform: scale(1.035);
+  }
+}
+
+.playing__dots {
+  display: flex;
+  gap: 0.6rem;
+}
+
+.playing__dots i {
+  width: 0.75rem;
+  height: 0.75rem;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: playing-dot 1.2s ease-in-out infinite;
+}
+
+.playing__dots i:nth-child(2) {
+  animation-delay: 0.2s;
+}
+
+.playing__dots i:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+@keyframes playing-dot {
+  0%,
+  80%,
+  100% {
+    opacity: 0.25;
+    transform: scale(0.8);
+  }
+  40% {
+    opacity: 1;
+    transform: scale(1.15);
+  }
+}
+
+/* ---------- cloud gaming ---------- */
+.host--cloud {
+  position: relative;
+  overflow: hidden;
+  align-content: end;
+}
+
+.cloud__kind {
+  justify-self: start;
+  padding: 0.2rem 0.9rem;
+  border-radius: var(--radius-pill);
+  background: hsl(var(--hue) 55% 42%);
+  color: #fff;
+  font-size: 0.95rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.cloud__glow {
+  position: absolute;
+  top: -35%;
+  right: -20%;
+  width: 75%;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  background: radial-gradient(closest-side, hsl(var(--hue) 80% 70% / 55%), transparent);
+  transition: transform 600ms var(--ease);
+}
+
+.host--cloud:focus .cloud__glow {
+  transform: scale(1.35);
+}
+
+.form .pagehead h1 {
+  white-space: nowrap;
+}
+
+.host--cloud > span:not(.cloud__glow) {
+  position: relative;
+  z-index: 1;
 }
