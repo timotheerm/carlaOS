@@ -109,7 +109,7 @@ fn picture_view(library: &Library, id: &str) -> Result<PictureView, String> {
         setting: setting.name(),
         settings: Setting::all().into_iter().map(Setting::name).collect(),
         last: streamed.map(|Streamed { choice, at }| {
-            let p = choice.picture();
+            let p = choice.picture_on(carla_core::display::current());
             LastPicture {
                 level: choice.level.name(),
                 automatic: choice.automatic,
@@ -168,7 +168,7 @@ pub(crate) fn sync_games(library: &Library, host: &HostRow, link: &Link) -> Resu
                     }
                 }
             }
-            Scanned { source_id: g.source_id.clone(), title: g.title.clone(), cover, ..Scanned::default() }
+            Scanned { source_id: g.source_id.clone(), title: g.title.clone(), cover, update: g.update, ..Scanned::default() }
         })
         .collect()
     };
@@ -411,6 +411,22 @@ pub(crate) fn end_game(library: &Library, place: &str) {
     }
 }
 
+/// Take away the loading screen a desktop shows over its desktop during a
+/// stream, so the player can see and answer what is behind it.
+pub(crate) fn reveal(library: &Library, place: &str) -> Result<(), String> {
+    let host = library.store().hosts()?.into_iter().find(|h| h.id == place).ok_or("That desktop is no longer set up.")?;
+    let (link, ..) = reach(&host).map_err(|e| e.to_string())?;
+    link.reveal().map_err(|e| e.to_string())
+}
+
+/// What the store on a desktop still has to do for a game, asked now.
+/// `None` when the desktop does not answer or is too old to know.
+pub(crate) fn pending_update(library: &Library, game_id: &str, place: &str) -> Option<Option<carla_core::library::Update>> {
+    let host = library.store().hosts().ok()?.into_iter().find(|h| h.id == place)?;
+    let (link, ..) = reach(&host).ok()?;
+    link.pending_update(game_id).ok()
+}
+
 /// A game's achievements from the first desktop that has it and answers,
 /// with that desktop's name.
 pub(crate) fn achievements(library: &Library, game_id: &str, places: &[String]) -> Option<(Vec<carla_core::library::achievements::Achievement>, String)> {
@@ -514,9 +530,13 @@ pub(crate) fn start_stream(library: &Library, game_id: &str, place: &str, waking
     // What was played on the Ally since goes to the desktop first.
     crate::savesync::before_stream(library, game_id, &host, &link);
     // A desktop that has just woken may need a moment before Sunshine is up.
+    // The picture is made for this Ally's own screen, and the desktop is told
+    // its size so it can switch its screen to match.
+    let picture = picture_for(library, &host, &link).picture_on(carla_core::display::current());
+    let screen = carla_core::display::Mode::new(picture.width, picture.height, picture.fps);
     let mut tries = 0;
     loop {
-        match link.prepare(game_id) {
+        match link.prepare_for(game_id, Some(screen)) {
             Ok(_) => break,
             Err(Error::Host(text)) if text.contains("Sunshine is not running") && tries < 10 && !stopped() => {
                 tries += 1;
@@ -526,7 +546,6 @@ pub(crate) fn start_stream(library: &Library, game_id: &str, place: &str, waking
             Err(e) => return Err(e.to_string()),
         }
     }
-    let choice = picture_for(library, &host, &link);
-    let moonlight = moonlight::stream(&exe, &link.address, choice.picture()).map_err(|e| format!("Moonlight could not be started: {e}."))?;
+    let moonlight = moonlight::stream(&exe, &link.address, picture).map_err(|e| format!("Moonlight could not be started: {e}."))?;
     Ok((moonlight, woke))
 }

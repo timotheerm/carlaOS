@@ -27,6 +27,30 @@ pub struct SessionView {
     pub(crate) phase: &'static str,
     /// Streamed from a desktop, not running on this Ally.
     stream: bool,
+    /// One line on what is being waited for, such as a store's update.
+    pub(crate) note: Option<String>,
+}
+
+/// What a store is called in a sentence.
+fn store_name(source: &str) -> &'static str {
+    match source {
+        "steam" => "Steam",
+        "epic" => "The Epic Games Launcher",
+        _ => "The store",
+    }
+}
+
+/// One line on a store's update that a game is waiting for.
+fn update_note(source: &str, update: carla_core::library::Update) -> String {
+    use carla_core::library::UpdateState;
+    let progress = match (update.percent(), update.left()) {
+        (Some(percent), Some(left)) => format!(" {percent}% done, {left} to go."),
+        _ => String::new(),
+    };
+    match update.state {
+        UpdateState::Paused => format!("Its update is paused in {}.{progress}", store_name(source)),
+        _ => format!("{} is updating it first.{progress}", store_name(source)),
+    }
 }
 
 pub(crate) struct Active {
@@ -196,7 +220,7 @@ fn claim(library: &Library, view: &SessionView, place: &str) -> Result<(), Strin
 #[tauri::command(async)]
 pub fn library_launch(app: AppHandle, library: State<'_, Library>, game_id: String, place: String) -> Result<SessionView, String> {
     let install = library.store().install(&game_id, &place)?;
-    let view = SessionView { game_id: game_id.clone(), title: install.title.clone(), phase: "starting", stream: place != LOCAL };
+    let view = SessionView { game_id: game_id.clone(), title: install.title.clone(), phase: "starting", stream: place != LOCAL, note: None };
     // Claimed before anything slow happens, so a second press cannot start a
     // second game, and the player sees at once that something is happening.
     claim(&library, &view, &place)?;
@@ -249,6 +273,20 @@ pub fn library_launch(app: AppHandle, library: State<'_, Library>, game_id: Stri
         let mut played = false;
         loop {
             std::thread::sleep(POLL);
+            // A store that is updating the game first is not a game that
+            // failed to start: wait for it and say so.
+            if let (Running::Game(watch), false) = (&mut running, played) {
+                let root = locked(&library.0.steam_root).clone();
+                let note = carla_core::library::update_of(&install.source, &install.source_id, root.as_deref()).map(|u| update_note(&install.source, u));
+                if note.is_some() {
+                    watch.still_preparing();
+                }
+                let mut active = locked(&library.0.active);
+                if let Some(current) = active.as_mut().filter(|c| c.view.note != note) {
+                    current.view.note = note;
+                    let _ = app.emit(SESSION_EVENT, Some(current.view.clone()));
+                }
+            }
             let phase = running.poll();
             let mut active = locked(&library.0.active);
             let Some(current) = active.as_mut() else { break };
@@ -260,6 +298,7 @@ pub fn library_launch(app: AppHandle, library: State<'_, Library>, game_id: Stri
                 Phase::Running if current.view.phase != "running" => {
                     played = true;
                     current.view.phase = "running";
+                    current.view.note = None;
                     let _ = app.emit(SESSION_EVENT, Some(current.view.clone()));
                 }
                 Phase::Running | Phase::Starting => {}

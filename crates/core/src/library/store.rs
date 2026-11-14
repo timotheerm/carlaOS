@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use rusqlite::{params, Connection, OptionalExtension};
 
 use super::emulation::Console;
-use super::{GameView, HostRow, Install, Kind, ManualGame, Offered, Scanned, Streamed, Synced, LOCAL};
+use super::{GameView, HostRow, Install, Kind, ManualGame, Offered, Scanned, Streamed, Synced, Update, Waiting, LOCAL};
 use crate::link::quality::Setting;
 
 type Result<T> = std::result::Result<T, String>;
@@ -133,7 +133,7 @@ impl Store {
         db.execute_batch(SCHEMA).map_err(err)?;
         // Columns added after the first release. SQLite has no "add column if
         // missing", so look first.
-        let added = [("hosts", "addresses", "TEXT NOT NULL DEFAULT '[]'"), ("hosts", "macs", "TEXT NOT NULL DEFAULT '[]'"), ("games", "save_path", "TEXT"), ("hosts", "admin", "INTEGER NOT NULL DEFAULT 0"), ("hosts", "quality", "TEXT NOT NULL DEFAULT 'auto'"), ("hosts", "streamed", "TEXT"),
+        let added = [("installs", "pending_update", "TEXT"), ("hosts", "addresses", "TEXT NOT NULL DEFAULT '[]'"), ("hosts", "macs", "TEXT NOT NULL DEFAULT '[]'"), ("games", "save_path", "TEXT"), ("hosts", "admin", "INTEGER NOT NULL DEFAULT 0"), ("hosts", "quality", "TEXT NOT NULL DEFAULT 'auto'"), ("hosts", "streamed", "TEXT"),
             // Pictures the administrator chose. They win over what a store or a
             // desktop offers, and a look through the library leaves them alone.
             ("games", "cover_own", "TEXT"),
@@ -176,8 +176,8 @@ impl Store {
             )
             .map_err(err)?;
             tx.execute(
-                "INSERT INTO installs (game_id, place, source, source_id, install_path, exe, args) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                params![id, place, source, s.source_id, text(&s.install_path), s.exe.as_deref().map(text), s.args],
+                "INSERT INTO installs (game_id, place, source, source_id, install_path, exe, args, pending_update) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![id, place, source, s.source_id, text(&s.install_path), s.exe.as_deref().map(text), s.args, s.update.and_then(|u| serde_json::to_string(&u).ok())],
             )
             .map_err(err)?;
         }
@@ -317,6 +317,10 @@ impl Store {
             .db
             .prepare("SELECT DISTINCT place FROM installs WHERE game_id = ?1 ORDER BY place <> 'local', place")
             .map_err(err)?;
+        let mut waiting = self
+            .db
+            .prepare("SELECT place, pending_update FROM installs WHERE game_id = ?1 AND pending_update IS NOT NULL ORDER BY place <> 'local', place")
+            .map_err(err)?;
         let rows = games
             .query_map(params![all], |r| {
                 Ok(GameView {
@@ -333,6 +337,7 @@ impl Store {
                     last_played: r.get(10)?,
                     places: Vec::new(),
                     installable: Vec::new(),
+                    updates: Vec::new(),
                     manual: false,
                     origin: r.get(11)?,
                     own_art: r.get(12)?,
@@ -353,11 +358,24 @@ impl Store {
                     .map_err(err)?
                     .collect::<rusqlite::Result<_>>()
                     .map_err(err)?;
+                let pending: Vec<(String, String)> =
+                    waiting.query_map(params![g.id], |r| Ok((r.get(0)?, r.get(1)?))).map_err(err)?.collect::<rusqlite::Result<_>>().map_err(err)?;
+                g.updates = pending
+                    .into_iter()
+                    .filter_map(|(place, json)| serde_json::from_str::<Update>(&json).ok().map(|update| Waiting { place, update }))
+                    .collect();
                 // Only what was added by hand on this machine can be removed here.
                 g.manual = g.id.starts_with("manual:") && g.places.iter().any(|p| p == LOCAL);
                 Ok(g)
             })
             .collect()
+    }
+
+    /// Note what a store said just now about one install's update.
+    pub fn set_update(&mut self, game_id: &str, place: &str, update: Option<Update>) -> Result<()> {
+        let json = update.and_then(|u| serde_json::to_string(&u).ok());
+        self.db.execute("UPDATE installs SET pending_update = ?3 WHERE game_id = ?1 AND place = ?2", params![game_id, place, json]).map_err(err)?;
+        Ok(())
     }
 
     /// How to start a game in one place.
@@ -748,6 +766,28 @@ mod tests {
         assert_eq!(now[0].added, 100);
         store.remove_host("home").unwrap();
         assert!(store.list_all().unwrap().iter().all(|g| !g.installable.contains(&"home".to_string())));
+    }
+
+    #[test]
+    fn an_update_that_has_to_finish_is_shown_for_the_place_it_is_in() {
+        use crate::library::{Update, UpdateState};
+        let mut store = Store::in_memory().unwrap();
+        let update = Update { state: UpdateState::Needed, bytes: 1_000, done: 250 };
+        store.sync(LOCAL, "steam", &[scanned("1", "Alpha")], 100).unwrap();
+        store.sync("desk", "steam", &[Scanned { update: Some(update), ..scanned("1", "Alpha") }, scanned("2", "Beta")], 100).unwrap();
+        let games = store.list().unwrap();
+        assert_eq!(games[0].updates, [Waiting { place: "desk".into(), update }]);
+        assert!(games[1].updates.is_empty());
+        let json = serde_json::to_value(&games[0]).unwrap();
+        assert_eq!(json["updates"][0], serde_json::json!({ "place": "desk", "state": "needed", "bytes": 1_000, "done": 250 }));
+        // Asked again just before playing: done on the desktop, started here.
+        store.set_update("steam:1", "desk", None).unwrap();
+        store.set_update("steam:1", LOCAL, Some(Update { state: UpdateState::Running, ..update })).unwrap();
+        let games = store.list().unwrap();
+        assert_eq!(games[0].updates.iter().map(|w| (w.place.as_str(), w.update.state)).collect::<Vec<_>>(), [(LOCAL, UpdateState::Running)]);
+        // The next look through the store has the last word.
+        store.sync(LOCAL, "steam", &[scanned("1", "Alpha")], 200).unwrap();
+        assert!(store.list().unwrap()[0].updates.is_empty());
     }
 
     #[test]

@@ -97,6 +97,8 @@ fn main() {
             quick::quick_set_brightness,
             quick::quick_close,
             quick::quick_end_game,
+            quick::quick_show_desktop,
+            details::library_updates,
             art::art_find,
             art::art_use,
             art::art_pick,

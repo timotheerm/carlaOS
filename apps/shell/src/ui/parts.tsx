@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import type { Download, Game, Host, HostState } from "../data/types";
+import type { Download, Game, Host, HostState, Waiting } from "../data/types";
 import { Heart, OnDevice, Source, Streamed } from "./icons";
 import { banner } from "./platform";
 
@@ -138,8 +138,22 @@ export function Badges({ game, hosts }: { game: Game; hosts?: Host[] }) {
           {local ? "" : "Stream"}
         </span>
       )}
+      {(game.updates?.length ?? 0) > 0 && (
+        <span className="badge badge--update" title="A store has to update this game before it starts.">
+          Update
+        </span>
+      )}
     </span>
   );
+}
+
+/** One sentence on an update a store has to finish before a game starts. */
+export function updateLine(u: Waiting, hosts: Host[]): string {
+  const where = u.place === "local" ? "This Ally" : placeLabel(u.place, hosts);
+  const left = u.bytes > u.done ? ` (${size(u.bytes - u.done)} to go)` : "";
+  if (u.state === "running") return `${where} is updating this game${left}. It starts when that is done.`;
+  if (u.state === "paused") return `The update of this game is paused on ${u.place === "local" ? "this Ally" : where}${left}.`;
+  return `${where} has to update this game first${left}. ${u.place === "local" ? "Starting it" : "Streaming it"} begins the update and shows how far it is.`;
 }
 
 /** The same in words, for screen readers. */

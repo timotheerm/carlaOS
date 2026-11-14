@@ -154,18 +154,31 @@ pub enum Phase {
     NeverStarted,
 }
 
+/// How long a store may spend updating a game before it starts. Past this
+/// nobody is still waiting in front of it.
+pub const UPDATE_GRACE: Duration = Duration::from_secs(3 * 60 * 60);
+
 /// Decides the phase from one observation at a time. Kept free of real
 /// processes and clocks so it can be tested.
 #[derive(Debug)]
 pub struct Tracker {
     asked: Instant,
+    first: Instant,
     seen: bool,
     misses: u8,
 }
 
 impl Tracker {
     pub fn new(now: Instant) -> Self {
-        Self { asked: now, seen: false, misses: 0 }
+        Self { asked: now, first: now, seen: false, misses: 0 }
+    }
+
+    /// The store is still getting the game ready (updating it), so it is
+    /// not late yet: the wait for it to appear starts again.
+    pub fn still_preparing(&mut self, now: Instant) {
+        if !self.seen && now.duration_since(self.first) <= UPDATE_GRACE {
+            self.asked = now;
+        }
     }
 
     pub fn observe(&mut self, running: bool, now: Instant) -> Phase {
@@ -273,6 +286,16 @@ impl Watch {
         self.processes.end_inside(&self.dir);
     }
 
+    /// See [`Tracker::still_preparing`].
+    pub fn still_preparing(&mut self) {
+        self.tracker.still_preparing(Instant::now());
+    }
+
+    /// The folder whose programs count as the game.
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+
     pub fn poll(&mut self) -> Phase {
         let child_alive = match self.child.as_mut().map(Child::try_wait) {
             Some(Ok(None)) => true,
@@ -333,6 +356,21 @@ mod tests {
         let mut t = Tracker::new(t0);
         assert_eq!(t.observe(false, t0 + START_GRACE), Phase::Starting);
         assert_eq!(t.observe(false, t0 + START_GRACE + Duration::from_secs(1)), Phase::NeverStarted);
+    }
+
+    #[test]
+    fn a_game_the_store_is_updating_is_waited_for() {
+        let t0 = Instant::now();
+        let mut t = Tracker::new(t0);
+        let later = t0 + START_GRACE + Duration::from_secs(60);
+        t.still_preparing(later - Duration::from_secs(30));
+        assert_eq!(t.observe(false, later), Phase::Starting, "the update was still running half a minute ago");
+        assert_eq!(t.observe(false, later + START_GRACE), Phase::NeverStarted, "the update ended and the game never came");
+        // Not for ever.
+        let mut t = Tracker::new(t0);
+        let long = t0 + UPDATE_GRACE + Duration::from_secs(1);
+        t.still_preparing(long);
+        assert_eq!(t.observe(false, long), Phase::NeverStarted);
     }
 
     #[test]

@@ -298,6 +298,7 @@ dependencies = [
  "sysinfo",
  "tiny_http",
  "ureq",
+ "windows-sys 0.61.2",
  "winreg",
 ]
 
@@ -314,6 +315,7 @@ dependencies = [
  "spake2",
  "sysinfo",
  "ureq",
+ "windows-sys 0.61.2",
  "winreg",
 ]
 
