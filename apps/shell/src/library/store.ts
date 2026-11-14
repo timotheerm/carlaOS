@@ -6,11 +6,11 @@ import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { games as sampleGames, hosts as sampleHosts } from "../data/sample";
 import { sampleArt, sampleDetails, sampleMatches } from "../data/sample";
-import type { ArtChoice, ArtSearch, Console, ConsoleHint, Details, Inspected, FoundHost, Game, Host, HostPicture, HostState, Kind, Match, NewGame, SaveSync, Saves, Session, Waiting } from "../data/types";
+import type { ArtChoice, ArtSearch, Console, ConsoleHint, Details, Download, Inspected, Storage, FoundHost, Game, Host, HostPicture, HostState, Kind, Match, NewGame, SaveSync, Saves, Session, Waiting } from "../data/types";
 import { inTauri } from "../native";
 import { when } from "../ui/parts";
 
-type State = { games: Game[]; hosts: Host[]; session: Session | null; scanning: boolean };
+type State = { games: Game[]; hosts: Host[]; session: Session | null; scanning: boolean; downloads: Download[] };
 
 // What the Rust side sends for one game.
 type GameView = {
@@ -20,6 +20,7 @@ type GameView = {
   platform: string;
   kind: Kind;
   places: string[];
+  installable: string[];
   playtime_minutes: number;
   last_played: number | null;
   added: number;
@@ -31,6 +32,8 @@ type GameView = {
   origin: string;
   own_art: boolean;
 };
+type DownloadView = Omit<Download, "gameId"> & { game_id: string };
+const fromDownload = ({ game_id, ...d }: DownloadView): Download => ({ ...d, gameId: game_id });
 type SessionView = { game_id: string; title: string; phase: Session["phase"]; stream: boolean; note?: string | null };
 // What the Rust side sends for one linked desktop.
 type HostView = {
@@ -100,6 +103,7 @@ const fromView = (g: GameView): Game => ({
   kind: g.kind,
   hue: hue(g.title),
   places: g.places,
+  installable: g.installable ?? [],
   playtimeMinutes: g.playtime_minutes,
   lastPlayed: g.last_played === null ? undefined : iso(g.last_played),
   added: iso(g.added),
@@ -146,8 +150,8 @@ function sample(): Game[] {
 }
 
 let state: State = inTauri
-  ? { games: [], hosts: [], session: null, scanning: false }
-  : { games: sample(), hosts: sampleHosts, session: null, scanning: false };
+  ? { games: [], hosts: [], session: null, scanning: false, downloads: [] }
+  : { games: sample(), hosts: sampleHosts, session: null, scanning: false, downloads: [] };
 const listeners = new Set<() => void>();
 
 function set(patch: Partial<State>) {
@@ -197,6 +201,8 @@ export const library = {
       // Playtime and "recently played" change when a game ends.
       if (e.payload === null) void reload().catch(() => undefined);
     });
+    await listen<DownloadView[]>("library://downloads", (e) => set({ downloads: e.payload.map(fromDownload) }));
+    set({ downloads: (await invoke<DownloadView[]>("installs_list").catch(() => [])).map(fromDownload) });
     // The administrator changed the library from a desktop.
     await listen("library://changed", () => void reload().catch(() => undefined));
     set({ session: fromSession(await invoke<SessionView | null>("library_session")) });
@@ -314,6 +320,66 @@ export const library = {
     }, 800);
   },
 
+  /**
+   * Ask the store to install a game, on this Ally or on a desktop. Resolves
+   * with whether the store is showing a window of its own that wants an answer.
+   */
+  async install(gameId: string, place: string): Promise<boolean> {
+    if (inTauri) return (await invoke<{ asked_store: boolean }>("installs_start", { gameId, place })).asked_store;
+    const game = state.games.find((g) => g.id === gameId);
+    if (!game || state.downloads.some((d) => d.gameId === gameId && d.place === place)) return false;
+    // The browser preview pretends: a download that takes a few seconds.
+    const total = 6_400_000_000 + (game.hue % 7) * 1_900_000_000;
+    const put = (d: Download | null) =>
+      set({ downloads: [...state.downloads.filter((x) => !(x.gameId === gameId && x.place === place)), ...(d ? [d] : [])] });
+    const base: Download = { gameId, place, title: game.title, phase: "queued", done: 0, total: 0, update: false };
+    put(base);
+    let step = 0;
+    const timer = setInterval(() => {
+      step += 1;
+      if (step <= 20) put({ ...base, phase: "downloading", total, done: Math.round((total * step) / 20) });
+      else if (step === 21) put({ ...base, phase: "finishing", total, done: total });
+      else {
+        clearInterval(timer);
+        put(null);
+        // From the library as it is now: another install may have finished meanwhile.
+        const near = (a: string, b: string) => Number(a !== "local") - Number(b !== "local");
+        set({
+          games: state.games.map((g) =>
+            g.id === gameId
+              ? { ...g, places: [...g.places.filter((p) => p !== place), place].sort(near), installable: g.installable.filter((p) => p !== place), added: new Date().toISOString() }
+              : g,
+          ),
+        });
+      }
+    }, 600);
+    return false;
+  },
+
+  /** What fills this Ally's disk. Administrator page. */
+  async storage(): Promise<Storage> {
+    if (inTauri) return invoke<Storage>("storage_overview");
+    const sizes = [62, 41, 23, 11, 3.4, 0.9];
+    const games = state.games.filter((g) => g.places.includes("local") && g.platform === "Steam");
+    return {
+      disks: [{ folder: "C:\\Program Files (x86)\\Steam", free: 212_000_000_000, total: 1_000_000_000_000 }],
+      games: games.map((g, i) => ({ game_id: g.id, title: g.title, bytes: (sizes[i % sizes.length] ?? 1) * 1e9, last_played: g.lastPlayed ? Math.floor(new Date(g.lastPlayed).getTime() / 1000) : null })),
+    };
+  },
+
+  /** Ask Steam to uninstall a game from this Ally. Steam asks before anything goes. */
+  async uninstall(gameId: string) {
+    if (inTauri) return invoke("storage_uninstall", { gameId });
+    setTimeout(() => {
+      set({ games: state.games.map((g) => (g.id === gameId ? { ...g, places: g.places.filter((p) => p !== "local"), installable: ["local", ...g.installable] } : g)) });
+    }, 1500);
+  },
+
+  /** Room for new games on this Ally, in bytes, when it is known. */
+  async room(): Promise<number | null> {
+    return inTauri ? invoke<number | null>("installs_room") : 212_000_000_000;
+  },
+
   /** Look again at what is installed. */
   async scan() {
     if (!inTauri) return;
@@ -416,6 +482,7 @@ export const library = {
       kind: game.kind,
       hue: hue(game.title),
       places: ["local"],
+      installable: [],
       playtimeMinutes: 0,
       added: now,
       favourite: false,

@@ -12,7 +12,9 @@ use carla_core::link::quality;
 use carla_core::link::sign::{self, Replay};
 use carla_core::library::saves::Backups;
 use carla_core::library::sync::{self, Side as _};
-use carla_core::link::{self, EnrolDone, EnrolFinish, EnrolOffer, EnrolStart, Hello, Pair, Prepare, Problem, RemoteGame, SaveFile, SavesFind, SavesFound, State, Status, Updating};
+use carla_core::library::downloads::{Download, Started};
+use carla_core::library::owned::App;
+use carla_core::link::{self, EnrolDone, EnrolFinish, EnrolOffer, EnrolStart, Hello, Install, Installing, Pair, Prepare, Problem, RemoteGame, RemoteLibrary, SaveFile, SavesFind, SavesFound, State, Status, Updating};
 use carla_core::{API_VERSION, VERSION};
 use serde::Serialize;
 
@@ -48,6 +50,17 @@ pub struct Reply {
     pub sign: Option<String>,
 }
 
+/// What Steam on this desktop could install, and what it is fetching.
+#[derive(Clone, Copy)]
+pub struct Installs {
+    /// Games of the library that are not installed here.
+    pub offered: fn() -> Result<Vec<App>, String>,
+    pub start: fn(&App) -> Result<Started, String>,
+    pub downloads: fn() -> Vec<Download>,
+    /// Room on the disk a new game would go to.
+    pub free: fn() -> Option<u64>,
+}
+
 struct Waiting {
     shared: Shared,
     device_name: String,
@@ -72,6 +85,7 @@ pub struct Server {
     /// Starts an update of this companion and says which version is coming,
     /// or `None` when this is the newest.
     updater: fn() -> Result<Option<String>, String>,
+    installs: Installs,
     /// How long an Ally asking for requests is kept waiting when there are none.
     admin_hold: Duration,
     /// Makes a stream a virtual screen of its own, when there is a driver.
@@ -148,6 +162,12 @@ impl Server {
             achievements,
             sleep,
             updater: || Err("This companion cannot update itself.".to_string()),
+            installs: Installs {
+                offered: || Ok(Vec::new()),
+                start: |_| Err("This companion cannot install games.".to_string()),
+                downloads: Vec::new,
+                free: || None,
+            },
             admin_hold: Duration::from_secs(20),
             screens: None,
             replay: Mutex::default(),
@@ -161,6 +181,46 @@ impl Server {
     pub fn with_updater(mut self, updater: fn() -> Result<Option<String>, String>) -> Self {
         self.updater = updater;
         self
+    }
+
+    /// Let linked devices see this desktop's library and install from it.
+    pub fn with_installs(mut self, installs: Installs) -> Self {
+        self.installs = installs;
+        self
+    }
+
+    fn library(&self) -> Answer {
+        let (games, problem) = match (self.installs.offered)() {
+            Ok(apps) => (apps, None),
+            Err(problem) => (Vec::new(), Some(problem)),
+        };
+        let games = games
+            .into_iter()
+            .map(|app| RemoteGame { id: format!("steam:{}", app.appid), source: "steam".to_string(), source_id: app.appid, title: app.title, has_cover: false, update: None })
+            .collect();
+        json(&RemoteLibrary { games, free_bytes: (self.installs.free)(), problem })
+    }
+
+    /// Only a game of this desktop's own library, named by its id, is ever
+    /// installed; the Ally cannot name anything else.
+    fn install(&self, bytes: &[u8], now: i64) -> Answer {
+        let wanted: Install = body(bytes)?;
+        let offered = (self.installs.offered)().map_err(|e| (503, e))?;
+        let Some(app) = offered.into_iter().find(|app| format!("steam:{}", app.appid) == wanted.game_id) else {
+            // Asked twice, or Steam began by itself: that is what was wanted.
+            if wanted.game_id.strip_prefix("steam:").is_some_and(|id| (self.installs.downloads)().iter().any(|d| d.source_id == id)) {
+                return json(&Installing { asked_store: false });
+            }
+            return refuse(404, &format!("That game is not in the Steam library on {}, or is installed there already.", self.config.name));
+        };
+        // Steam has to start again to begin, which would disturb a game.
+        if let Some(playing) = self.files.playing(now) {
+            return refuse(409, &format!("{} is running on {}. Install {} once it is closed.", playing.title, self.config.name, app.title));
+        }
+        let started = (self.installs.start)(&app).map_err(|e| (503, e))?;
+        // The next question about games must not get an older answer.
+        *locked(&self.games) = None;
+        json(&Installing { asked_store: started == Started::AskedSteam })
     }
 
     /// Give each stream a virtual screen of its own through this driver.
@@ -501,6 +561,9 @@ impl Server {
                 Ok(bytes) if bytes <= quality::LARGEST_PROBE => Ok((filler(bytes), "application/octet-stream")),
                 _ => refuse(400, "That is more than a measurement needs."),
             },
+            ("GET", "/v1/library") => self.library(),
+            ("POST", "/v1/install") => self.install(req.body, now),
+            ("GET", "/v1/downloads") => json(&(self.installs.downloads)()),
             ("POST", "/v1/stream/prepare") => self.prepare(req.body, now),
             ("POST", "/v1/stream/pair") => self.pair(req.body, req.from),
             ("POST", "/v1/power/sleep") => self.sleep(now),
@@ -666,6 +729,35 @@ mod tests {
         }
     }
 
+    /// What any test desktop's Steam was asked to install.
+    static ASKED_FOR: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+    #[test]
+    fn a_linked_ally_installs_from_the_desktops_library_and_follows_the_download() {
+        let desk = desk("install", false);
+        let link = linked(&desk);
+        let library = link.library().unwrap();
+        assert_eq!(library.games.iter().map(|g| (g.id.as_str(), g.title.as_str())).collect::<Vec<_>>(), [("steam:40", "Not Here Yet"), ("steam:50", "Needs Steam's Window")]);
+        assert_eq!((library.free_bytes, library.problem), (Some(1_000), None));
+
+        assert!(!link.install("steam:40").unwrap().asked_store);
+        assert!(link.install("steam:50").unwrap().asked_store, "the Ally is told when someone has to answer at the desktop");
+        assert!(locked(&ASKED_FOR).contains(&"40".to_string()));
+        // Only the library's own games, by id. Nothing else can be named.
+        assert!(matches!(link.install("steam:10"), Err(Error::Host(text)) if text.contains("not in the Steam library")));
+        assert!(matches!(link.install("steam:../../x"), Err(Error::Host(_))));
+        // What Steam is already fetching counts as asked for.
+        assert!(!link.install("steam:60").unwrap().asked_store);
+        let fetching = link.downloads().unwrap();
+        assert_eq!((fetching[0].source_id.as_str(), fetching[0].done, fetching[0].total), ("60", 5, 10));
+
+        // Not while a game runs there, and never for a stranger.
+        desk.files.set_playing(Some(&crate::files::Playing { game_id: "steam:10".into(), title: "First Game".into(), at: now_for_tests() }));
+        assert_eq!(link.install("steam:40").err(), Some(Error::Host("First Game is running on HOME PC. Install Not Here Yet once it is closed.".into())));
+        let stranger = Link { key: vec![7; 32], ..link.clone() };
+        assert_eq!(stranger.install("steam:40").err(), Some(Error::Refused));
+        assert_eq!(stranger.library().err(), Some(Error::Refused));
+    }
     /// What Steam on the test desktop still has to do for the second game.
     const UPDATE: carla_core::library::Update = carla_core::library::Update { state: carla_core::library::UpdateState::Needed, bytes: 1_000, done: 0 };
 
@@ -708,7 +800,15 @@ mod tests {
                 SLEEPS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 Ok(())
             },
-        ).with_updater(|| Ok(Some("9.9.9".into()))).with_admin_hold(Duration::from_millis(400)));
+        ).with_updater(|| Ok(Some("9.9.9".into()))).with_admin_hold(Duration::from_millis(400)).with_installs(Installs {
+            offered: || Ok(vec![App { appid: "40".into(), title: "Not Here Yet".into(), installdir: "NotHere".into() }, App { appid: "50".into(), title: "Needs Steam's Window".into(), installdir: String::new() }]),
+            start: |app| {
+                locked(&ASKED_FOR).push(app.appid.clone());
+                Ok(if app.installdir.is_empty() { Started::AskedSteam } else { Started::Quiet })
+            },
+            downloads: || vec![Download { source: "steam".into(), source_id: "60".into(), title: "Half Way".into(), phase: carla_core::library::downloads::Phase::Downloading, done: 5, total: 10, update: false }],
+            free: || Some(1_000),
+        }));
         let http = tiny_http::Server::http("127.0.0.1:0").unwrap();
         let port = http.server_addr().to_ip().unwrap().port();
         std::thread::spawn(move || serve(server, http));
