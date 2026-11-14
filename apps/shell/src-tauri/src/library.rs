@@ -7,7 +7,8 @@ use std::process::Child;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use carla_core::library::launch::{self, Phase, Watch};
-use carla_core::library::{emulation, scan_store, steam, GameView, ManualGame, Store, LOCAL, STORES};
+use carla_core::library::cloud::CLOUD;
+use carla_core::library::{emulation, scan_store, steam, GameView, Install, ManualGame, Store, LOCAL, STORES};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::DialogExt;
@@ -27,6 +28,8 @@ pub struct SessionView {
     pub(crate) phase: &'static str,
     /// Streamed from a desktop, not running on this Ally.
     stream: bool,
+    /// Played on a cloud gaming service, in its own browser window.
+    cloud: bool,
     /// One line on what is being waited for, such as a store's update.
     pub(crate) note: Option<String>,
 }
@@ -220,14 +223,34 @@ fn claim(library: &Library, view: &SessionView, place: &str) -> Result<(), Strin
 #[tauri::command(async)]
 pub fn library_launch(app: AppHandle, library: State<'_, Library>, game_id: String, place: String) -> Result<SessionView, String> {
     let install = library.store().install(&game_id, &place)?;
-    let view = SessionView { game_id: game_id.clone(), title: install.title.clone(), phase: "starting", stream: place != LOCAL, note: None };
+    play(app, library.inner(), install, place)
+}
+
+/// Start an install and watch it until it has finished.
+pub(crate) fn play(app: AppHandle, library: &Library, mut install: Install, place: String) -> Result<SessionView, String> {
+    let game_id = install.game_id.clone();
+    let cloud = place == CLOUD;
+    let view = SessionView { game_id: game_id.clone(), title: install.title.clone(), phase: "starting", stream: place != LOCAL && !cloud, cloud, note: None };
     // Claimed before anything slow happens, so a second press cannot start a
     // second game, and the player sees at once that something is happening.
-    claim(&library, &view, &place)?;
+    claim(library, &view, &place)?;
     let _ = app.emit(SESSION_EVENT, Some(view.clone()));
-    let started_running = if place == LOCAL {
+    // The game's power level and screen speed, before it starts, so it
+    // starts with them.
+    let kind = carla_core::power::Kind::of(&place);
+    if let Ok(profile) = carla_core::power::profile(&library.store(), &game_id, kind) {
+        crate::power::apply(profile, kind);
+    }
+    let started_running = if cloud {
+        // A browser profile kept only for cloud gaming, so the services stay
+        // signed in from one game to the next.
+        install.install_path = library.0.data_dir.join("cloud-browser");
+        launch::start(&install, None)
+            .map(|child| Running::Game(Watch::new(&install, child)))
+            .map_err(|e| format!("{} could not be opened: {e}.", install.title))
+    } else if place == LOCAL {
         // What was played on a desktop since comes here first.
-        crate::savesync::all(&library, &game_id, true);
+        crate::savesync::all(library, &game_id, true);
         let steam_root = locked(&library.0.steam_root).clone();
         launch::start(&install, steam_root.as_deref())
             .map(|child| Running::Game(Watch::new(&install, child)))
@@ -240,12 +263,13 @@ pub fn library_launch(app: AppHandle, library: State<'_, Library>, game_id: Stri
             }
         };
         let stopped = || locked(&library.0.active).as_ref().is_none_or(|a| a.stop);
-        crate::hosts::start_stream(&library, &game_id, &place, &waking, &stopped).map(|(moonlight, woke)| Running::Stream { moonlight, since: Instant::now(), woke })
+        crate::hosts::start_stream(library, &game_id, &place, &waking, &stopped).map(|(moonlight, woke)| Running::Stream { moonlight, since: Instant::now(), woke })
     };
     let mut running = match started_running {
         Ok(running) => running,
         Err(e) => {
             *locked(&library.0.active) = None;
+            crate::power::rest();
             let _ = app.emit(SESSION_EVENT, None::<SessionView>);
             return Err(e);
         }
@@ -263,12 +287,13 @@ pub fn library_launch(app: AppHandle, library: State<'_, Library>, game_id: Stri
         Err(e) => {
             running.stop(false);
             *locked(&library.0.active) = None;
+            crate::power::rest();
             let _ = app.emit(SESSION_EVENT, None::<SessionView>);
             return Err(e);
         }
     };
 
-    let library = library.inner().clone();
+    let library = library.clone();
     std::thread::spawn(move || {
         let mut played = false;
         let mut never_started = false;
@@ -324,6 +349,7 @@ pub fn library_launch(app: AppHandle, library: State<'_, Library>, game_id: Stri
         // A desktop that was asleep before the stream may sleep again.
         let sleep_again = played && matches!(running, Running::Stream { woke: true, .. });
         *locked(&library.0.active) = None;
+        crate::power::rest();
         crate::quick::ended(&app);
         let _ = app.emit(SESSION_EVENT, None::<SessionView>);
         if let Some(window) = app.get_webview_window("main") {
@@ -334,7 +360,7 @@ pub fn library_launch(app: AppHandle, library: State<'_, Library>, game_id: Stri
         // from the desktop after a stream.
         if played && place == LOCAL {
             crate::savesync::all(&library, &game_id, false);
-        } else if played {
+        } else if played && !cloud {
             crate::savesync::after_stream(&library, &game_id, &place);
         }
         if sleep_again {

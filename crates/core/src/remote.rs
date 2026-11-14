@@ -14,8 +14,9 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::library::{ports, saves, Kind, ManualGame, Store, LOCAL};
+use crate::library::{cloud, ports, saves, Kind, ManualGame, Store, LOCAL};
 use crate::link::quality::Setting;
+use crate::power;
 
 /// One thing the administrator asked for.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -54,7 +55,7 @@ impl Done {
 }
 
 /// Everything that can be asked, for the help text and to refuse the rest.
-pub const OPS: &[&str] = &["status", "games", "rescan", "add_game", "remove_game", "save_folder", "desktops", "cleanup_scan", "cleanup_apply", "cleanup_undo", "update", "restart", "startup", "picture", "art_find", "art_set", "art_clear", "art_key", "check"];
+pub const OPS: &[&str] = &["status", "games", "rescan", "add_game", "remove_game", "save_folder", "desktops", "cleanup_scan", "cleanup_apply", "cleanup_undo", "update", "restart", "startup", "picture", "art_find", "art_set", "art_clear", "art_key", "add_cloud", "power", "check"];
 
 fn text(args: &Value, name: &str) -> Result<String, String> {
     args[name].as_str().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string).ok_or_else(|| format!("The request is missing \"{name}\"."))
@@ -76,7 +77,8 @@ pub fn catalogue(store: &mut Store, op: &str, args: &Value, now: i64) -> Option<
                 out.push(json!({
                     "id": g.id, "title": g.title, "platform": g.platform, "kind": g.kind,
                     "on_ally": g.places.iter().any(|p| p == LOCAL),
-                    "desktops": g.places.iter().filter(|p| *p != LOCAL).count(),
+                    "desktops": g.places.iter().filter(|p| *p != LOCAL && *p != cloud::CLOUD).count(),
+                    "cloud": g.places.iter().any(|p| p == cloud::CLOUD),
                     "minutes": g.playtime_minutes, "added_by_hand": g.manual, "save_folder": save_folder,
                     "origin": g.origin, "picture": if g.own_art { "chosen" } else if g.cover.is_some() || g.hero.is_some() { "found" } else { "none" },
                 }));
@@ -110,10 +112,21 @@ pub fn catalogue(store: &mut Store, op: &str, args: &Value, now: i64) -> Option<
             let id = store.add_manual(&game, now)?;
             Ok(json!({ "id": id, "title": game.title, "kind": kind, "origin": game.origin.trim(), "port": seen.port }))
         })(),
+        "add_cloud" => (|| {
+            let link = text(args, "link")?;
+            let typed = args["title"].as_str().map(str::trim).filter(|t| !t.is_empty()).map(str::to_string);
+            let title = typed.unwrap_or_else(|| cloud::suggest_title(&link));
+            if title.is_empty() {
+                return Err("The link does not say the game's name. Give it too: carla-companion ally cloud LINK \"NAME\"".to_string());
+            }
+            let id = store.add_cloud(&link, &title, now)?;
+            let (service, _) = cloud::checked(&link)?;
+            Ok(json!({ "id": id, "title": title, "service": service.name }))
+        })(),
         "remove_game" => (|| {
             let id = text(args, "id")?;
             let title = store.list()?.into_iter().find(|g| g.id == id && g.manual).map(|g| g.title);
-            let title = title.ok_or("No game added by hand on the Ally has that id. Games from a store leave when they are uninstalled.")?;
+            let title = title.ok_or("No game added by hand or cloud game on the Ally has that id. Games from a store leave when they are uninstalled.")?;
             store.remove_manual(&id)?;
             Ok(json!({ "id": id, "title": title }))
         })(),
@@ -157,6 +170,31 @@ pub fn catalogue(store: &mut Store, op: &str, args: &Value, now: i64) -> Option<
             }
             let (setting, streamed) = store.host_quality(&host.id)?;
             Ok(json!({ "id": host.id, "name": host.name, "picture": setting.name(), "streamed": streamed }))
+        })(),
+        "power" => (|| {
+            let id = text(args, "id")?;
+            let title = store.list()?.into_iter().find(|g| g.id == id).map(|g| g.title).ok_or("The Ally has no game with that id.")?;
+            let kind = match args["kind"].as_str() {
+                None | Some("local") => power::Kind::Local,
+                Some("stream") => power::Kind::Stream,
+                Some("cloud") => power::Kind::Cloud,
+                Some(other) => return Err(format!("\"{other}\" is not a way to play. Use local, stream or cloud.")),
+            };
+            if args["forget"].as_bool() == Some(true) {
+                power::choose(store, &id, kind, None)?;
+            } else if args["power"].is_string() || args["screen"].is_string() {
+                let mut profile = power::profile(store, &id, kind)?;
+                if let Some(name) = args["power"].as_str() {
+                    profile.power = power::Power::parse(name).ok_or_else(|| format!("\"{name}\" is not a power level. Use quiet, balanced or turbo."))?;
+                }
+                if let Some(name) = args["screen"].as_str() {
+                    profile.screen = power::Screen::parse(name).ok_or_else(|| format!("\"{name}\" is not a screen speed. Use smooth or saver."))?;
+                }
+                power::choose(store, &id, kind, Some(profile))?;
+            }
+            let profile = power::profile(store, &id, kind)?;
+            let chosen = power::chosen(store, &id, kind)?.is_some();
+            Ok(json!({ "id": id, "title": title, "power": profile.power, "screen": profile.screen, "chosen": chosen }))
         })(),
         _ => return None,
     })
@@ -208,11 +246,23 @@ mod tests {
         assert_eq!(ask("remove_game", json!({ "id": id })).unwrap()["title"].as_str(), Some("Paper Lanterns"));
         assert_eq!(ask("games", Value::Null).unwrap(), json!([]));
         assert_eq!(ask("desktops", Value::Null).unwrap(), json!([]));
+        // A cloud game, named by its link or by hand.
+        assert!(ask("add_cloud", json!({ "link": "https://play.geforcenow.com/mall/#/deeplink?game-id=1" })).is_err(), "no name in that link");
+        let forza = ask("add_cloud", json!({ "link": "https://www.xbox.com/en-US/play/games/forza-horizon-5/9NKX70BBCDRN" })).unwrap();
+        assert_eq!((forza["title"].as_str(), forza["service"].as_str()), (Some("Forza Horizon 5"), Some("Xbox Cloud Gaming")));
+        assert_eq!(ask("games", Value::Null).unwrap()[0]["cloud"].as_bool(), Some(true));
+        // Its power level, chosen from the desktop.
+        let set = ask("power", json!({ "id": forza["id"], "kind": "cloud", "power": "turbo" })).unwrap();
+        assert_eq!((set["power"].as_str(), set["screen"].as_str(), set["chosen"].as_bool()), (Some("turbo"), Some("smooth"), Some(true)));
+        assert!(ask("power", json!({ "id": forza["id"], "power": "max" })).is_err());
+        assert_eq!(ask("power", json!({ "id": forza["id"], "kind": "cloud", "forget": true })).unwrap()["power"].as_str(), Some("quiet"));
+        assert!(ask("power", json!({ "id": "steam:404" })).is_err());
+        assert!(ask("remove_game", json!({ "id": forza["id"] })).is_ok());
         assert!(ask("picture", json!({ "desktop": "HOME PC" })).is_err(), "not linked to it");
 
         // What needs more than the catalogue is left to the shell.
         assert!(catalogue(&mut store, "restart", &Value::Null, 100).is_none());
-        assert!(OPS.iter().filter(|op| catalogue(&mut store, op, &Value::Null, 100).is_some()).count() == 6);
+        assert!(OPS.iter().filter(|op| catalogue(&mut store, op, &Value::Null, 100).is_some()).count() == 8);
         let failed = Done::of("7", Err("No.".into()));
         assert_eq!((failed.ok, failed.error()), (false, Some("No.")));
         assert_eq!(Done::of("7", Ok(json!(1))).error(), None);

@@ -264,10 +264,37 @@ impl Store {
         Ok(id)
     }
 
-    /// Remove a game that was added by hand. Scanned games cannot be removed
-    /// this way; they would only come back at the next scan.
+    /// Add a cloud game from a link to its page on its service. Adding the
+    /// same link again renames it. Returns its id.
+    pub fn add_cloud(&mut self, link: &str, title: &str, now: i64) -> Result<String> {
+        let (service, link) = super::cloud::checked(link)?;
+        let title = title.trim();
+        if title.is_empty() || title.chars().count() > 80 {
+            return Err("The game needs a name of at most 80 letters.".to_string());
+        }
+        let key = super::manual_key(&link);
+        let id = format!("cloud:{key}");
+        let tx = self.db.transaction().map_err(err)?;
+        tx.execute(
+            "INSERT INTO games (id, title, kind, platform, added) VALUES (?1, ?2, 'game', ?3, ?4)
+             ON CONFLICT (id) DO UPDATE SET title = ?2, platform = ?3",
+            params![id, title, service.name, now],
+        )
+        .map_err(err)?;
+        tx.execute(
+            "INSERT INTO installs (game_id, place, source, source_id, install_path, args) VALUES (?1, ?2, 'cloud', ?3, '', ?4)
+             ON CONFLICT (place, source, source_id) DO UPDATE SET args = ?4",
+            params![id, super::cloud::CLOUD, key, link],
+        )
+        .map_err(err)?;
+        tx.commit().map_err(err)?;
+        Ok(id)
+    }
+
+    /// Remove a game that was added by hand, or a cloud game. Scanned games
+    /// cannot be removed this way; they would only come back at the next scan.
     pub fn remove_manual(&mut self, id: &str) -> Result<()> {
-        if !id.starts_with("manual:") {
+        if !id.starts_with("manual:") && !id.starts_with("cloud:") {
             return Err("Only games added by hand can be removed here.".to_string());
         }
         self.db.execute("DELETE FROM games WHERE id = ?1", params![id]).map_err(err)?;
@@ -365,7 +392,7 @@ impl Store {
                     .filter_map(|(place, json)| serde_json::from_str::<Update>(&json).ok().map(|update| Waiting { place, update }))
                     .collect();
                 // Only what was added by hand on this machine can be removed here.
-                g.manual = g.id.starts_with("manual:") && g.places.iter().any(|p| p == LOCAL);
+                g.manual = (g.id.starts_with("manual:") && g.places.iter().any(|p| p == LOCAL)) || g.id.starts_with("cloud:");
                 Ok(g)
             })
             .collect()
@@ -906,6 +933,28 @@ mod tests {
         assert_eq!(store.install(&gone, LOCAL).unwrap().exe.as_deref(), Some(broken.as_path()));
         assert_eq!(store.mend_shortcuts().unwrap(), 0);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_cloud_game_is_a_link_that_can_be_renamed_and_removed() {
+        let mut store = Store::in_memory().unwrap();
+        let link = "https://www.xbox.com/en-US/play/games/forza-horizon-5/9NKX70BBCDRN";
+        assert!(store.add_cloud("https://evil.example/play", "Evil", 1).is_err());
+        assert!(store.add_cloud(link, "  ", 1).is_err());
+        let id = store.add_cloud(link, "Forza", 1).unwrap();
+        assert_eq!(store.add_cloud(&format!(" {link} "), "Forza Horizon 5", 2).unwrap(), id, "the same link is the same game");
+        let games = store.list().unwrap();
+        assert_eq!(games.len(), 1);
+        let g = &games[0];
+        assert_eq!((g.title.as_str(), g.platform.as_str(), g.places.as_slice(), g.manual), ("Forza Horizon 5", "Xbox Cloud Gaming", &["cloud".to_string()][..], true));
+        let install = store.install(&id, "cloud").unwrap();
+        assert_eq!((install.source.as_str(), install.args.as_str(), install.exe), ("cloud", link, None));
+        // A look through the library leaves cloud games alone.
+        store.sync(LOCAL, "steam", &[], 3).unwrap();
+        store.sync(LOCAL, "emu", &[], 3).unwrap();
+        assert_eq!(store.list().unwrap().len(), 1);
+        store.remove_manual(&id).unwrap();
+        assert!(store.list().unwrap().is_empty());
     }
 
     #[test]

@@ -2,7 +2,7 @@
 // Rust core (`games`, `installs`, `hosts`), so swapping sample data for the
 // real catalogue in M2 does not touch the screens.
 
-export type Place = "local" | string; // "local" or a host id
+export type Place = "local" | "cloud" | string; // this Ally, a cloud service, or a desktop's id
 
 export type Kind = "game" | "emulated" | "port" | "homebrew";
 
@@ -52,7 +52,7 @@ export type Waiting = {
   done: number;
 };
 
-export type Session = { gameId: string; title: string; phase: "waking" | "starting" | "running"; stream: boolean; note?: string | null };
+export type Session = { gameId: string; title: string; phase: "waking" | "starting" | "running"; stream: boolean; cloud: boolean; note?: string | null };
 
 export type NewGame = { title: string; exe: string; args: string; kind: Kind; cover: string | null; description: string; origin: string };
 
@@ -172,3 +172,22 @@ export type CheckReport = { id: string; name: string; steps: CheckStep[]; repair
 export type FoundHost = { address: string; name: string; id: string };
 
 export type CloudService = { id: string; name: string; note: string; hue: number; kind: string };
+
+/** How hard the Ally works for a game. */
+export type Power = "quiet" | "balanced" | "turbo";
+export const POWERS: Power[] = ["quiet", "balanced", "turbo"];
+export const POWER_TEXT: Record<Power, { name: string; short: string; about: string }> = {
+  quiet: { name: "Quiet", short: "Longest battery", about: "The fan stays down and the battery lasts longest. Best for small games, streams and cloud games." },
+  balanced: { name: "Balanced", short: "Most games", about: "Enough for most games, without draining the battery." },
+  turbo: { name: "Turbo", short: "Most power", about: "Everything the Ally has, for the most demanding games. Best when plugged in." },
+};
+/** A game's power level and screen speed. */
+export type PowerView = {
+  power: Power;
+  /** "smooth": as fast as the screen goes. "saver": 60 times a second. */
+  screen: "smooth" | "saver";
+  /** Chosen for this game, rather than what every game gets. */
+  chosen: boolean;
+  /** A stream picks its own screen speed. */
+  setsScreen: boolean;
+};

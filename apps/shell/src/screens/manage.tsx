@@ -198,6 +198,85 @@ function AddForm({ seen, onDone, notify }: { seen: Inspected; onDone: (added?: {
   );
 }
 
+// A cloud game: a link to its page on its service.
+function CloudForm({ onDone, notify }: { onDone: (added?: string) => void; notify: (text: string) => void }) {
+  const [link, setLink] = useState("");
+  const [title, setTitle] = useState("");
+  const [service, setService] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  // Read the link as it is pasted: which service, and a name when it has one.
+  useEffect(() => {
+    const typed = link.trim();
+    if (!typed) return setService(null);
+    let current = true;
+    library.inspectCloud(typed).then(
+      (seen) => {
+        if (!current) return;
+        setService(seen.service);
+        setTitle((t) => t || seen.title);
+      },
+      () => current && setService(null),
+    );
+    return () => {
+      current = false;
+    };
+  }, [link]);
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const id = await library.addCloud(link.trim(), title.trim());
+      notify(`${title.trim()} was added. Now choose its picture.`);
+      onDone(id);
+    } catch (e) {
+      notify(message(e));
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="form">
+      <div className="pagehead">
+        <h1>Add a cloud game</h1>
+        <p>Open the game's page on its service in a browser, copy the address, and paste it here. From a desktop it is easier: carla-companion ally cloud LINK</p>
+      </div>
+      <label className="form__row">
+        <span>Link</span>
+        <input
+          className="field"
+          data-focus
+          data-autofocus
+          data-fid="cloud:link"
+          value={link}
+          maxLength={2048}
+          placeholder="https://www.xbox.com/play/games/…"
+          onChange={(e) => setLink(e.target.value)}
+        />
+      </label>
+      <div className="form__row">
+        <span>Plays on</span>
+        <p className="form__found">{service ?? (link.trim() ? "Not a link CarlaOS knows: GeForce NOW, Xbox Cloud Gaming, Boosteroid or Luna" : "Paste a link first")}</p>
+      </div>
+      <label className="form__row">
+        <span>Name</span>
+        <input className="field" data-focus data-fid="cloud:title" value={title} maxLength={80} onChange={(e) => setTitle(e.target.value)} />
+      </label>
+      <div className="form__row">
+        <span />
+        <div className="form__actions">
+          <button className="pill pill--primary" data-focus data-fid="cloud:save" disabled={saving || !service || !title.trim()} onClick={() => void save()}>
+            Add to library
+          </button>
+          <button className="pill" data-focus data-fid="cloud:cancel" onClick={() => onDone()}>
+            Cancel
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // Where one game keeps its saves, and putting a safe copy back.
 function SavesAdmin({ game, onDone, notify }: { game: Game; onDone: () => void; notify: (text: string) => void }) {
   const [saves, setSaves] = useState<Saves | null | undefined>(undefined);
@@ -298,6 +377,7 @@ export function Manage({ games, notify }: { games: Game[]; notify: (text: string
   const [art, setArt] = useState<string | "list" | null>(null); // game whose pictures are open
   const [saves, setSaves] = useState<string | "list" | null>(null); // game whose saves are open
   const [consoles, setConsoles] = useState(false);
+  const [addingCloud, setAddingCloud] = useState(false);
 
   // Locked on the way in and again on the way out.
   useEffect(() => {
@@ -311,7 +391,7 @@ export function Manage({ games, notify }: { games: Game[]; notify: (text: string
     if (active instanceof HTMLElement && active.matches("[data-focus]") && active.isConnected) return;
     const main = document.querySelector("main");
     if (main) focusFirst(main);
-  }, [admin?.unlocked, adding, saves, consoles, art, manual.length]);
+  }, [admin?.unlocked, adding, addingCloud, saves, consoles, art, manual.length]);
 
   if (!admin) return null;
   if (!admin.unlocked) {
@@ -339,6 +419,17 @@ export function Manage({ games, notify }: { games: Game[]; notify: (text: string
           setAdding(null);
           // Straight on to its picture, which is the next thing it needs.
           if (added?.needsPicture) setArt(added.id);
+        }}
+        notify={notify}
+      />
+    );
+  }
+  if (addingCloud) {
+    return (
+      <CloudForm
+        onDone={(id) => {
+          setAddingCloud(false);
+          if (id) setArt(id);
         }}
         notify={notify}
       />
@@ -395,6 +486,10 @@ export function Manage({ games, notify }: { games: Game[]; notify: (text: string
       >
         <span>Add a game</span>
         <span className="setting__value">Choose its program, or a shortcut to it</span>
+      </button>
+      <button className="setting" data-focus data-fid="manage:cloud" onClick={() => setAddingCloud(true)}>
+        <span>Add a cloud game</span>
+        <span className="setting__value">A game on GeForce NOW, Xbox Cloud Gaming, Boosteroid or Luna</span>
       </button>
       <button className="setting" data-focus data-fid="manage:art" onClick={() => setArt("list")}>
         <span>Game artwork</span>

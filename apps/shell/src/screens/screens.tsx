@@ -23,6 +23,8 @@ export type Ctx = {
   refreshHosts: () => void;
   /** Wake a sleeping desktop. */
   wakeHost: (id: string) => void;
+  /** Open a cloud gaming service itself. */
+  openCloud: (service: string, name: string) => void;
 };
 
 const byRecent = (a: Game, b: Game) => (b.lastPlayed ?? "").localeCompare(a.lastPlayed ?? "");
@@ -93,6 +95,7 @@ const FILTERS = [
   { id: "all", label: "All" },
   { id: "local", label: "On this Ally" },
   { id: "stream", label: "Streamed" },
+  { id: "cloud", label: "Cloud" },
   { id: "fav", label: "Favourites" },
   { id: "absent", label: "Not installed" },
 ] as const;
@@ -105,8 +108,10 @@ export function Games(ctx: Ctx) {
       filter === "local"
         ? g.places.includes("local")
         : filter === "stream"
-          ? g.places.some((p) => p !== "local")
-          : filter === "fav"
+          ? g.places.some((p) => p !== "local" && p !== "cloud")
+          : filter === "cloud"
+            ? g.places.includes("cloud")
+            : filter === "fav"
             ? ctx.favourites.has(g.id)
             : true,
     )
@@ -199,19 +204,21 @@ export function HostView({ hostId, ...ctx }: Ctx & { hostId: string }) {
   );
 }
 
-export function Cloud({ services, notify }: { services: CloudService[]; notify: Ctx["notify"] }) {
+export function Cloud({ services, ...ctx }: Ctx & { services: CloudService[] }) {
+  const games = ctx.games.filter((g) => g.places.includes("cloud")).sort(byRecent);
   return (
     <>
-      <p className="lede">Cloud gaming: games that run in a rented data centre. Everything else is under My Games.</p>
-      <div className="hosts">
-        {services.map((s) => (
+      <p className="lede">Games that run in a data centre and play here over the internet. Choose a service to look around in it, or a game to play it straight away.</p>
+      <div className="hosts hosts--cloud">
+        {services.map((s, i) => (
           <button
             key={s.id}
             className="host host--large host--cloud"
             style={{ "--hue": s.hue } as React.CSSProperties}
             data-focus
+            data-autofocus={i === 0 && games.length === 0 ? "" : undefined}
             data-fid={`cloud:${s.id}`}
-            onClick={() => notify(`${s.name} opens from here in a later build.`)}
+            onClick={() => ctx.openCloud(s.id, s.name)}
           >
             <span className="cloud__kind">{s.kind}</span>
             <span className="host__name">{s.name}</span>
@@ -220,6 +227,11 @@ export function Cloud({ services, notify }: { services: CloudService[]; notify: 
           </button>
         ))}
       </div>
+      {games.length > 0 ? (
+        <Row title="Cloud games">{cards(games, ctx)}</Row>
+      ) : (
+        <p className="lede">Cloud games can be added under Settings, Manage games, so they get a card of their own here and in My Games.</p>
+      )}
     </>
   );
 }

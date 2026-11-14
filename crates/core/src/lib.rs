@@ -12,6 +12,7 @@ pub mod display;
 pub mod layout;
 pub mod library;
 pub mod link;
+pub mod power;
 pub mod quick;
 pub mod remote;
 pub mod secret;
