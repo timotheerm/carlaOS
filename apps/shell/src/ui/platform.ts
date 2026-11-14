@@ -9,27 +9,27 @@ export type Banner = { label: string; colour: string; ink: string };
 // band). Longer names first, so "Game Boy Advance" is not taken for a Game Boy.
 const CONSOLES: [string[], string, string?][] = [
   [["switch"], "#e60012"],
-  [["wii u", "wiiu"], "#0096c8"],
+  [["wii u", "wiiu"], "#007ba4"],
   [["wii"], "#e9edf0", "#3d4a52"],
   [["gamecube", "game cube"], "#5b4bb5"],
-  [["nintendo 64", "n64"], "#1d9a55"],
+  [["nintendo 64", "n64"], "#198549"],
   [["super nintendo", "snes", "super famicom"], "#7463b8"],
   [["game boy advance", "gba"], "#4a43a8"],
   [["game boy color", "gbc"], "#8a3fb3"],
-  [["game boy"], "#7a8c2e"],
+  [["game boy"], "#697928"],
   [["3ds"], "#cf2029"],
   [["nintendo ds", "nds"], "#5d6b7c"],
   [["nes", "famicom"], "#b8323a"],
   [["playstation portable", "psp"], "#22232b"],
   [["playstation", "ps1", "ps2", "ps3", "psx"], "#0b53b5"],
   [["xbox"], "#107c10"],
-  [["dreamcast"], "#ee7a22"],
+  [["dreamcast"], "#ba580e"],
   [["saturn"], "#2c4b8e"],
   [["mega drive", "megadrive", "genesis", "master system"], "#1f2026"],
 ];
 
 const PORT = "#7a4fb5";
-const HOMEBREW = "#2f8f83";
+const HOMEBREW = "#2a8075";
 const OTHER = "#a8456a";
 
 /** The colour of a console's band, going by its name. */

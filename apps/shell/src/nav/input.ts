@@ -92,15 +92,14 @@ export function installInput(onAction: Handler): () => void {
   window.addEventListener("keyup", onKeyUp);
 
   let raf = 0;
+  let recheck = 0;
 
   const poll = (now: number) => {
     raf = requestAnimationFrame(poll);
     // The same controller is playing the game while one runs in front of us.
     // Forget what was held, so nothing fires by itself on the way back.
     if (!document.hasFocus()) {
-      heldDir = null;
-      for (let i = 0; i < 16; i++) wasDown.add(i);
-      actionRepeat.clear();
+      onVisibility(); // stops polling until CarlaOS is in front again
       return;
     }
     const pad = navigator.getGamepads?.().find((p) => p && p.connected);
@@ -150,18 +149,37 @@ export function installInput(onAction: Handler): () => void {
     }
   };
 
-  // No polling while hidden, so the shell costs nothing behind a game.
+  // No polling while hidden or while another window (a game) is in front,
+  // so the shell costs the Ally nothing behind a game. Animations pause too.
   const onVisibility = () => {
     cancelAnimationFrame(raf);
-    if (!document.hidden) raf = requestAnimationFrame(poll);
+    clearTimeout(recheck);
+    const away = document.hidden || !document.hasFocus();
+    document.documentElement.toggleAttribute("data-away", away);
+    if (away) {
+      heldDir = null;
+      for (let i = 0; i < 16; i++) wasDown.add(i);
+      actionRepeat.clear();
+      // A focus event can be missed (the window was given focus before this
+      // ran): look again now and then, which costs next to nothing.
+      if (!document.hidden) recheck = window.setTimeout(onVisibility, 500);
+    } else {
+      raf = requestAnimationFrame(poll);
+    }
   };
   document.addEventListener("visibilitychange", onVisibility);
+  window.addEventListener("focus", onVisibility);
+  window.addEventListener("blur", onVisibility);
   onVisibility();
 
   return () => {
     window.removeEventListener("keydown", onKey);
     window.removeEventListener("keyup", onKeyUp);
     document.removeEventListener("visibilitychange", onVisibility);
+    window.removeEventListener("focus", onVisibility);
+    window.removeEventListener("blur", onVisibility);
+    document.documentElement.removeAttribute("data-away");
+    clearTimeout(recheck);
     cancelAnimationFrame(raf);
   };
 }

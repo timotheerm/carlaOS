@@ -72,7 +72,7 @@ button {
 
 .rail__item--on {
   background: var(--accent);
-  color: var(--surface);
+  color: var(--on-accent);
 }
 
 :root[data-theme="dark"] .rail__item--on {
@@ -440,7 +440,7 @@ button {
 .pill--primary,
 .chip--on {
   background: var(--accent);
-  color: var(--surface);
+  color: var(--on-accent);
 }
 
 :root[data-theme="dark"] .pill--primary,
@@ -655,7 +655,7 @@ button {
 /* ---------- administrator: PIN and Windows clean-up ---------- */
 .setting--primary {
   background: var(--accent);
-  color: var(--surface);
+  color: var(--on-accent);
 }
 
 .setting--primary .setting__value {
@@ -778,7 +778,7 @@ button {
 
 .tag--action {
   background: var(--accent);
-  color: var(--surface);
+  color: var(--on-accent);
 }
 
 :root[data-theme="dark"] .tag--action {
@@ -1116,7 +1116,7 @@ button {
 
 .trophy--done .trophy__icon {
   background: var(--accent);
-  color: #fff;
+  color: var(--on-accent);
 }
 
 .trophy--done .trophy__text {
@@ -1406,7 +1406,7 @@ button {
 .key:focus {
   transform: scale(1.1);
   background: var(--accent);
-  color: var(--surface);
+  color: var(--on-accent);
 }
 
 :root[data-theme="dark"] .key:focus {
@@ -1608,7 +1608,7 @@ button {
 
 .quick__choice--on {
   background: var(--accent);
-  color: var(--on-accent, #fff);
+  color: var(--on-accent);
 }
 
 .quick__row--end {
@@ -1634,7 +1634,7 @@ button {
 
 .quick__answer--on {
   background: var(--accent);
-  color: var(--surface);
+  color: var(--on-accent);
 }
 
 .quick__answer--end.quick__answer--on {
@@ -2024,7 +2024,7 @@ button {
   justify-self: start;
   padding: 0.2rem 0.9rem;
   border-radius: var(--radius-pill);
-  background: hsl(var(--hue) 55% 42%);
+  background: hsl(var(--hue) 55% 32%);
   color: #fff;
   font-size: 0.95rem;
   font-weight: 800;

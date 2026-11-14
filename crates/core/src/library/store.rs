@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS available (
     PRIMARY KEY (place, source, source_id)
 );
 CREATE INDEX IF NOT EXISTS available_game ON available (game_id);
+CREATE INDEX IF NOT EXISTS installs_game ON installs (game_id);
 CREATE TABLE IF NOT EXISTS play_sessions (
     id      INTEGER PRIMARY KEY,
     game_id TEXT NOT NULL,
@@ -130,6 +131,10 @@ impl Store {
 
     fn prepare(db: Connection) -> Result<Self> {
         db.execute_batch("PRAGMA foreign_keys = ON;").map_err(err)?;
+        // Fewer waits on the disk for each change: the catalogue is written
+        // after every scan and every game, and the Ally's storage is shared
+        // with the game being played. Still safe if the power goes.
+        let _ = db.execute_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;");
         db.execute_batch(SCHEMA).map_err(err)?;
         // Columns added after the first release. SQLite has no "add column if
         // missing", so look first.
