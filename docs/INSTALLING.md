@@ -62,6 +62,16 @@ it is updated.
 are meant to be shared with anything else that needs to know what Steam is
 fetching.
 
+## Making room: Settings, Storage
+
+Behind the administrator PIN. It shows how full each disk with a Steam library
+folder is, and the Steam games installed on the Ally, largest first, with
+when each was last played from CarlaOS. Pressing a game twice asks Steam to
+uninstall it (`steam://uninstall/<id>`); Steam then asks for a yes in its own
+window, so nothing is deleted without someone saying so. Once Steam has
+removed it, the game moves back to Not installed and can be installed again.
+A game that is running cannot be uninstalled.
+
 ## Not tried on real machines yet
 
 All of this is tested on made-up Steam files, not on a real Steam install:

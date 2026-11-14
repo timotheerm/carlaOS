@@ -246,3 +246,61 @@ pub fn watch(app: AppHandle, library: Library) {
         }
     });
 }
+
+/// One installed game on the storage page.
+#[derive(Debug, Clone, Serialize)]
+pub struct StoredGame {
+    game_id: String,
+    title: String,
+    bytes: u64,
+    /// Unix seconds, when it has been played from CarlaOS.
+    last_played: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Storage {
+    disks: Vec<downloads::Disk>,
+    games: Vec<StoredGame>,
+}
+
+/// What fills the disks Steam installs to on this Ally, largest game first.
+#[tauri::command(async)]
+pub fn storage_overview(library: State<'_, Library>) -> Result<Storage, String> {
+    let root = steam_root(&library).ok_or("Steam is not installed on this Ally.")?;
+    let played: HashMap<String, Option<i64>> = library.store().list()?.into_iter().map(|g| (g.id, g.last_played)).collect();
+    let games = downloads::footprints(&root)
+        .into_iter()
+        .map(|f| {
+            let game_id = format!("steam:{}", f.source_id);
+            StoredGame { last_played: played.get(&game_id).copied().flatten(), game_id, title: f.title, bytes: f.bytes }
+        })
+        .collect();
+    Ok(Storage { disks: downloads::disks(&root), games })
+}
+
+/// Ask Steam to uninstall a game from this Ally. Steam asks for a yes in its
+/// own window; once the game is gone, the library is read again.
+#[tauri::command(async)]
+pub fn storage_uninstall(app: AppHandle, admin: State<'_, crate::admin::Admin>, library: State<'_, Library>, game_id: String) -> Result<(), String> {
+    admin.require()?;
+    let appid = game_id.strip_prefix("steam:").ok_or("Only Steam games can be uninstalled from CarlaOS so far.")?.to_string();
+    if locked(&library.0.active).as_ref().is_some_and(|a| a.view.game_id == game_id) {
+        return Err("That game is running. Close it first.".to_string());
+    }
+    let root = steam_root(&library).ok_or("Steam is not installed on this Ally.")?;
+    downloads::uninstall_here(&root, &appid)?;
+    let library = library.inner().clone();
+    std::thread::spawn(move || {
+        // Long enough for someone to read Steam's question and answer it.
+        for _ in 0..90 {
+            std::thread::sleep(Duration::from_secs(2));
+            if !downloads::still_installed(&root, &appid) {
+                if library.scan(&app).is_ok() {
+                    let _ = app.emit(CHANGED_EVENT, ());
+                }
+                return;
+            }
+        }
+    });
+    Ok(())
+}

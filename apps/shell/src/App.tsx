@@ -11,6 +11,7 @@ import { Manage } from "./screens/manage";
 import { Playing } from "./screens/playing";
 import { Search } from "./screens/search";
 import { Startup } from "./screens/startup";
+import { Storage } from "./screens/storage";
 import { GameDetail } from "./screens/pregame";
 import { Cloud, Desktops, Games, Home, HostView, Settings, type Ctx } from "./screens/screens";
 import { Updates } from "./screens/updates";
@@ -21,7 +22,7 @@ import { Splash } from "./ui/splash";
 
 type Page = { kind: "game"; id: string } | { kind: "host"; id: string } | { kind: "cleanup"; id: CleanupView }
   | { kind: "manage"; id: "home" } | { kind: "desktops"; id: "home" } | { kind: "search"; id: "home" }
-  | { kind: "updates"; id: "home" } | { kind: "startup"; id: "home" };
+  | { kind: "updates"; id: "home" } | { kind: "startup"; id: "home" } | { kind: "storage"; id: "home" };
 type Theme = "light" | "dark";
 
 const THEME_KEY = "carla.theme";
@@ -204,6 +205,7 @@ export function App() {
   else if (top?.kind === "desktops") page = <LinkDesktops hosts={hosts} notify={setToast} />;
   else if (top?.kind === "updates") page = <Updates hosts={hosts} notify={setToast} refreshHosts={() => void library.refreshHosts().catch(() => undefined)} />;
   else if (top?.kind === "startup") page = <Startup notify={setToast} />;
+  else if (top?.kind === "storage") page = <Storage notify={setToast} />;
   else if (top?.kind === "cleanup") page = <Cleanup view={top.id} open={(view) => push({ kind: "cleanup", id: view })} />;
   else if (section === "home") page = <Home {...ctx} />;
   else if (section === "games") page = <Games {...ctx} />;
@@ -219,6 +221,7 @@ export function App() {
         onDesktops={() => push({ kind: "desktops", id: "home" })}
         onUpdates={() => push({ kind: "updates", id: "home" })}
         onStartup={() => push({ kind: "startup", id: "home" })}
+        onStorage={() => push({ kind: "storage", id: "home" })}
         sounds={sounds}
         onSounds={() => {
           setSounds(!sounds);

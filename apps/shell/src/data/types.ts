@@ -37,6 +37,12 @@ export type Download = {
   update: boolean; // an installed game being brought up to date
 };
 
+/// What fills the disks Steam installs to on this Ally.
+export type Storage = {
+  disks: { folder: string; free: number; total: number }[];
+  games: { game_id: string; title: string; bytes: number; last_played: number | null }[];
+};
+
 export type Session = { gameId: string; title: string; phase: "waking" | "starting" | "running"; stream: boolean };
 
 export type NewGame = { title: string; exe: string; args: string; kind: Kind; cover: string | null; description: string; origin: string };

@@ -20,7 +20,7 @@ const POLL: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionView {
-    game_id: String,
+    pub(crate) game_id: String,
     pub(crate) title: String,
     /// "waking" while a sleeping desktop comes up, "starting" until the game's
     /// program (or the stream) has been seen, then "running".

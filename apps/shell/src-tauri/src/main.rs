@@ -112,6 +112,8 @@ fn main() {
             installs::installs_start,
             installs::installs_list,
             installs::installs_room,
+            installs::storage_overview,
+            installs::storage_uninstall,
         ])
         .run(context)
         .expect("failed to start the CarlaOS shell");

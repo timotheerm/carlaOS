@@ -1924,6 +1924,7 @@ button {
 .host--cloud > span:not(.cloud__glow) {
   position: relative;
   z-index: 1;
+}
 
 /* ---------- installing from the library ---------- */
 /* A game of the library that is not installed: there, but resting. */
@@ -2022,4 +2023,45 @@ button {
   color: var(--text-quiet);
   font-size: 1.1rem;
   font-weight: 600;
+}
+
+/* ---------- storage ---------- */
+.disk {
+  display: grid;
+  gap: 0.6rem;
+  padding: 1.1rem 1.4rem;
+  border-radius: var(--radius-card);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.disk__text {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.2rem 0.75rem;
+  align-items: baseline;
+}
+
+.disk__text span {
+  color: var(--text-quiet);
+  font-weight: 600;
+}
+
+.disk .progress {
+  height: 0.8rem;
+}
+
+.progress--full i {
+  background: linear-gradient(90deg, var(--warn), #f0c56e);
+}
+
+.setting--danger,
+.setting--danger:focus {
+  background: #ffe3ea;
+  color: #a8456a;
+}
+
+:root[data-theme="dark"] .setting--danger {
+  background: #5a2b3c;
+  color: #ffd6e2;
 }

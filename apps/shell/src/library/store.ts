@@ -6,7 +6,7 @@ import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { games as sampleGames, hosts as sampleHosts } from "../data/sample";
 import { sampleArt, sampleDetails, sampleMatches } from "../data/sample";
-import type { ArtChoice, ArtSearch, Console, ConsoleHint, Details, Download, Inspected, FoundHost, Game, Host, HostPicture, HostState, Kind, Match, NewGame, SaveSync, Saves, Session } from "../data/types";
+import type { ArtChoice, ArtSearch, Console, ConsoleHint, Details, Download, Inspected, Storage, FoundHost, Game, Host, HostPicture, HostState, Kind, Match, NewGame, SaveSync, Saves, Session } from "../data/types";
 import { inTauri } from "../native";
 import { when } from "../ui/parts";
 
@@ -349,6 +349,25 @@ export const library = {
       }
     }, 600);
     return false;
+  },
+
+  /** What fills this Ally's disk. Administrator page. */
+  async storage(): Promise<Storage> {
+    if (inTauri) return invoke<Storage>("storage_overview");
+    const sizes = [62, 41, 23, 11, 3.4, 0.9];
+    const games = state.games.filter((g) => g.places.includes("local") && g.platform === "Steam");
+    return {
+      disks: [{ folder: "C:\\Program Files (x86)\\Steam", free: 212_000_000_000, total: 1_000_000_000_000 }],
+      games: games.map((g, i) => ({ game_id: g.id, title: g.title, bytes: (sizes[i % sizes.length] ?? 1) * 1e9, last_played: g.lastPlayed ? Math.floor(new Date(g.lastPlayed).getTime() / 1000) : null })),
+    };
+  },
+
+  /** Ask Steam to uninstall a game from this Ally. Steam asks before anything goes. */
+  async uninstall(gameId: string) {
+    if (inTauri) return invoke("storage_uninstall", { gameId });
+    setTimeout(() => {
+      set({ games: state.games.map((g) => (g.id === gameId ? { ...g, places: g.places.filter((p) => p !== "local"), installable: ["local", ...g.installable] } : g)) });
+    }, 1500);
   },
 
   /** Room for new games on this Ally, in bytes, when it is known. */

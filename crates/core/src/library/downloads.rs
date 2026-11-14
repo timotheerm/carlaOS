@@ -246,6 +246,79 @@ pub fn start_here(root: &Path, app: &App) -> Result<Started, String> {
     start(root, app, &Machine { restart: if known { &keep } else { &restart }, open: &open })
 }
 
+/// One installed game and the room it takes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Footprint {
+    pub source_id: String,
+    pub title: String,
+    pub bytes: u64,
+    /// The library folder it is in.
+    pub folder: PathBuf,
+}
+
+/// One disk that holds a Steam library folder.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Disk {
+    pub folder: PathBuf,
+    pub free: u64,
+    pub total: u64,
+}
+
+/// Installed Steam games, largest first.
+pub fn footprints(root: &Path) -> Vec<Footprint> {
+    let mut list: Vec<Footprint> = steam::manifests(root)
+        .into_iter()
+        .filter(|m| m.installed() && !m.tool() && !m.name.is_empty())
+        .map(|m| Footprint {
+            folder: m.apps.parent().map(Path::to_path_buf).unwrap_or_default(),
+            source_id: m.appid,
+            title: m.name,
+            bytes: m.size_on_disk,
+        })
+        .collect();
+    list.sort_by(|a, b| b.bytes.cmp(&a.bytes).then_with(|| a.title.cmp(&b.title)));
+    list
+}
+
+/// Each disk a library folder is on, once.
+pub fn disks(root: &Path) -> Vec<Disk> {
+    let Ok(all) = sysinfo::Disks::new_with_refreshed_list() else { return Vec::new() };
+    let norm = |p: &Path| p.to_string_lossy().replace('\\', "/").to_lowercase();
+    let mut out: Vec<Disk> = Vec::new();
+    for folder in steam::folders(root).into_iter().filter(|f| f.join("steamapps").is_dir()) {
+        let wanted = norm(&folder);
+        let disk = all.iter().filter(|d| wanted.starts_with(norm(d.mount_point()).trim_end_matches('/'))).max_by_key(|d| d.mount_point().as_os_str().len());
+        if let Some(d) = disk {
+            if !out.iter().any(|o| o.total == d.total_space() && o.free == d.available_space()) {
+                out.push(Disk { folder, free: d.available_space(), total: d.total_space() });
+            }
+        }
+    }
+    out
+}
+
+/// Ask Steam to uninstall a game. Steam asks for a yes in its own window
+/// before anything is deleted, so nothing goes without someone saying so.
+pub fn uninstall(root: &Path, appid: &str, open: &dyn Fn(&str) -> io::Result<()>) -> Result<(), String> {
+    if appid.is_empty() || appid.len() > 12 || !appid.bytes().all(|b| b.is_ascii_digit()) {
+        return Err("That is not a Steam game.".to_string());
+    }
+    if !steam::manifests(root).iter().any(|m| m.appid == appid && m.installed()) {
+        return Err("That game is not installed here.".to_string());
+    }
+    open(&format!("steam://uninstall/{appid}")).map_err(|e| format!("Steam could not be asked to uninstall it: {e}."))
+}
+
+/// The real machine: the address goes to Steam itself.
+pub fn uninstall_here(root: &Path, appid: &str) -> Result<(), String> {
+    uninstall(root, appid, &|address| Command::new(steam::client(root)).arg(address).spawn().map(|_| ()))
+}
+
+/// Whether Steam still has the game installed.
+pub fn still_installed(root: &Path, appid: &str) -> bool {
+    steam::manifests(root).iter().any(|m| m.appid == appid && m.installed())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -307,6 +380,19 @@ mod tests {
         assert!(start(&root, &App { appid: "62 0".into(), ..portal.clone() }, &machine).is_err());
         std::fs::write(root.join("steamapps").join("appmanifest_620.acf"), "\"AppState\"\n{\n\"appid\" \"620\"\n\"name\" \"Portal 2\"\n\"StateFlags\" \"4\"\n\"installdir\" \"Portal 2\"\n}\n").unwrap();
         assert_eq!(start(&root, &portal, &machine), Err("Portal \"2\" is already installed.".to_string()));
+
+        // Uninstalling goes through Steam, which asks first; only for what is installed.
+        let asked = RefCell::new(Vec::new());
+        let open = |address: &str| {
+            asked.borrow_mut().push(address.to_string());
+            Ok(())
+        };
+        assert!(uninstall(&root, "400", &open).is_err(), "not installed");
+        assert!(uninstall(&root, "620 && x", &open).is_err());
+        uninstall(&root, "620", &open).unwrap();
+        assert_eq!(*asked.borrow(), ["steam://uninstall/620"]);
+        let sizes = footprints(&root);
+        assert_eq!((sizes[0].source_id.as_str(), sizes[0].folder.as_path()), ("620", root.as_path()));
         let _ = std::fs::remove_dir_all(&root);
     }
 }

@@ -232,6 +232,7 @@ export function Settings({
   onDesktops,
   onUpdates,
   onStartup,
+  onStorage,
   sounds,
   onSounds,
   hostCount,
@@ -245,6 +246,7 @@ export function Settings({
   onDesktops: () => void;
   onUpdates: () => void;
   onStartup: () => void;
+  onStorage: () => void;
   sounds: boolean;
   onSounds: () => void;
   hostCount: number;
@@ -286,6 +288,10 @@ export function Settings({
       <button className="setting" data-focus data-fid="set:updates" onClick={onUpdates}>
         <span>Updates</span>
         <span className="setting__value">{version ? `CarlaOS ${version} · ` : ""}Administrator only</span>
+      </button>
+      <button className="setting" data-focus data-fid="set:storage" onClick={onStorage}>
+        <span>Storage</span>
+        <span className="setting__value">Room for games, uninstall · Administrator only</span>
       </button>
       <button className="setting" data-focus data-fid="set:startup" onClick={onStartup}>
         <span>Starting up</span>
