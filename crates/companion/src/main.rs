@@ -22,7 +22,7 @@ use std::sync::Arc;
 use std::path::PathBuf;
 
 use carla_core::library::emulation::{self, Console};
-use carla_core::library::{achievements, scan_store, steam, STORES};
+use carla_core::library::{achievements, downloads, owned, scan_store, steam, STORES};
 use carla_core::link::{discover, enrol, wake, SUNSHINE_APP};
 use carla_core::update::{self, Part};
 use carla_core::{AppInfo, Role, VERSION};
@@ -326,6 +326,21 @@ fn build(files: &Files, config: Config) -> Server {
     )
     .with_updater(update_from_afar)
     .with_virtual_screens(Box::new(virtual_screen::Vdd))
+    .with_installs(server::Installs {
+        offered: steam_library,
+        start: |app| steam_root().and_then(|root| downloads::start_here(&root, app)),
+        downloads: || steam::find_root().map(|root| downloads::steam(&root)).unwrap_or_default(),
+        free: || steam::find_root().and_then(|root| downloads::roomiest(&root).1),
+    })
+}
+
+fn steam_root() -> Result<std::path::PathBuf, String> {
+    steam::find_root().ok_or_else(|| "Steam is not installed on this desktop.".to_string())
+}
+
+/// The games of the Steam library that are not installed on this desktop.
+fn steam_library() -> Result<Vec<owned::App>, String> {
+    owned::not_installed(&steam_root()?)
 }
 
 /// A linked Ally asked this desktop to update. Answer as soon as it is known
@@ -650,6 +665,14 @@ fn run(args: &[String]) -> Result<i32, String> {
                 println!("{name}   {}", games.iter().filter(|(s, _)| *s == store).count());
             }
             println!("Added by hand:    {}", files.extras().len());
+            match steam_library() {
+                Ok(apps) => println!("Not installed:    {} more in the Steam library, which a linked Ally can install here", apps.len()),
+                Err(e) => println!("Not installed:    {e}"),
+            }
+            for d in steam::find_root().map(|root| downloads::steam(&root)).unwrap_or_default() {
+                let part = if d.total > 0 { format!("{} %", d.done * 100 / d.total) } else { "waiting for Steam".to_string() };
+                println!("Steam is fetching: {} ({part})", d.title);
+            }
             let (addresses, macs) = network();
             println!("Addresses:        {}", if addresses.is_empty() { "none found".to_string() } else { addresses.join(", ") });
             println!("Wake-up adapters: {}", if macs.is_empty() { "none found".to_string() } else { macs.join(", ") });

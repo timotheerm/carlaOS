@@ -145,7 +145,7 @@ pub(crate) fn this_device() -> String {
 }
 
 /// Bring the catalogue in line with what a desktop has installed.
-fn sync_games(library: &Library, host: &HostRow, link: &Link) -> Result<usize, String> {
+pub(crate) fn sync_games(library: &Library, host: &HostRow, link: &Link) -> Result<usize, String> {
     let games = link.games().map_err(|e| e.to_string())?;
     let have_cover: std::collections::HashSet<String> =
         library.store().list()?.into_iter().filter(|g| g.cover.is_some()).map(|g| g.id).collect();
@@ -181,6 +181,8 @@ fn sync_games(library: &Library, host: &HostRow, link: &Link) -> Result<usize, S
         total += found.len();
         library.store().sync(&host.id, source, &found, now())?;
     }
+    // And what the desktop's Steam could install there.
+    crate::installs::sync_host(library, host, link);
     Ok(total)
 }
 

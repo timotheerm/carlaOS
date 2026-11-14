@@ -99,6 +99,31 @@ pub struct RemoteGame {
     pub update: Option<crate::library::Update>,
 }
 
+/// What a desktop's stores could install there: games of the account's
+/// library that are not installed on that desktop.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteLibrary {
+    pub games: Vec<RemoteGame>,
+    /// Room on the disk a new game would go to.
+    pub free_bytes: Option<u64>,
+    /// One line when the library could not be read.
+    pub problem: Option<String>,
+}
+
+/// Asks a desktop to install a game of its library.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Install {
+    pub game_id: String,
+}
+
+/// How a desktop started an install.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Installing {
+    /// The store there is showing a window that someone has to answer at
+    /// the desktop before anything is fetched.
+    pub asked_store: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EnrolStart {
     pub device_name: String,

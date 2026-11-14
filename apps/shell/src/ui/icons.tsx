@@ -86,3 +86,10 @@ const SOURCE: Record<Kind, ReactNode> = {
 
 /** Where a game came from, by its kind. The name is written next to it. */
 export const Source = ({ kind }: { kind: Kind }) => <Icon>{SOURCE[kind]}</Icon>;
+
+/** Fetch a game from its store. */
+export const Download = () => (
+  <Icon>
+    <path d="M12 3v11m0 0l-4.5-4.5M12 14l4.5-4.5M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2" />
+  </Icon>
+);
