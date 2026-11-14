@@ -5,11 +5,13 @@
   --surface: #ffffff;
   --accent: #d98ba0;
   --accent-soft: #f6d5dd;
+  /* Text on a pink fill: dark on the light theme's pastel pink, so it reads. */
+  --on-accent: #2e1a24;
   --text: #3a2a33;
-  --text-quiet: #8c7f86;
+  --text-quiet: #6b5d64;
   --shadow: 0 0.75rem 2rem rgb(58 42 51 / 12%);
-  --ok: #7fa98b;
-  --warn: #d9a441;
+  --ok: #4a7d5a;
+  --warn: #946510;
   --off: #b5acb0;
 
   --radius-card: 1.25rem;
@@ -32,6 +34,7 @@
   --surface: #2c1b2f;
   --accent: #f2a7bb;
   --accent-soft: #5a3550;
+  --on-accent: #2c1b2f;
   --text: #f8ecef;
   --text-quiet: #b9a6b3;
   --shadow: 0 0.75rem 2rem rgb(0 0 0 / 40%);
@@ -72,4 +75,17 @@ body {
     transition-duration: 0ms !important;
     animation-duration: 0ms !important;
   }
+}
+
+/* Read out by screen readers, never seen. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
 }

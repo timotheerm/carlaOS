@@ -266,6 +266,9 @@ export function App() {
       <Ambient games={games} />
       <TopBar section={section} onSelect={go} />
       <main className="main" ref={main} key={pageKey}>
+        {/* Section pages have no visible title: the top bar shows where you are. Screen readers still get one. */}
+        {!top && <h1 className="sr-only">{SECTIONS.find((s) => s.id === section)?.label}</h1>}
+        {top?.kind === "search" && <h1 className="sr-only">Search</h1>}
         {page}
       </main>
       <Hints
