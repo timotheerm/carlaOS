@@ -15,6 +15,7 @@ use carla_core::display::Mode;
 use crate::files::{now, Files, Pending, Playing};
 use crate::screen::{self, Screen};
 use crate::stage::Curtain;
+use crate::virtual_screen;
 
 const POLL: Duration = Duration::from_secs(2);
 
@@ -63,6 +64,8 @@ pub fn run(files: &Files) -> i32 {
     }
     let code = play(files, pending, curtain);
     screen::put_back(&screen::Main, files);
+    // The stream's own screen, if it had one, goes; the desktop's come back.
+    virtual_screen::leave(&virtual_screen::Vdd, files);
     files.stream_over();
     code
 }

@@ -81,6 +81,47 @@ It never stays in front of something the player needs:
 A stream started from Moonlight's own list has no game and no curtain: it
 shows the desktop, at the Ally's size.
 
+## A screen of its own (with the Virtual Display Driver)
+
+The desktop's own monitor can only take the sizes it has: a 16:9 monitor has
+no 1920x1200 for a 16:10 laptop, and anything that opens on a second monitor
+is not covered. With the Virtual Display Driver installed, each stream gets a
+virtual screen made at exactly the size the Ally asked for, and for as long
+as the stream lasts it is the only screen that is on:
+
+- the picture fits the Ally exactly, whatever monitor the desktop has;
+- the game, the mouse and every window are on that screen;
+- the desktop's monitor goes dark meanwhile, so the room does not see the
+  game and the monitor is never left in an odd mode.
+
+How it goes:
+
+1. The Ally asks the desktop to prepare a game and says its size. The
+   companion adds that size to the driver's list if it is missing
+   (`vdd_settings.xml` in the driver's folder), asks the driver for one
+   screen, switches every other screen off for now (nothing is saved to the
+   Windows settings) and sets the size. This has to happen here, because
+   Sunshine looks at the screens as soon as Moonlight connects, before the
+   launcher runs. The Ally waits up to 40 seconds for it.
+2. The stream runs on that screen, with the curtain as before.
+3. When the game closes, the screen is taken away and Windows puts back the
+   layout the user chose. A note on disk (`virtual.json`) says a virtual
+   screen is on, so the companion in the background takes it away when the
+   stream was cut off, or when the Ally asked and no stream came within 90
+   seconds, also after a crash or a restart.
+
+When the driver is missing or anything fails, the stream goes on the old way
+(part 2 above). The driver itself starts with a virtual screen always on; the
+companion switches that one off when it starts, so it never sits beside the
+desktop's screens.
+
+The driver is [Virtual Display Driver](https://github.com/VirtualDrivers/Virtual-Display-Driver)
+(open source, MIT, signed). `carla-companion stream virtual install` installs
+it with Windows' package manager (`winget install --id
+VirtualDrivers.Virtual-Display-Driver`); Windows asks to allow it. Its makers
+warn that a graphics driver update can break it: running the install again
+fixes that.
+
 ## Updates
 
 - **Steam.** Read from each game's manifest: the update flags, the version it
@@ -108,18 +149,25 @@ carla-companion stream screen off         leave the screen alone during streams
 carla-companion stream curtain off        show the desktop as it is
 carla-companion stream test               ten seconds of both, without an Ally (1920x1080 at 60)
 carla-companion stream test 1920x1200 60
-carla-companion stream restore            put the screen back now
+carla-companion stream virtual install    install the driver for a screen of its own
+carla-companion stream virtual off        use the desktop's own screen instead
+carla-companion stream virtual test 1280x800 60
+                                          fifteen seconds of a virtual screen, without an Ally
+carla-companion stream restore            put the screens back now
 ```
 
 What happened during a stream is in `%LOCALAPPDATA%\CarlaOS\companion\launcher.log`.
 
 ## Limits
 
-- **One screen.** The main screen is switched and covered. A game that opens
-  on a second monitor is not in the picture.
-- **A shape the monitor does not have.** A 16:9 monitor has no 16:10 mode, so
-  a 16:10 laptop gets 1920x1080 with thin bars. Only a virtual screen made
-  for the stream fixes that; that needs a display driver and is the next step.
+- **Without the driver: one screen.** The main screen is switched and
+  covered. A game that opens on a second monitor is not in the picture, and
+  a 16:9 monitor has no 16:10 mode, so a 16:10 laptop gets 1920x1080 with
+  thin bars. The virtual screen fixes both.
+- **With the driver: the monitor is dark during a stream.** Nobody at the
+  desktop can watch along.
+- **A stream started from Moonlight's own list** gets no virtual screen: the
+  Ally has not asked beforehand.
 - **Windows notifications** are drawn above everything and can still show.
 - **Games that run with administrator rights** cannot be put in front of the
   curtain by a program without them; a game that fills the screen is not
@@ -133,9 +181,11 @@ What happened during a stream is in `%LOCALAPPDATA%\CarlaOS\companion\launcher.l
   new size mid-start.
 - The curtain window itself: its look, its place above the taskbar, windows
   being put in front of it, the game getting the keyboard.
+- The virtual screen: the driver's pipe, switching every other screen off,
+  Sunshine capturing the new screen, and the layout coming back.
 - Moonlight with a size that is not 1080p or 720p, and in borderless mode.
 - Steam's and Epic's files are read as documented by the community; the
   update tests use files written to match.
 
-`carla-companion stream test` is the quick way to try the first two at the
-desktop.
+`carla-companion stream test` and `carla-companion stream virtual test` are
+the quick ways to try these at the desktop.

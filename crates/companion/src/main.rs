@@ -13,6 +13,7 @@ mod screen;
 mod server;
 mod stage;
 mod sunshine;
+mod virtual_screen;
 
 use std::io::{BufRead, Write};
 use std::net::{Ipv4Addr, UdpSocket};
@@ -55,10 +56,17 @@ const HELP: &str = "CarlaOS desktop companion
                              switch the screen to the Ally's size during a stream
   carla-companion stream curtain on|off
                              cover the desktop with a loading screen until the game shows
+  carla-companion stream virtual on|off
+                             give each stream a virtual screen of its own, at the
+                             Ally's size, with the desktop's monitor dark meanwhile
+  carla-companion stream virtual install
+                             install the Virtual Display Driver that this needs
+  carla-companion stream virtual test [WIDTHxHEIGHT [RATE]]
+                             try it for fifteen seconds, without an Ally
   carla-companion stream test [WIDTHxHEIGHT [RATE]]
                              try both for ten seconds, without an Ally
   carla-companion stream restore
-                             put the screen back now
+                             put the screens back now
   carla-companion sleep-test put this desktop to sleep now, the way the Ally would
   carla-companion status     show whether everything is ready
   carla-companion serve      run quietly (what happens when Windows starts)
@@ -267,6 +275,7 @@ fn build(files: &Files, config: Config) -> Server {
         sleep_soon,
     )
     .with_updater(update_from_afar)
+    .with_virtual_screens(Box::new(virtual_screen::Vdd))
 }
 
 /// A linked Ally asked this desktop to update. Answer as soon as it is known
@@ -317,6 +326,8 @@ fn serve(files: &Files, config: Config) -> Result<(), String> {
     let server = Arc::new(build(files, config));
     // A screen left switched by a stream that was cut off is put back.
     screen::watch(files.clone());
+    // Likewise a virtual screen; and the driver's own one is taken away.
+    virtual_screen::watch(files.clone());
     if let Ok(socket) = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, port)) {
         let hello = server.hello();
         std::thread::spawn(move || discover::answer(&socket, &hello));
@@ -430,6 +441,16 @@ fn stream(files: &Files, args: &[String]) -> Result<i32, String> {
         None => {
             println!("Switch the screen to the Ally's size during a stream: {}", words(config.match_screen));
             println!("Cover the desktop until the game shows:               {}", words(config.curtain));
+            use virtual_screen::Driver;
+            let installed = virtual_screen::Vdd.present();
+            println!(
+                "A virtual screen of its own for each stream:          {}{}",
+                words(config.virtual_screen),
+                if installed { "" } else { " (the driver is not installed: carla-companion stream virtual install)" }
+            );
+            if files.virtual_screen().is_some() {
+                println!("A virtual screen is on for a stream. It is taken away when the stream ends.");
+            }
             match display::current() {
                 Some(now) => println!("The screen now:  {}", now.words()),
                 None => println!("The screen now:  not known"),
@@ -462,6 +483,45 @@ fn stream(files: &Files, args: &[String]) -> Result<i32, String> {
             println!("From the next stream on, the desktop is {}.", if config.curtain { "covered until the game shows" } else { "shown as it is" });
             Ok(0)
         }
+        Some("virtual") => match args.get(1).map(String::as_str) {
+            Some("install") => {
+                println!("Installing the Virtual Display Driver (open source, signed; Windows asks to allow it)...");
+                virtual_screen::install()?;
+                config.virtual_screen = true;
+                files.save_config(&config)?;
+                // The driver starts with a screen of its own switched on: off with it.
+                std::thread::sleep(std::time::Duration::from_secs(3));
+                virtual_screen::settle(&virtual_screen::Vdd, files, files::now());
+                println!("Done. From the next stream on, it has a screen of its own at the Ally's size.");
+                println!("After a graphics driver update, run this again if streams fall back to the desktop's screen.");
+                Ok(0)
+            }
+            Some("test") => {
+                let want = parse_mode(args.get(2), args.get(3))?;
+                println!("For fifteen seconds: a virtual screen as for a {}x{} stream. The monitor goes dark meanwhile.", want.width, want.height);
+                let to = virtual_screen::enter(&virtual_screen::Vdd, files, want)?;
+                std::thread::sleep(std::time::Duration::from_secs(15));
+                virtual_screen::leave(&virtual_screen::Vdd, files);
+                println!("The virtual screen was on at {} and is gone; the desktop's screens are back.", to.words());
+                Ok(0)
+            }
+            _ => {
+                config.virtual_screen = on_off(args.get(1))?;
+                files.save_config(&config)?;
+                if config.virtual_screen {
+                    use virtual_screen::Driver;
+                    if virtual_screen::Vdd.present() {
+                        println!("From the next stream on, it has a virtual screen of its own.");
+                    } else {
+                        println!("On, but the driver is not installed yet: carla-companion stream virtual install");
+                    }
+                } else {
+                    virtual_screen::leave(&virtual_screen::Vdd, files);
+                    println!("From the next stream on, the desktop's own screen is used.");
+                }
+                Ok(0)
+            }
+        },
         Some("test") => {
             let want = parse_mode(args.get(1), args.get(2))?;
             println!("For ten seconds: the screen as for a {}x{} stream, and the loading screen.", want.width, want.height);
@@ -472,6 +532,7 @@ fn stream(files: &Files, args: &[String]) -> Result<i32, String> {
             Ok(0)
         }
         Some("restore") => {
+            virtual_screen::leave(&virtual_screen::Vdd, files);
             display::restore()?;
             let _ = files.set_switched(None);
             println!("The screen is back to what the Windows settings say.");

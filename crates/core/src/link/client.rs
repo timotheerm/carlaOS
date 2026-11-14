@@ -232,8 +232,9 @@ impl Link {
 
     /// The same, saying what picture will be asked for, so the desktop can
     /// switch its screen to match.
+    /// Slow, because the desktop may first make the stream a screen of its own.
     pub fn prepare_for(&self, game_id: &str, screen: Option<crate::display::Mode>) -> Result<Status> {
-        self.post("/v1/stream/prepare", &Prepare { game_id: game_id.to_string(), screen }, QUICK * 2)
+        self.post("/v1/stream/prepare", &Prepare { game_id: game_id.to_string(), screen }, SLOW)
     }
 
     /// Whether the store on the desktop has an update to finish for a game,

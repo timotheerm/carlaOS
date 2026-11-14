@@ -56,6 +56,10 @@ pub struct Config {
     /// Cover the desktop with a loading screen until the game shows.
     #[serde(default = "yes")]
     pub curtain: bool,
+    /// Give each stream a virtual screen of its own, when the Virtual
+    /// Display Driver is installed.
+    #[serde(default = "yes")]
+    pub virtual_screen: bool,
 }
 
 fn yes() -> bool {
@@ -73,6 +77,7 @@ impl Config {
             sunshine_password: String::new(),
             match_screen: true,
             curtain: true,
+            virtual_screen: true,
         }
     }
 
@@ -481,6 +486,23 @@ impl Files {
     /// What the screen was switched to for a stream, while it still is.
     pub fn switched(&self) -> Option<Mode> {
         self.read("screen.json")
+    }
+
+    /// Note when a virtual screen was made for a stream, before it is made;
+    /// `None` once it is gone.
+    pub fn set_virtual_screen(&self, at: Option<i64>) -> Result<(), String> {
+        match at {
+            Some(at) => self.write("virtual.json", &at),
+            None => {
+                self.remove("virtual.json");
+                Ok(())
+            }
+        }
+    }
+
+    /// When the virtual screen that is on now was made for a stream.
+    pub fn virtual_screen(&self) -> Option<i64> {
+        self.read("virtual.json")
     }
 
     /// Ask the launcher to take its loading screen away.

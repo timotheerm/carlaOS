@@ -9,6 +9,7 @@ pub mod admin;
 pub mod boot;
 pub mod debloat;
 pub mod display;
+pub mod layout;
 pub mod library;
 pub mod link;
 pub mod quick;

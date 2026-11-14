@@ -18,6 +18,7 @@ use serde::Serialize;
 
 use crate::files::{Config, Extra, Files, Pending, SaveFolder};
 use crate::sunshine::Streamer;
+use crate::virtual_screen::{self, Driver};
 
 /// How long a scan of the installed games is reused.
 const SCAN_AGE: Duration = Duration::from_secs(60);
@@ -73,6 +74,8 @@ pub struct Server {
     updater: fn() -> Result<Option<String>, String>,
     /// How long an Ally asking for requests is kept waiting when there are none.
     admin_hold: Duration,
+    /// Makes a stream a virtual screen of its own, when there is a driver.
+    screens: Option<Box<dyn Driver + Send + Sync>>,
     replay: Mutex<Replay>,
     exchanges: Mutex<HashMap<String, Waiting>>,
     games: Mutex<Option<(Instant, Vec<Found>)>>,
@@ -146,6 +149,7 @@ impl Server {
             sleep,
             updater: || Err("This companion cannot update itself.".to_string()),
             admin_hold: Duration::from_secs(20),
+            screens: None,
             replay: Mutex::default(),
             exchanges: Mutex::default(),
             games: Mutex::default(),
@@ -156,6 +160,12 @@ impl Server {
     /// Let linked devices ask this companion to update itself.
     pub fn with_updater(mut self, updater: fn() -> Result<Option<String>, String>) -> Self {
         self.updater = updater;
+        self
+    }
+
+    /// Give each stream a virtual screen of its own through this driver.
+    pub fn with_virtual_screens(mut self, driver: Box<dyn Driver + Send + Sync>) -> Self {
+        self.screens = Some(driver);
         self
     }
 
@@ -378,6 +388,12 @@ impl Server {
         }
         self.streamer().and_then(|s| s.ensure_app(&self.launcher)).map_err(|e| (503, e))?;
         self.files.set_pending(&pending).map_err(|e| (500, e))?;
+        // Sunshine looks at the screens as soon as Moonlight connects, before
+        // the launcher runs: the stream's own screen has to be there by then.
+        // Without it the launcher switches the desktop's screen instead.
+        if let (Some(driver), Some(want), true) = (&self.screens, prepare.screen, self.config.virtual_screen) {
+            let _ = virtual_screen::enter(driver.as_ref(), &self.files, want);
+        }
         json(&self.status(now))
     }
 
