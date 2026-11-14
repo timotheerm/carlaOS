@@ -14,6 +14,7 @@ export type Game = {
   kind: Kind;
   hue: number; // placeholder cover colour until real artwork arrives
   places: Place[]; // where it is installed
+  installable: Place[]; // where its store could install it and has not
   playtimeMinutes: number;
   lastPlayed?: string; // ISO date
   added: string; // ISO date
@@ -24,6 +25,23 @@ export type Game = {
   updates?: Waiting[]; // where a store has an update to finish first
   origin?: string; // the console a port first came out on: "Nintendo 64"
   ownArt?: boolean; // the administrator chose its pictures
+};
+
+/// A game its store is fetching, on this Ally or on a desktop.
+export type Download = {
+  gameId: string;
+  place: Place;
+  title: string;
+  phase: "queued" | "downloading" | "paused" | "finishing";
+  done: number; // bytes; both 0 until the store knows how much there is
+  total: number;
+  update: boolean; // an installed game being brought up to date
+};
+
+/// What fills the disks Steam installs to on this Ally.
+export type Storage = {
+  disks: { folder: string; free: number; total: number }[];
+  games: { game_id: string; title: string; bytes: number; last_played: number | null }[];
 };
 
 /// An update a store has to finish in one place before the game starts there.

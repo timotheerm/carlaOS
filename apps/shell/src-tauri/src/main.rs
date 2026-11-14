@@ -8,6 +8,7 @@ mod consoles;
 mod details;
 mod device;
 mod hosts;
+mod installs;
 mod library;
 mod quick;
 mod remote;
@@ -44,6 +45,7 @@ fn main() {
             quick::watch(app.handle().clone(), library.clone());
             app.manage(admin::Admin::new(data_dir.clone()));
             remote::watch(app.handle().clone(), library.clone());
+            installs::watch(app.handle().clone(), library.clone());
             app.manage(library);
             Ok(())
         })
@@ -111,6 +113,11 @@ fn main() {
             hosts::hosts_repair,
             updates::update_check,
             updates::update_install,
+            installs::installs_start,
+            installs::installs_list,
+            installs::installs_room,
+            installs::storage_overview,
+            installs::storage_uninstall,
         ])
         .run(context)
         .expect("failed to start the CarlaOS shell");

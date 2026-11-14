@@ -19,7 +19,10 @@ use std::io::{BufRead, Write};
 use std::net::{Ipv4Addr, UdpSocket};
 use std::sync::Arc;
 
-use carla_core::library::{achievements, scan_store, steam, STORES};
+use std::path::PathBuf;
+
+use carla_core::library::emulation::{self, Console};
+use carla_core::library::{achievements, downloads, owned, scan_store, steam, STORES};
 use carla_core::link::{discover, enrol, wake, SUNSHINE_APP};
 use carla_core::update::{self, Part};
 use carla_core::{AppInfo, Role, VERSION};
@@ -41,6 +44,12 @@ const HELP: &str = "CarlaOS desktop companion
                              around a name or path that has spaces. PROGRAM
                              may be a shortcut: it is followed to its program
   carla-companion drop KEY   take a game added by hand off the list
+  carla-companion consoles   list the consoles set up here (an emulator and a folder of games)
+  carla-companion console add NAME EMULATOR FOLDER [--endings iso,chd] [--options OPTIONS]
+                             let the Ally stream every game file in FOLDER through
+                             EMULATOR; known emulators fill in endings and options
+  carla-companion console drop ID
+                             forget a console; no file is deleted
   carla-companion saves      list the games whose saves are kept in step with the Ally
   carla-companion saves set NAME FOLDER
                              say where a game keeps its saves on this desktop
@@ -260,6 +269,47 @@ fn installed() -> Vec<server::Found> {
     STORES.iter().flat_map(|store| scan_store(store, root.as_deref()).into_iter().map(move |game| (*store, game))).collect()
 }
 
+/// `carla-companion console add|drop ...`
+fn console(files: &Files, args: &[String]) -> Result<i32, String> {
+    let usage = "carla-companion console add \"NAME\" \"C:\\path\\emulator.exe\" \"C:\\path\\games\" [--endings iso,chd] [--options \"...\"]\n  or: carla-companion console drop ID";
+    match args.first().map(String::as_str) {
+        Some("add") => {
+            let (name, emulator, folder) = match &args[1..] {
+                [name, emulator, folder, ..] => (name, PathBuf::from(emulator), PathBuf::from(folder)),
+                _ => return Err(usage.to_string()),
+            };
+            let known = emulation::suggest(&emulator);
+            let mut endings: Vec<String> = known.endings.iter().map(|e| e.to_string()).collect();
+            let mut options = known.options.to_string();
+            let mut rest = args[4..].iter();
+            while let Some(flag) = rest.next() {
+                let value = rest.next().ok_or(usage)?;
+                match flag.as_str() {
+                    "--endings" => endings = value.split([',', ' ']).map(str::to_string).collect(),
+                    "--options" => options = value.clone(),
+                    _ => return Err(usage.to_string()),
+                }
+            }
+            let console = files.add_console(Console { id: String::new(), name: name.clone(), emulator, options, folder, endings })?;
+            let games = emulation::scan(&console).len();
+            println!("{} is set up with {games} games (id {}). They appear on the Ally within five minutes, or at once after \"Look for games again\" there.", console.name, console.id);
+            println!("Options: {}\nEndings: {}", console.options, console.endings.join(", "));
+            Ok(0)
+        }
+        Some("drop") => {
+            let id = args.get(1).ok_or(usage)?;
+            match files.drop_console(id)? {
+                Some(name) => {
+                    println!("{name} was forgotten. No file was deleted.");
+                    Ok(0)
+                }
+                None => Err("No console has that id (see carla-companion consoles).".to_string()),
+            }
+        }
+        _ => Err(usage.to_string()),
+    }
+}
+
 fn build(files: &Files, config: Config) -> Server {
     let streamer = streamer(&config).ok().map(|s| Box::new(s) as Box<dyn Streamer>);
     let scan = Box::new(installed);
@@ -276,6 +326,21 @@ fn build(files: &Files, config: Config) -> Server {
     )
     .with_updater(update_from_afar)
     .with_virtual_screens(Box::new(virtual_screen::Vdd))
+    .with_installs(server::Installs {
+        offered: steam_library,
+        start: |app| steam_root().and_then(|root| downloads::start_here(&root, app)),
+        downloads: || steam::find_root().map(|root| downloads::steam(&root)).unwrap_or_default(),
+        free: || steam::find_root().and_then(|root| downloads::roomiest(&root).1),
+    })
+}
+
+fn steam_root() -> Result<std::path::PathBuf, String> {
+    steam::find_root().ok_or_else(|| "Steam is not installed on this desktop.".to_string())
+}
+
+/// The games of the Steam library that are not installed on this desktop.
+fn steam_library() -> Result<Vec<owned::App>, String> {
+    owned::not_installed(&steam_root()?)
 }
 
 /// A linked Ally asked this desktop to update. Answer as soon as it is known
@@ -600,6 +665,14 @@ fn run(args: &[String]) -> Result<i32, String> {
                 println!("{name}   {}", games.iter().filter(|(s, _)| *s == store).count());
             }
             println!("Added by hand:    {}", files.extras().len());
+            match steam_library() {
+                Ok(apps) => println!("Not installed:    {} more in the Steam library, which a linked Ally can install here", apps.len()),
+                Err(e) => println!("Not installed:    {e}"),
+            }
+            for d in steam::find_root().map(|root| downloads::steam(&root)).unwrap_or_default() {
+                let part = if d.total > 0 { format!("{} %", d.done * 100 / d.total) } else { "waiting for Steam".to_string() };
+                println!("Steam is fetching: {} ({part})", d.title);
+            }
             let (addresses, macs) = network();
             println!("Addresses:        {}", if addresses.is_empty() { "none found".to_string() } else { addresses.join(", ") });
             println!("Wake-up adapters: {}", if macs.is_empty() { "none found".to_string() } else { macs.join(", ") });
@@ -647,6 +720,19 @@ fn run(args: &[String]) -> Result<i32, String> {
                 None => Err("No game added by hand has that key.".to_string()),
             }
         }
+        Some("consoles") => {
+            let consoles = files.consoles();
+            if consoles.is_empty() {
+                println!("No console is set up here. See carla-companion console add.");
+            }
+            for c in consoles {
+                let games = emulation::scan(&c).len();
+                let gone = if c.emulator.is_file() { String::new() } else { "  (emulator not found, hidden from the Ally)".to_string() };
+                println!("{}  {}  {} games{gone}\n    {}\n    {}  {}", c.id, c.name, games, c.emulator.display(), c.folder.display(), c.endings.join(", "));
+            }
+            Ok(0)
+        }
+        Some("console") => console(&files, &args[1..]),
         Some("saves") => saves(&files, &args[1..]),
         Some("stream") => stream(&files, &args[1..]),
         Some("ally") => {
