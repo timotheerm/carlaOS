@@ -11,6 +11,7 @@
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use std::time::{Duration, Instant};
 
+use carla_core::library::cloud::CLOUD;
 use carla_core::library::LOCAL;
 use carla_core::quick::{Chord, Presses};
 use serde::Serialize;
@@ -18,6 +19,8 @@ use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder
 
 use crate::device::{self, Battery, Sound};
 use crate::library::{locked, Library};
+use crate::power::{self, PowerView};
+use carla_core::power::{Power, Profile, Screen};
 
 const WINDOW: &str = "quick";
 /// Sent to the menu for each step the controller takes through it.
@@ -39,14 +42,22 @@ pub struct QuickState {
     sound: Option<Sound>,
     brightness: Option<u8>,
     battery: Option<Battery>,
+    /// The running game's power level and screen speed.
+    power: Option<PowerView>,
 }
 
 fn state(library: &Library) -> QuickState {
-    let (title, stream, since) = match locked(&library.0.active).as_ref() {
-        Some(active) => (Some(active.view.title.clone()), active.place != LOCAL, Some(active.since)),
-        None => (None, false, None),
+    let (title, stream, since, game) = match locked(&library.0.active).as_ref() {
+        Some(active) => (
+            Some(active.view.title.clone()),
+            active.place != LOCAL && active.place != CLOUD,
+            Some(active.since),
+            Some((active.view.game_id.clone(), active.place.clone())),
+        ),
+        None => (None, false, None, None),
     };
-    QuickState { title, stream, since, sound: device::sound(), brightness: device::brightness(), battery: device::battery() }
+    let power = game.and_then(|(id, place)| power::view(library, &id, &place).ok());
+    QuickState { title, stream, since, sound: device::sound(), brightness: device::brightness(), battery: device::battery(), power }
 }
 
 fn window_handle(window: &tauri::WebviewWindow) -> isize {
@@ -169,6 +180,16 @@ pub fn quick_set_brightness(library: State<'_, Library>, level: u8) -> Result<Qu
     Ok(state(&library))
 }
 
+/// Change the running game's power level or screen speed. It is remembered
+/// for the next time.
+#[tauri::command(async)]
+pub fn quick_set_power(library: State<'_, Library>, power: Power, screen: Screen) -> Result<QuickState, String> {
+    let game = locked(&library.0.active).as_ref().map(|a| (a.view.game_id.clone(), a.place.clone()));
+    let (id, place) = game.ok_or("No game is running.")?;
+    power::set(&library, &id, &place, Profile { power, screen })?;
+    Ok(state(&library))
+}
+
 #[tauri::command(async)]
 pub fn quick_close(app: AppHandle) {
     close(&app);
@@ -178,7 +199,7 @@ pub fn quick_close(app: AppHandle) {
 /// something behind it needs an answer.
 #[tauri::command(async)]
 pub fn quick_show_desktop(app: AppHandle, library: State<'_, Library>) -> Result<(), String> {
-    let place = locked(&library.0.active).as_ref().map(|a| a.place.clone()).filter(|p| p != LOCAL).ok_or("No game is being streamed.")?;
+    let place = locked(&library.0.active).as_ref().map(|a| a.place.clone()).filter(|p| p != LOCAL && p != CLOUD).ok_or("No game is being streamed.")?;
     crate::hosts::reveal(&library, &place)?;
     close(&app);
     Ok(())
@@ -189,7 +210,7 @@ pub fn quick_show_desktop(app: AppHandle, library: State<'_, Library>) -> Result
 #[tauri::command(async)]
 pub fn quick_end_game(app: AppHandle, library: State<'_, Library>) {
     let place = locked(&library.0.active).as_ref().map(|a| a.place.clone());
-    if let Some(place) = place.filter(|p| p != LOCAL) {
+    if let Some(place) = place.filter(|p| p != LOCAL && p != CLOUD) {
         crate::hosts::end_game(&library, &place);
     }
     if let Some(active) = locked(&library.0.active).as_mut() {

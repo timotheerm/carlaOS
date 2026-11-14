@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import type { Download, Game, Host, HostState, Waiting } from "../data/types";
-import { Heart, OnDevice, Source, Streamed } from "./icons";
+import { CloudIcon, Heart, OnDevice, Source, Streamed } from "./icons";
 import { banner } from "./platform";
 
 export function playtime(minutes: number): string {
@@ -45,6 +45,7 @@ export function size(bytes: number): string {
 
 export function placeLabel(place: string, hosts: Host[]): string {
   if (place === "local") return "On this Ally";
+  if (place === "cloud") return "In the cloud";
   return hosts.find((h) => h.id === place)?.name ?? place;
 }
 
@@ -113,7 +114,8 @@ export function Cover({ game, wide = false, band = true }: { game: Game; wide?: 
 /** Where a game is from, and whether it plays offline or streams. */
 export function Badges({ game, hosts }: { game: Game; hosts?: Host[] }) {
   const local = game.places.includes("local");
-  const remote = game.places.filter((p) => p !== "local");
+  const cloud = game.places.includes("cloud");
+  const remote = game.places.filter((p) => p !== "local" && p !== "cloud");
   const from = remote.length === 1 && hosts ? placeLabel(remote[0], hosts) : "a desktop";
   return (
     <span className="badges">
@@ -130,6 +132,12 @@ export function Badges({ game, hosts }: { game: Game; hosts?: Host[] }) {
         <span className="badge badge--offline" title="Installed on this Ally. Plays without a desktop.">
           <OnDevice />
           Offline
+        </span>
+      )}
+      {cloud && (
+        <span className="badge badge--cloud" title={`Plays on ${game.platform}. Needs the internet.`}>
+          <CloudIcon />
+          Cloud
         </span>
       )}
       {remote.length > 0 && (
@@ -159,7 +167,8 @@ export function updateLine(u: Waiting, hosts: Host[]): string {
 /** The same in words, for screen readers. */
 export function availability(game: Game): string {
   const local = game.places.includes("local");
-  const remote = game.places.some((p) => p !== "local");
+  const remote = game.places.some((p) => p !== "local" && p !== "cloud");
+  if (game.places.includes("cloud") && !local && !remote) return "plays in the cloud";
   if (!local && !remote) return "not installed yet";
   return local && remote ? "plays offline, can also stream" : local ? "plays offline" : "streams from a desktop";
 }

@@ -4,12 +4,14 @@
 mod admin;
 mod art;
 mod boot;
+mod cloud;
 mod consoles;
 mod details;
 mod device;
 mod hosts;
 mod installs;
 mod library;
+mod power;
 mod quick;
 mod remote;
 mod savesync;
@@ -47,6 +49,8 @@ fn main() {
             remote::watch(app.handle().clone(), library.clone());
             installs::watch(app.handle().clone(), library.clone());
             app.manage(library);
+            // CarlaOS starts between games.
+            std::thread::spawn(power::rest);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -97,6 +101,12 @@ fn main() {
             quick::quick_set_brightness,
             quick::quick_close,
             quick::quick_end_game,
+            quick::quick_set_power,
+            power::power_get,
+            power::power_set,
+            cloud::cloud_inspect,
+            cloud::cloud_add,
+            cloud::cloud_open,
             quick::quick_show_desktop,
             details::library_updates,
             art::art_find,
@@ -117,6 +127,11 @@ fn main() {
             installs::storage_overview,
             installs::storage_uninstall,
         ])
-        .run(context)
-        .expect("failed to start the CarlaOS shell");
+        .build(context)
+        .expect("failed to start the CarlaOS shell")
+        .run(|_, event| {
+            if let tauri::RunEvent::Exit = event {
+                power::leave();
+            }
+        });
 }

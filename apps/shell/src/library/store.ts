@@ -6,7 +6,7 @@ import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { games as sampleGames, hosts as sampleHosts } from "../data/sample";
 import { sampleArt, sampleDetails, sampleMatches } from "../data/sample";
-import type { ArtChoice, ArtSearch, Console, ConsoleHint, Details, Download, Inspected, Storage, FoundHost, Game, Host, HostPicture, HostState, Kind, Match, NewGame, SaveSync, Saves, Session, Waiting } from "../data/types";
+import type { ArtChoice, ArtSearch, Console, ConsoleHint, Details, Download, Inspected, Storage, FoundHost, Game, Host, HostPicture, HostState, Kind, Match, NewGame, SaveSync, Saves, Session, Waiting, Power, PowerView } from "../data/types";
 import { inTauri } from "../native";
 import { when } from "../ui/parts";
 
@@ -34,7 +34,7 @@ type GameView = {
 };
 type DownloadView = Omit<Download, "gameId"> & { game_id: string };
 const fromDownload = ({ game_id, ...d }: DownloadView): Download => ({ ...d, gameId: game_id });
-type SessionView = { game_id: string; title: string; phase: Session["phase"]; stream: boolean; note?: string | null };
+type SessionView = { game_id: string; title: string; phase: Session["phase"]; stream: boolean; cloud: boolean; note?: string | null };
 // What the Rust side sends for one linked desktop.
 type HostView = {
   id: string;
@@ -117,7 +117,7 @@ const fromView = (g: GameView): Game => ({
 });
 
 const fromSession = (s: SessionView | null): Session | null =>
-  s && { gameId: s.game_id, title: s.title, phase: s.phase, stream: s.stream, note: s.note ?? null };
+  s && { gameId: s.game_id, title: s.title, phase: s.phase, stream: s.stream, cloud: s.cloud, note: s.note ?? null };
 
 const awake = (state: HostState) => state === "ready" || state === "busy" || state === "not_ready";
 
@@ -182,6 +182,8 @@ async function refreshHosts() {
 }
 
 const previewPictures = new Map<string, string>();
+const previewPower = new Map<string, PowerView>();
+const powerKey = (gameId: string, place: string) => `${place === "local" || place === "cloud" ? place : "stream"}:${gameId}`;
 function previewPicture(id: string): HostPicture {
   return {
     setting: previewPictures.get(id) ?? "auto",
@@ -295,6 +297,21 @@ export const library = {
     else previewAdmin.delete(id);
   },
 
+  /** How hard the Ally works for a game played there, and its screen speed. */
+  async power(gameId: string, place: string): Promise<PowerView> {
+    if (inTauri) return invoke<PowerView>("power_get", { gameId, place });
+    const local = place === "local";
+    return previewPower.get(powerKey(gameId, place)) ?? { power: local ? "balanced" : "quiet", screen: "smooth", chosen: false, setsScreen: local || place === "cloud" };
+  },
+
+  /** Choose them. Anyone may. Takes effect at once if the game is running. */
+  async setPower(gameId: string, place: string, power: Power, screen: PowerView["screen"]): Promise<PowerView> {
+    if (inTauri) return invoke<PowerView>("power_set", { gameId, place, power, screen });
+    const view = { power, screen, chosen: true, setsScreen: place === "local" || place === "cloud" };
+    previewPower.set(powerKey(gameId, place), view);
+    return view;
+  },
+
   /** A desktop's picture setting and what its last stream got. */
   async hostPicture(id: string): Promise<HostPicture> {
     if (inTauri) return invoke<HostPicture>("hosts_picture", { id });
@@ -406,14 +423,58 @@ export const library = {
     const host = state.hosts.find((h) => h.id === place);
     const game = state.games.find((g) => g.id === gameId);
     if (!game) return;
+    if (place === "cloud") {
+      set({ session: { gameId, title: game.title, phase: "starting", stream: false, cloud: true } });
+      await new Promise((r) => setTimeout(r, 1500));
+      if (state.session !== null) set({ session: { gameId, title: game.title, phase: "running", stream: false, cloud: true } });
+      return;
+    }
     if (place !== "local" && host?.state !== "ready" && host?.state !== "busy") {
       if (!host?.canWake) throw `${host?.name ?? "That desktop"} did not answer. It may be off or asleep.`;
-      set({ session: { gameId, title: game.title, phase: "waking", stream: true } });
+      set({ session: { gameId, title: game.title, phase: "waking", stream: true, cloud: false } });
       await new Promise((r) => setTimeout(r, 1500));
       if (state.session === null) return; // the player gave up
       set({ hosts: state.hosts.map((h) => (h.id === place ? { ...h, state: "ready", route: "local", lastSeen: "now" } : h)) });
     }
-    set({ session: { gameId, title: game.title, phase: "running", stream: place !== "local" } });
+    set({ session: { gameId, title: game.title, phase: "running", stream: place !== "local", cloud: false } });
+  },
+
+  /** Open a cloud gaming service itself: to browse it, or to sign in once. */
+  async openCloud(service: string, name: string) {
+    if (inTauri) {
+      set({ session: fromSession(await invoke<SessionView>("cloud_open", { service })) });
+      return;
+    }
+    set({ session: { gameId: `cloudservice:${service}`, title: name, phase: "running", stream: false, cloud: true } });
+  },
+
+  /** Which service a link is for, and the name it suggests. Administrator only. */
+  async inspectCloud(link: string): Promise<{ service: string; title: string }> {
+    if (inTauri) return invoke<{ service: string; title: string }>("cloud_inspect", { link });
+    const known: [RegExp, string][] = [
+      [/^https:\/\/play\.geforcenow\.com\//, "GeForce NOW"],
+      [/^https:\/\/www\.xbox\.com\/([a-z]{2}(-[a-z]{2})?\/)?play/i, "Xbox Cloud Gaming"],
+      [/^https:\/\/cloud\.boosteroid\.com\//, "Boosteroid"],
+      [/^https:\/\/luna\.amazon\.com\//, "Amazon Luna"],
+    ];
+    const found = known.find(([pattern]) => pattern.test(link.trim()));
+    if (!found) throw "That is not a link to a game on GeForce NOW, Xbox Cloud Gaming, Boosteroid or Luna. Copy the game's link from its page there.";
+    const slug = /\/(?:games|launch)\/([a-z0-9-]+)/i.exec(link)?.[1] ?? "";
+    return { service: found[1], title: slug.split("-").filter(Boolean).map((w) => w[0].toUpperCase() + w.slice(1)).join(" ") };
+  },
+
+  /** Add a cloud game. Resolves with its id. Administrator only. */
+  async addCloud(link: string, title: string): Promise<string> {
+    if (inTauri) {
+      const id = await invoke<string>("cloud_add", { link, title });
+      await reload();
+      return id;
+    }
+    const { service } = await library.inspectCloud(link);
+    const id = `cloud:${link.length}${title.length}`;
+    const added: Game = { id, title, description: "", platform: service, kind: "game", hue: hue(title), places: ["cloud"], installable: [], playtimeMinutes: 0, added: new Date().toISOString(), favourite: false, manual: true };
+    set({ games: [...state.games.filter((g) => g.id !== id), added] });
+    return id;
   },
 
   /** The player says the game is over. */

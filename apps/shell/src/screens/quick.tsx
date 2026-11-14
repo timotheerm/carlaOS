@@ -9,6 +9,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { message } from "../library/store";
 import { inTauri } from "../native";
+import { POWERS, POWER_TEXT, type Power, type PowerView } from "../data/types";
 
 type Sound = { level: number; muted: boolean };
 type State = {
@@ -18,9 +19,10 @@ type State = {
   sound: Sound | null;
   brightness: number | null;
   battery: { percent: number; charging: boolean } | null;
+  power: PowerView | null;
 };
 type Press = "up" | "down" | "left" | "right" | "select" | "back";
-type Row = "resume" | "sound" | "brightness" | "desktop" | "end";
+type Row = "resume" | "power" | "screen" | "sound" | "brightness" | "desktop" | "end";
 
 const SAMPLE: State = {
   title: "Neon Harbor",
@@ -29,6 +31,7 @@ const SAMPLE: State = {
   sound: { level: 60, muted: false },
   brightness: 70,
   battery: { percent: 64, charging: false },
+  power: { power: "balanced", screen: "smooth", chosen: false, setsScreen: true },
 };
 
 const KEYS: Record<string, Press> = { ArrowUp: "up", ArrowDown: "down", ArrowLeft: "left", ArrowRight: "right", Enter: "select", Escape: "back", Backspace: "back" };
@@ -52,7 +55,7 @@ function Level({ value, off = false }: { value: number; off?: boolean }) {
 }
 
 export function QuickMenu() {
-  const [state, setState] = useState<State>(inTauri ? { title: null, stream: false, since: null, sound: null, brightness: null, battery: null } : SAMPLE);
+  const [state, setState] = useState<State>(inTauri ? { title: null, stream: false, since: null, sound: null, brightness: null, battery: null, power: null } : SAMPLE);
   const [row, setRow] = useState<Row>("resume");
   const [confirming, setConfirming] = useState(false);
   const [sure, setSure] = useState(false); // which of the two answers is chosen
@@ -87,7 +90,11 @@ export function QuickMenu() {
       }
       return;
     }
-    const rows: Row[] = ["resume", ...(state.sound ? ["sound" as const] : []), ...(state.brightness !== null ? ["brightness" as const] : []), ...(state.stream ? ["desktop" as const] : []), "end"];
+    const rows: Row[] = [
+      "resume",
+      ...(state.power ? ["power" as const] : []),
+      ...(state.power?.setsScreen ? ["screen" as const] : []),
+      ...(state.sound ? ["sound" as const] : []), ...(state.brightness !== null ? ["brightness" as const] : []), ...(state.stream ? ["desktop" as const] : []), "end"];
     const at = Math.max(0, rows.indexOf(row));
     if (press === "up") setRow(rows[Math.max(0, at - 1)]);
     else if (press === "down") setRow(rows[Math.min(rows.length - 1, at + 1)]);
@@ -104,6 +111,14 @@ export function QuickMenu() {
       // Changing the level also ends a mute, as on any remote control.
       const next = press === "select" ? { ...sound, muted: !sound.muted } : { level: step(sound.level, press === "right"), muted: false };
       apply(() => invoke<State>("quick_set_sound", next), { ...state, sound: next });
+    } else if (row === "power" && state.power && press !== "select") {
+      const at = POWERS.indexOf(state.power.power);
+      const power: Power = POWERS[Math.max(0, Math.min(POWERS.length - 1, at + (press === "right" ? 1 : -1)))];
+      const next = { ...state.power, power, chosen: true };
+      apply(() => invoke<State>("quick_set_power", { power, screen: next.screen }), { ...state, power: next });
+    } else if (row === "screen" && state.power) {
+      const next = { ...state.power, screen: state.power.screen === "smooth" ? ("saver" as const) : ("smooth" as const), chosen: true };
+      apply(() => invoke<State>("quick_set_power", { power: next.power, screen: next.screen }), { ...state, power: next });
     } else if (row === "brightness" && state.brightness !== null && press !== "select") {
       const level = Math.max(5, step(state.brightness, press === "right"));
       apply(() => invoke<State>("quick_set_brightness", { level }), { ...state, brightness: level });
@@ -173,6 +188,29 @@ export function QuickMenu() {
         <div className={cls("resume")} onClick={close}>
           <span className="quick__name">Back to the game</span>
         </div>
+        {state.power && (
+          <div className={cls("power")}>
+            <span className="quick__name">Power</span>
+            <span className="quick__choices">
+              {POWERS.map((p) => (
+                <span key={p} className={p === state.power?.power ? "quick__choice quick__choice--on" : "quick__choice"}>
+                  {POWER_TEXT[p].name}
+                </span>
+              ))}
+            </span>
+            <span className="quick__value quick__value--wide">{POWER_TEXT[state.power.power].short}</span>
+          </div>
+        )}
+        {state.power?.setsScreen && (
+          <div className={cls("screen")}>
+            <span className="quick__name">Screen</span>
+            <span className="quick__choices">
+              <span className={state.power.screen === "smooth" ? "quick__choice quick__choice--on" : "quick__choice"}>Smooth</span>
+              <span className={state.power.screen === "saver" ? "quick__choice quick__choice--on" : "quick__choice"}>60 Hz</span>
+            </span>
+            <span className="quick__value quick__value--wide">{state.power.screen === "smooth" ? "Fastest" : "Saves battery"}</span>
+          </div>
+        )}
         {sound && (
           <div className={cls("sound")}>
             <span className="quick__name">Sound</span>
@@ -212,9 +250,9 @@ export function QuickMenu() {
             <span className="quick__note">{note}</span>
           ) : (
             <>
-              <span><kbd>A</kbd> {row === "sound" && !confirming ? "Mute" : "Select"}</span>
+              <span><kbd>A</kbd> {row === "sound" && !confirming ? "Mute" : row === "screen" && !confirming ? "Switch" : "Select"}</span>
               <span><kbd>B</kbd> Back</span>
-              {(row === "sound" || row === "brightness" || confirming) && <span><kbd>◀ ▶</kbd> Change</span>}
+              {(row === "sound" || row === "brightness" || row === "power" || row === "screen" || confirming) && <span><kbd>◀ ▶</kbd> Change</span>}
               <span className="quick__how">Hold View + Menu to close</span>
             </>
           )}

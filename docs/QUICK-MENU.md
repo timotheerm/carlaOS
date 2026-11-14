@@ -10,6 +10,8 @@ way, or with **B**.
 | Row | What it does |
 | --- | --- |
 | Back to the game | Closes the menu. |
+| Power | Left and right choose Quiet, Balanced or Turbo, at once and for next time. See [POWER.md](POWER.md). |
+| Screen | A or left and right switch between Smooth and 60 Hz. Not shown during a stream. |
 | Sound | Left and right change the volume in steps of ten. A mutes. |
 | Brightness | Left and right change the built-in screen in steps of ten, never below 5%. |
 | End game | Asks once, then closes the game. For a stream, the game is closed on the desktop too and the stream ends. |

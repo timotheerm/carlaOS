@@ -19,10 +19,14 @@ export function Playing({ session, game, from, onEnd }: { session: Session; game
         {session.phase === "waking"
           ? "It was asleep. This can take up to a minute."
           : session.phase === "starting"
-          ? session.stream
+          ? session.cloud
+            ? "Opening it. The first time, sign in to the service."
+            : session.stream
             ? `Connecting to ${from ?? "the desktop"}.`
             : "This can take a moment the first time."
-          : session.stream
+          : session.cloud
+            ? "CarlaOS comes back by itself when it is closed."
+            : session.stream
             ? "CarlaOS comes back by itself when the stream ends."
             : "CarlaOS comes back by itself when you quit the game."}
       </p>
