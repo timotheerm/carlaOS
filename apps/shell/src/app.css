@@ -1566,6 +1566,27 @@ button {
   color: var(--text);
 }
 
+/* A store has an update to finish before the game starts. */
+.badge--update {
+  background: #fff1d6;
+  color: #8a5a00;
+}
+
+.detail__update {
+  margin: 0;
+  padding: 0.6rem 1rem;
+  border-radius: var(--radius-card);
+  background: color-mix(in srgb, var(--warn) 18%, var(--surface));
+  color: var(--text);
+  font-size: 1.1rem;
+  font-weight: 700;
+}
+
+.playing__note {
+  font-weight: 800;
+  color: var(--accent);
+}
+
 /* ---------- the game in focus colours the whole screen ---------- */
 .ambient {
   position: absolute;

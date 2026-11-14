@@ -21,11 +21,20 @@ export type Game = {
   cover?: string; // picture URL, when there is real artwork
   hero?: string;
   manual?: boolean; // added by hand, so it can be removed
+  updates?: Waiting[]; // where a store has an update to finish first
   origin?: string; // the console a port first came out on: "Nintendo 64"
   ownArt?: boolean; // the administrator chose its pictures
 };
 
-export type Session = { gameId: string; title: string; phase: "waking" | "starting" | "running"; stream: boolean };
+/// An update a store has to finish in one place before the game starts there.
+export type Waiting = {
+  place: Place;
+  state: "needed" | "running" | "paused";
+  bytes: number; // to download in all; 0 when the store has not said
+  done: number;
+};
+
+export type Session = { gameId: string; title: string; phase: "waking" | "starting" | "running"; stream: boolean; note?: string | null };
 
 export type NewGame = { title: string; exe: string; args: string; kind: Kind; cover: string | null; description: string; origin: string };
 

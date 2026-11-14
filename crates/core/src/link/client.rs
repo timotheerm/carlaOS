@@ -227,7 +227,27 @@ impl Link {
 
     /// Tell the desktop which game the stream that is about to start is for.
     pub fn prepare(&self, game_id: &str) -> Result<Status> {
-        self.post("/v1/stream/prepare", &Prepare { game_id: game_id.to_string() }, QUICK * 2)
+        self.prepare_for(game_id, None)
+    }
+
+    /// The same, saying what picture will be asked for, so the desktop can
+    /// switch its screen to match.
+    /// Slow, because the desktop may first make the stream a screen of its own.
+    pub fn prepare_for(&self, game_id: &str, screen: Option<crate::display::Mode>) -> Result<Status> {
+        self.post("/v1/stream/prepare", &Prepare { game_id: game_id.to_string(), screen }, SLOW)
+    }
+
+    /// Whether the store on the desktop has an update to finish for a game,
+    /// read there just now. A desktop from before this existed does not know
+    /// the question, which counts as "nothing known".
+    pub fn pending_update(&self, game_id: &str) -> Result<Option<crate::library::Update>> {
+        parse(&self.ask("GET", &format!("/v1/games/update/{game_id}"), b"", QUICK)?)
+    }
+
+    /// Take away the loading screen that covers the desktop during a
+    /// stream, so the player can see and answer what is behind it.
+    pub fn reveal(&self) -> Result<()> {
+        self.post::<serde_json::Value>("/v1/stream/reveal", &serde_json::json!({}), QUICK).map(|_| ())
     }
 
     /// Hand the desktop the PIN Moonlight is pairing with. Waits while the

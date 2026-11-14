@@ -94,6 +94,9 @@ pub struct RemoteGame {
     pub platform: String,
     #[serde(default)]
     pub emulated: bool,
+    /// The store there has an update to finish before the game starts.
+    #[serde(default)]
+    pub update: Option<crate::library::Update>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -127,6 +130,10 @@ pub struct EnrolDone {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Prepare {
     pub game_id: String,
+    /// The picture the Ally is about to ask for: its size, and pictures a
+    /// second in `hz`. The desktop switches its screen to match.
+    #[serde(default)]
+    pub screen: Option<crate::display::Mode>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
