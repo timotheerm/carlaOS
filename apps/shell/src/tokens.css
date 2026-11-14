@@ -70,6 +70,13 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+/* A game is in front: nothing moves behind it, so nothing is drawn for nobody. */
+:root[data-away] *,
+:root[data-away] *::before,
+:root[data-away] *::after {
+  animation-play-state: paused !important;
+}
+
 @media (prefers-reduced-motion: reduce) {
   * {
     transition-duration: 0ms !important;

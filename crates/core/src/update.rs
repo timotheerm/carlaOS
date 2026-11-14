@@ -78,7 +78,9 @@ pub fn parse(version: &str) -> Option<(u64, u64, u64)> {
 
 /// Files are only ever fetched from this repository's releases.
 fn ours(url: &str) -> bool {
-    url.starts_with(&format!("https://github.com/{REPOSITORY}/releases/download/"))
+    // GitHub does not mind the case of the owner and repository names.
+    let prefix = format!("https://github.com/{REPOSITORY}/releases/download/");
+    url.get(..prefix.len()).is_some_and(|start| start.eq_ignore_ascii_case(&prefix)) && !url[prefix.len()..].contains("..")
 }
 
 /// The newest release above `current` in GitHub's list of releases, if any.
@@ -331,6 +333,10 @@ mod tests {
         };
         let refused = download(&update, &std::env::temp_dir(), &|_| {}).unwrap_err();
         assert!(refused.contains("does not come from"), "{refused}");
+        // The repository's name in any case is still ours; a step out of it is not.
+        assert!(ours("https://github.com/timotheerm/carlaos/releases/download/v0.9.0/CarlaOS-Ally-0.9.0-setup.exe"));
+        assert!(!ours("https://github.com/timotheerm/carlaOS/releases/download/../../other/x.exe"));
+        assert!(!ours("https://github.com/timotheerm/carlaOS-fork/releases/download/v1/x.exe"));
     }
 
     #[test]
