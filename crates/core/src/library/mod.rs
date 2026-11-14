@@ -5,7 +5,9 @@
 //! be started from (this machine now; a desktop to stream from later). A card
 //! in the interface therefore only ever offers places where the game really is.
 
+pub mod downloads;
 pub mod launch;
+pub mod owned;
 pub mod emulation;
 pub mod epic;
 pub mod gog;
@@ -129,6 +131,15 @@ pub struct Scanned {
     pub update: Option<Update>,
 }
 
+/// A game its store could install on one machine: in the account's library
+/// there, and not installed.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Offered {
+    pub source_id: String,
+    pub title: String,
+    pub cover: Option<PathBuf>,
+}
+
 /// The stores CarlaOS looks through by itself.
 pub const STORES: [&str; 3] = ["steam", "epic", "gog"];
 
@@ -189,6 +200,8 @@ pub struct GameView {
     pub kind: Kind,
     /// Places it can be started from, [`LOCAL`] first.
     pub places: Vec<String>,
+    /// Places where its store could install it and has not, [`LOCAL`] first.
+    pub installable: Vec<String>,
     /// The places where a store has an update to finish first.
     pub updates: Vec<Waiting>,
     pub playtime_minutes: u64,

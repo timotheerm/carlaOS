@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use rusqlite::{params, Connection, OptionalExtension};
 
 use super::emulation::Console;
-use super::{GameView, HostRow, Install, Kind, ManualGame, Scanned, Streamed, Synced, Update, Waiting, LOCAL};
+use super::{GameView, HostRow, Install, Kind, ManualGame, Offered, Scanned, Streamed, Synced, Update, Waiting, LOCAL};
 use crate::link::quality::Setting;
 
 type Result<T> = std::result::Result<T, String>;
@@ -37,6 +37,14 @@ CREATE TABLE IF NOT EXISTS installs (
     args         TEXT NOT NULL DEFAULT '',
     UNIQUE (place, source, source_id)
 );
+CREATE TABLE IF NOT EXISTS available (
+    place     TEXT NOT NULL,
+    source    TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    game_id   TEXT NOT NULL,
+    PRIMARY KEY (place, source, source_id)
+);
+CREATE INDEX IF NOT EXISTS available_game ON available (game_id);
 CREATE TABLE IF NOT EXISTS play_sessions (
     id      INTEGER PRIMARY KEY,
     game_id TEXT NOT NULL,
@@ -154,7 +162,8 @@ impl Store {
             let id = format!("{source}:{}", s.source_id);
             tx.execute(
                 "INSERT INTO games (id, title, platform, added, cover, hero, kind) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-                 ON CONFLICT (id) DO UPDATE SET title = ?2, platform = ?3, cover = COALESCE(?5, cover), hero = COALESCE(?6, hero)",
+                 ON CONFLICT (id) DO UPDATE SET title = ?2, platform = ?3, cover = COALESCE(?5, cover), hero = COALESCE(?6, hero),
+                    added = CASE WHEN added = 0 THEN ?4 ELSE added END",
                 params![
                     id,
                     s.title,
@@ -173,6 +182,56 @@ impl Store {
             .map_err(err)?;
         }
         tx.commit().map_err(err)
+    }
+
+    /// Make the games a store could install on one machine match what that
+    /// machine said. A game known only this way counts as added on the day
+    /// it is first installed somewhere.
+    pub fn sync_available(&mut self, place: &str, source: &str, offered: &[Offered]) -> Result<()> {
+        let tx = self.db.transaction().map_err(err)?;
+        tx.execute("DELETE FROM available WHERE place = ?1 AND source = ?2", params![place, source]).map_err(err)?;
+        for o in offered {
+            let id = format!("{source}:{}", o.source_id);
+            tx.execute(
+                "INSERT INTO games (id, title, platform, added, cover) VALUES (?1, ?2, ?3, 0, ?4)
+                 ON CONFLICT (id) DO UPDATE SET cover = COALESCE(cover, ?4)",
+                params![id, o.title, platform(source), o.cover.as_deref().map(text)],
+            )
+            .map_err(err)?;
+            tx.execute("INSERT OR IGNORE INTO available (place, source, source_id, game_id) VALUES (?1, ?2, ?3, ?4)", params![place, source, o.source_id, id]).map_err(err)?;
+        }
+        tx.commit().map_err(err)
+    }
+
+    /// A game the store could install in one place: its store, the store's
+    /// id for it, and its title.
+    pub fn offered(&self, game_id: &str, place: &str) -> Result<(String, String, String)> {
+        self.db
+            .query_row(
+                "SELECT a.source, a.source_id, g.title FROM available a JOIN games g ON g.id = a.game_id WHERE a.game_id = ?1 AND a.place = ?2",
+                params![game_id, place],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()
+            .map_err(err)?
+            .ok_or_else(|| "That game cannot be installed there.".to_string())
+    }
+
+    /// Games of one store that are offered somewhere and have no cover yet,
+    /// as (game id, the store's id).
+    pub fn coverless(&self, source: &str) -> Result<Vec<(String, String)>> {
+        let mut query = self
+            .db
+            .prepare("SELECT DISTINCT a.game_id, a.source_id FROM available a JOIN games g ON g.id = a.game_id WHERE a.source = ?1 AND g.cover IS NULL ORDER BY g.title COLLATE NOCASE")
+            .map_err(err)?;
+        let rows = query.query_map(params![source], |r| Ok((r.get(0)?, r.get(1)?))).map_err(err)?.collect::<rusqlite::Result<Vec<_>>>().map_err(err)?;
+        Ok(rows)
+    }
+
+    /// Give a game a cover, unless it has one.
+    pub fn set_cover_if_none(&mut self, game_id: &str, cover: &Path) -> Result<()> {
+        self.db.execute("UPDATE games SET cover = ?2 WHERE id = ?1 AND cover IS NULL", params![game_id, text(cover)]).map_err(err)?;
+        Ok(())
     }
 
     /// Add a game by hand. Adding the same program again updates it.
@@ -250,6 +309,15 @@ impl Store {
 
     /// Every game that is installed somewhere, by title.
     pub fn list(&self) -> Result<Vec<GameView>> {
+        self.listing(false)
+    }
+
+    /// The same, and the games that could be installed somewhere.
+    pub fn list_all(&self) -> Result<Vec<GameView>> {
+        self.listing(true)
+    }
+
+    fn listing(&self, all: bool) -> Result<Vec<GameView>> {
         let mut games = self
             .db
             .prepare(
@@ -260,7 +328,16 @@ impl Store {
                         g.origin, g.cover_own IS NOT NULL OR g.hero_own IS NOT NULL
                  FROM games g
                  WHERE EXISTS (SELECT 1 FROM installs i WHERE i.game_id = g.id)
+                    OR (?1 AND EXISTS (SELECT 1 FROM available a WHERE a.game_id = g.id))
                  ORDER BY g.title COLLATE NOCASE",
+            )
+            .map_err(err)?;
+        let mut installable = self
+            .db
+            .prepare(
+                "SELECT DISTINCT a.place FROM available a WHERE a.game_id = ?1
+                    AND NOT EXISTS (SELECT 1 FROM installs i WHERE i.game_id = a.game_id AND i.place = a.place)
+                 ORDER BY a.place <> 'local', a.place",
             )
             .map_err(err)?;
         let mut places = self
@@ -272,7 +349,7 @@ impl Store {
             .prepare("SELECT place, pending_update FROM installs WHERE game_id = ?1 AND pending_update IS NOT NULL ORDER BY place <> 'local', place")
             .map_err(err)?;
         let rows = games
-            .query_map([], |r| {
+            .query_map(params![all], |r| {
                 Ok(GameView {
                     id: r.get(0)?,
                     title: r.get(1)?,
@@ -286,6 +363,7 @@ impl Store {
                     playtime_minutes: (r.get::<_, i64>(9)?.max(0) / 60) as u64,
                     last_played: r.get(10)?,
                     places: Vec::new(),
+                    installable: Vec::new(),
                     updates: Vec::new(),
                     manual: false,
                     origin: r.get(11)?,
@@ -298,6 +376,11 @@ impl Store {
         rows.into_iter()
             .map(|mut g| {
                 g.places = places
+                    .query_map(params![g.id], |r| r.get(0))
+                    .map_err(err)?
+                    .collect::<rusqlite::Result<_>>()
+                    .map_err(err)?;
+                g.installable = installable
                     .query_map(params![g.id], |r| r.get(0))
                     .map_err(err)?
                     .collect::<rusqlite::Result<_>>()
@@ -539,6 +622,7 @@ impl Store {
         }
         let tx = self.db.transaction().map_err(err)?;
         tx.execute("DELETE FROM installs WHERE place = ?1", params![id]).map_err(err)?;
+        tx.execute("DELETE FROM available WHERE place = ?1", params![id]).map_err(err)?;
         tx.execute("DELETE FROM save_sync WHERE host_id = ?1", params![id]).map_err(err)?;
         tx.execute("DELETE FROM hosts WHERE id = ?1", params![id]).map_err(err)?;
         tx.commit().map_err(err)
@@ -675,6 +759,40 @@ mod tests {
         assert_eq!(alpha.added, 100);
         assert_eq!(alpha.places, [LOCAL]);
         assert!(store.install("steam:2", LOCAL).is_err());
+    }
+
+    #[test]
+    fn games_of_the_library_that_are_not_installed_are_offered_where_they_could_be() {
+        let mut store = Store::in_memory().unwrap();
+        let offer = |id: &str, title: &str| Offered { source_id: id.into(), title: title.into(), cover: None };
+        store.sync(LOCAL, "steam", &[scanned("1", "Here")], 100).unwrap();
+        store.sync("home", "steam", &[scanned("2", "On The Desktop")], 100).unwrap();
+        // The Ally could install 2 and 3; a stale offer for 1, which is installed, does not count.
+        store.sync_available(LOCAL, "steam", &[offer("1", "Here"), offer("2", "Other Name"), offer("3", "Nowhere Yet")]).unwrap();
+        store.sync_available("home", "steam", &[offer("3", "Nowhere Yet")]).unwrap();
+
+        assert_eq!(store.list().unwrap().len(), 2, "what plays now is unchanged");
+        let all = store.list_all().unwrap();
+        let shown: Vec<_> = all.iter().map(|g| (g.title.as_str(), g.places.join(","), g.installable.join(","))).collect();
+        assert_eq!(shown, [("Here", "local".to_string(), String::new()), ("Nowhere Yet", String::new(), "local,home".to_string()), ("On The Desktop", "home".to_string(), "local".to_string())]);
+        assert_eq!(store.offered("steam:3", "home").unwrap(), ("steam".to_string(), "3".to_string(), "Nowhere Yet".to_string()));
+        assert!(store.offered("steam:2", "home").is_err());
+
+        // Covers arrive later and never replace one that is there.
+        assert_eq!(store.coverless("steam").unwrap().len(), 3);
+        store.set_cover_if_none("steam:3", Path::new("/art/3.jpg")).unwrap();
+        store.set_cover_if_none("steam:3", Path::new("/art/other.jpg")).unwrap();
+        assert_eq!(store.list_all().unwrap()[1].cover.as_deref(), Some("/art/3.jpg"));
+
+        // Installed at last: it counts as added then, and is no longer offered there.
+        assert_eq!(all[1].added, 0);
+        store.sync(LOCAL, "steam", &[scanned("1", "Here"), scanned("3", "Nowhere Yet")], 500).unwrap();
+        store.sync_available(LOCAL, "steam", &[offer("2", "Other Name")]).unwrap();
+        let now = store.list().unwrap();
+        assert_eq!((now[1].title.as_str(), now[1].added, now[1].installable.join(",")), ("Nowhere Yet", 500, "home".to_string()));
+        assert_eq!(now[0].added, 100);
+        store.remove_host("home").unwrap();
+        assert!(store.list_all().unwrap().iter().all(|g| !g.installable.contains(&"home".to_string())));
     }
 
     #[test]

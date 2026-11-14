@@ -179,7 +179,12 @@ mod tests {
         let mut a = lock("clear");
         a.set_pin("4821").unwrap();
         let text = fs::read_to_string(&a.path).unwrap();
-        assert!(!text.contains("4821"));
+        // The salt and hash are random hex, which can contain these digits by
+        // chance; what must never be there is the PIN as a value of its own.
+        let stored: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let values: Vec<String> = stored.as_object().unwrap().values().map(|v| v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string())).collect();
+        assert!(values.iter().all(|v| v != "4821"), "{text}");
+        assert!(!text.contains("\"4821\""));
         // A second lock on the same file sees the PIN but starts locked.
         let mut b = AdminLock::new(a.path.clone());
         assert_eq!(b.status(), Status { pin_set: true, unlocked: false });

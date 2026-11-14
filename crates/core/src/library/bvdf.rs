@@ -48,6 +48,8 @@ impl Node {
 struct Reader<'a> {
     bytes: &'a [u8],
     at: usize,
+    /// Newer files keep every name once, in a table, and refer to it by number.
+    names: Option<&'a [String]>,
 }
 
 /// Files nest a handful of levels; anything deeper is not one of them.
@@ -87,7 +89,10 @@ impl Reader<'_> {
                 None => return None,
                 Some(kind) => kind,
             };
-            let name = self.string()?;
+            let name = match self.names {
+                Some(table) => table.get(u32::from_le_bytes(self.take(4)?.try_into().ok()?) as usize)?.clone(),
+                None => self.string()?,
+            };
             let value = match kind {
                 0x00 => self.map(depth + 1)?,
                 0x01 => Node::Text(self.string()?),
@@ -103,7 +108,16 @@ impl Reader<'_> {
 }
 
 pub fn parse(bytes: &[u8]) -> Option<Node> {
-    Reader { bytes, at: 0 }.map(0)
+    Reader { bytes, at: 0, names: None }.map(0)
+}
+
+/// One map from the start of `bytes`, up to and including its end byte, and
+/// how many bytes that was. For files that hold many maps one after another.
+/// With `names`, each name is a number into that table instead of text.
+pub fn parse_prefix(bytes: &[u8], names: Option<&[String]>) -> Option<(Node, usize)> {
+    let mut reader = Reader { bytes, at: 0, names };
+    let node = reader.map(0)?;
+    Some((node, reader.at))
 }
 
 /// Builds files in the same format, for tests here and in the scanners.

@@ -11,6 +11,7 @@ import { Manage } from "./screens/manage";
 import { Playing } from "./screens/playing";
 import { Search } from "./screens/search";
 import { Startup } from "./screens/startup";
+import { Storage } from "./screens/storage";
 import { GameDetail } from "./screens/pregame";
 import { Cloud, Desktops, Games, Home, HostView, Settings, type Ctx } from "./screens/screens";
 import { Updates } from "./screens/updates";
@@ -21,7 +22,7 @@ import { Splash } from "./ui/splash";
 
 type Page = { kind: "game"; id: string } | { kind: "host"; id: string } | { kind: "cleanup"; id: CleanupView }
   | { kind: "manage"; id: "home" } | { kind: "desktops"; id: "home" } | { kind: "search"; id: "home" }
-  | { kind: "updates"; id: "home" } | { kind: "startup"; id: "home" };
+  | { kind: "updates"; id: "home" } | { kind: "startup"; id: "home" } | { kind: "storage"; id: "home" };
 type Theme = "light" | "dark";
 
 const THEME_KEY = "carla.theme";
@@ -45,8 +46,10 @@ export function App() {
   const [section, setSection] = useState<Section>("home");
   const [stack, setStack] = useState<Page[]>([]);
   const [theme, setTheme] = useState<Theme>(() => load<Theme>(THEME_KEY, "light"));
-  const { games, hosts, session, scanning } = useLibrary();
-  const favourites = useMemo(() => new Set(games.filter((g) => g.favourite).map((g) => g.id)), [games]);
+  const { games: everything, hosts, session, scanning, downloads } = useLibrary();
+  // What can be played now. The rest of the library is only offered for installing.
+  const games = useMemo(() => everything.filter((g) => g.places.length > 0), [everything]);
+  const favourites = useMemo(() => new Set(everything.filter((g) => g.favourite).map((g) => g.id)), [everything]);
   const [toast, setToast] = useState<string | null>(null);
   // The startup animation plays once each time CarlaOS starts.
   const [splash, setSplash] = useState(true);
@@ -167,6 +170,14 @@ export function App() {
 
   const ctx: Ctx = {
     games,
+    library: everything,
+    downloads,
+    install: (gameId, place) => {
+      void library.install(gameId, place).then(
+        (asked) => asked && setToast(place === "local" ? "Steam is asking where to put it. Answer in Steam's window." : "Steam on that desktop is asking where to put it. Someone has to answer there."),
+        (e) => setToast(message(e)),
+      );
+    },
     hosts,
     favourites,
     openGame: (id) => push({ kind: "game", id }),
@@ -191,13 +202,14 @@ export function App() {
   };
 
   let page;
-  if (top?.kind === "game") page = <GameDetail {...ctx} gameId={top.id} onToggleFavourite={toggleFavourite} />;
+  if (top?.kind === "game") page = <GameDetail {...ctx} games={everything} gameId={top.id} onToggleFavourite={toggleFavourite} />;
   else if (top?.kind === "host") page = <HostView {...ctx} hostId={top.id} />;
-  else if (top?.kind === "search") page = <Search {...ctx} query={query} setQuery={setQuery} />;
+  else if (top?.kind === "search") page = <Search {...ctx} games={everything} query={query} setQuery={setQuery} />;
   else if (top?.kind === "manage") page = <Manage games={games} notify={setToast} />;
   else if (top?.kind === "desktops") page = <LinkDesktops hosts={hosts} notify={setToast} />;
   else if (top?.kind === "updates") page = <Updates hosts={hosts} notify={setToast} refreshHosts={() => void library.refreshHosts().catch(() => undefined)} />;
   else if (top?.kind === "startup") page = <Startup notify={setToast} />;
+  else if (top?.kind === "storage") page = <Storage notify={setToast} />;
   else if (top?.kind === "cleanup") page = <Cleanup view={top.id} open={(view) => push({ kind: "cleanup", id: view })} />;
   else if (section === "home") page = <Home {...ctx} />;
   else if (section === "games") page = <Games {...ctx} />;
@@ -213,6 +225,7 @@ export function App() {
         onDesktops={() => push({ kind: "desktops", id: "home" })}
         onUpdates={() => push({ kind: "updates", id: "home" })}
         onStartup={() => push({ kind: "startup", id: "home" })}
+        onStorage={() => push({ kind: "storage", id: "home" })}
         sounds={sounds}
         onSounds={() => {
           setSounds(!sounds);

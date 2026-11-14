@@ -2073,3 +2073,143 @@ button {
     grid-template-columns: 1fr;
   }
 }
+
+/* ---------- installing from the library ---------- */
+/* A game of the library that is not installed: there, but resting. */
+.card--absent .cover {
+  filter: saturate(0.55) brightness(1.04);
+  opacity: 0.82;
+}
+
+.card--absent:focus .cover {
+  filter: none;
+  opacity: 1;
+}
+
+.badge--absent {
+  background: rgb(58 42 51 / 78%);
+  color: #fff;
+}
+
+.progress {
+  display: block;
+  height: 0.55rem;
+  border-radius: var(--radius-pill);
+  background: var(--accent-soft);
+  overflow: hidden;
+}
+
+.progress i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--accent), #f3a9c7);
+  transition: width 600ms linear;
+}
+
+.progress--paused i {
+  background: var(--off);
+}
+
+/* Nothing to measure yet: a soft shimmer instead of an empty bar. */
+.progress--waiting i {
+  background: linear-gradient(90deg, var(--accent-soft) 0%, #f3a9c7 50%, var(--accent-soft) 100%);
+  background-size: 200% 100%;
+  animation: progress-wait 1.6s linear infinite;
+}
+
+@keyframes progress-wait {
+  to {
+    background-position: -200% 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .progress--waiting i {
+    animation: none;
+  }
+}
+
+.card .progress {
+  margin: 0 0.4rem;
+}
+
+.fetching {
+  display: grid;
+  gap: 0.9rem;
+  margin-top: 0.75rem;
+  padding: 1rem 1.25rem;
+  border-radius: var(--radius-card);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.fetching__line {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 0.4rem 1rem;
+  align-items: baseline;
+}
+
+.fetching__where {
+  font-weight: 800;
+}
+
+.fetching__how {
+  color: var(--text-quiet);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.fetching .progress {
+  grid-column: 1 / -1;
+  height: 0.75rem;
+}
+
+.detail__room {
+  margin: 0.25rem 0 0;
+  color: var(--text-quiet);
+  font-size: 1.1rem;
+  font-weight: 600;
+}
+
+/* ---------- storage ---------- */
+.disk {
+  display: grid;
+  gap: 0.6rem;
+  padding: 1.1rem 1.4rem;
+  border-radius: var(--radius-card);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.disk__text {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.2rem 0.75rem;
+  align-items: baseline;
+}
+
+.disk__text span {
+  color: var(--text-quiet);
+  font-weight: 600;
+}
+
+.disk .progress {
+  height: 0.8rem;
+}
+
+.progress--full i {
+  background: linear-gradient(90deg, var(--warn), #f0c56e);
+}
+
+.setting--danger,
+.setting--danger:focus {
+  background: #ffe3ea;
+  color: #a8456a;
+}
+
+:root[data-theme="dark"] .setting--danger {
+  background: #5a2b3c;
+  color: #ffd6e2;
+}

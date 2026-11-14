@@ -1,10 +1,10 @@
 // The page of one game, shown before it starts, the way a console does: how
 // long it has been played, what has been achieved, and how the saves are.
 import { useEffect, useState } from "react";
-import { POWERS, POWER_TEXT, type Achievement, type Details, type Game, type PowerView, type SaveSync, type Saves } from "../data/types";
+import { POWERS, POWER_TEXT, type Achievement, type Details, type Download, type Game, type Host, type PowerView, type SaveSync, type Saves } from "../data/types";
 import { library, message } from "../library/store";
-import { Clock, Heart, Lock, SaveIcon, Sparkle, Trophy } from "../ui/icons";
-import { Badges, Cover, Empty, Row, amount, day, placeLabel, size, updateLine, when } from "../ui/parts";
+import { Clock, Download as Download_, Heart, Lock, SaveIcon, Sparkle, Trophy } from "../ui/icons";
+import { Badges, Cover, Empty, Progress, Row, amount, day, fetching, placeLabel, size, updateLine, when } from "../ui/parts";
 import type { Ctx } from "./screens";
 
 // More than this many tiles in one row stops being a pleasure to scroll.
@@ -176,6 +176,26 @@ function PowerPanel({ game, place, notify }: { game: Game; place: string; notify
   );
 }
 
+// One line per machine that is fetching the game: where, how far, how much.
+function Fetching({ downloads, hosts }: { downloads: Download[]; hosts: Host[] }) {
+  return (
+    <div className="fetching">
+      {downloads.map((d) => (
+        <div key={d.place} className="fetching__line">
+          <span className="fetching__where">
+            {d.update ? "Updating" : "Installing"} {d.place === "local" ? "on this Ally" : `on ${placeLabel(d.place, hosts)}`}
+          </span>
+          <span className="fetching__how">
+            {fetching(d)}
+            {d.total > 0 && d.phase !== "finishing" ? ` · ${size(d.done)} of ${size(d.total)}` : ""}
+          </span>
+          <Progress download={d} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export function GameDetail({ gameId, onToggleFavourite, ...ctx }: Ctx & { gameId: string; onToggleFavourite: (id: string) => void }) {
   const game = ctx.games.find((g) => g.id === gameId);
   const [details, setDetails] = useState<Details | null>(null);
@@ -205,6 +225,14 @@ export function GameDetail({ gameId, onToggleFavourite, ...ctx }: Ctx & { gameId
   const counted = own.length ? own : milestones;
   const local = game.places.includes("local");
   const from = details?.achievementsFrom;
+  const fetched = ctx.downloads.filter((d) => d.gameId === gameId);
+  // Where it could still be installed and is not being installed already.
+  const offered = game.installable.filter((p) => !fetched.some((d) => d.place === p));
+  const [room, setRoom] = useState<number | null>(null);
+  const offersHere = offered.includes("local");
+  useEffect(() => {
+    if (offersHere) library.room().then(setRoom, () => undefined);
+  }, [offersHere]);
 
   return (
     <div className="pregame" data-game={game.id}>
@@ -233,6 +261,7 @@ export function GameDetail({ gameId, onToggleFavourite, ...ctx }: Ctx & { gameId
               />
             )}
           </div>
+          {fetched.length > 0 && <Fetching downloads={fetched} hosts={ctx.hosts} />}
           <div className="detail__actions">
             {game.places.map((place, i) => {
               const host = ctx.hosts.find((h) => h.id === place);
@@ -252,11 +281,28 @@ export function GameDetail({ gameId, onToggleFavourite, ...ctx }: Ctx & { gameId
                 </button>
               );
             })}
-            <button className={fav ? "pill pill--fav" : "pill"} data-focus data-fid="fav" onClick={() => onToggleFavourite(game.id)}>
+            {offered.map((place, i) => {
+              const first = game.places.length === 0 && fetched.length === 0 && i === 0;
+              return (
+                <button
+                  key={`install:${place}`}
+                  className={first ? "pill pill--primary" : "pill"}
+                  data-focus
+                  data-autofocus={first ? "" : undefined}
+                  data-fid={`install:${place}`}
+                  onClick={() => ctx.install(game.id, place)}
+                >
+                  <Download_ />
+                  {place === "local" ? "Install on this Ally" : `Install on ${placeLabel(place, ctx.hosts)}`}
+                </button>
+              );
+            })}
+            <button className={fav ? "pill pill--fav" : "pill"} data-focus data-autofocus={game.places.length === 0 && offered.length === 0 ? "" : undefined} data-fid="fav" onClick={() => onToggleFavourite(game.id)}>
               <Heart />
               {fav ? "Favourite" : "Add to favourites"}
             </button>
           </div>
+          {offersHere && room !== null && <p className="detail__room">{size(room)} free on this Ally. Steam does the downloading; CarlaOS shows how far it is.</p>}
         </div>
       </article>
 
