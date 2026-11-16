@@ -197,6 +197,48 @@ pub struct SaveFile {
     pub modified: i64,
 }
 
+/// What an Ally tells a desktop about the connection between them, so the
+/// desktop's own dashboard can show it. The Ally measures, because only it
+/// can: it asks, and times the answer. Sent when a desktop is looked at and
+/// every few seconds during a stream.
+///
+/// Every field but the first three may be left out, and more may be added:
+/// a desktop ignores what it does not know.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AllyReport {
+    /// The CarlaOS version on the Ally.
+    pub version: String,
+    /// The quickest answer to an empty question, there and back.
+    pub latency_ms: u32,
+    /// How far the slowest answer was from the quickest.
+    pub jitter_ms: u32,
+    /// What the connection carried towards the Ally, when that was measured.
+    #[serde(default)]
+    pub kbps: Option<u32>,
+    /// Through Tailscale rather than the home network.
+    #[serde(default)]
+    pub away: bool,
+    /// Moonlight is showing this desktop on the Ally right now.
+    #[serde(default)]
+    pub streaming: bool,
+    /// The picture of the stream that is starting or going on.
+    #[serde(default)]
+    pub picture: Option<moonlight::Picture>,
+    /// The name of that picture ("sharp", "balanced", ...).
+    #[serde(default)]
+    pub level: Option<String>,
+    /// Chosen by measuring, not fixed by the administrator.
+    #[serde(default)]
+    pub automatic: bool,
+}
+
+/// The desktop's answer to a report.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Reported {
+    /// A game is running on the desktop for a stream.
+    pub playing: bool,
+}
+
 /// Body of every reply that is not a success.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Problem {

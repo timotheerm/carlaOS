@@ -348,6 +348,8 @@ pub(crate) fn play(app: AppHandle, library: &Library, mut install: Install, plac
         }
         // A desktop that was asleep before the stream may sleep again.
         let sleep_again = played && matches!(running, Running::Stream { woke: true, .. });
+        // The desktop's dashboard is no longer told about a stream.
+        crate::hosts::stream_over();
         *locked(&library.0.active) = None;
         crate::power::rest();
         crate::quick::ended(&app);
