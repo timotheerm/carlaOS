@@ -19,11 +19,14 @@ pub struct Picture {
     pub fps: u32,
     /// How much the video may use, in kilobits a second.
     pub kbps: u32,
+    /// Have Moonlight even out when pictures are shown. Hides the stutter
+    /// of a connection whose delay wavers, for a few thousandths of a second.
+    pub pacing: bool,
 }
 
 impl Default for Picture {
     fn default() -> Self {
-        Self { width: 1920, height: 1080, fps: 60, kbps: 25_000 }
+        Self { width: 1920, height: 1080, fps: 60, kbps: 25_000, pacing: false }
     }
 }
 
@@ -59,6 +62,12 @@ pub fn stream_args(address: &str, picture: Picture) -> Vec<String> {
         // Leaving the stream must not close the game on the desktop: the
         // player may have unsaved progress and can pick it up again.
         "--no-quit-after".to_string(),
+        // The Ally must not dim or sleep under a player who only watches a
+        // cutscene.
+        "--keep-awake".to_string(),
+        // Moonlight chooses the codec both graphics chips handle and its
+        // hardware decoder by itself; what CarlaOS decides is the pacing.
+        if picture.pacing { "--frame-pacing" } else { "--no-frame-pacing" }.to_string(),
     ]
 }
 
@@ -117,6 +126,11 @@ mod tests {
         assert!(args.windows(2).any(|w| w == ["--bitrate", "25000"]));
         assert!(args.windows(2).any(|w| w == ["--display-mode", "borderless"]), "the Ally's screen keeps its mode");
         assert!(args.contains(&"--no-quit-after".to_string()));
+        assert!(args.contains(&"--keep-awake".to_string()));
+        // The quickest path on a steady connection, evened out on a shaky one.
+        assert!(args.contains(&"--no-frame-pacing".to_string()));
+        let shaky = stream_args("100.90.1.2", Picture { pacing: true, ..Picture::default() });
+        assert!(shaky.contains(&"--frame-pacing".to_string()) && !shaky.contains(&"--no-frame-pacing".to_string()));
     }
 
     #[test]

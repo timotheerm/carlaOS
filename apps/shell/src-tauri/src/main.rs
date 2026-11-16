@@ -47,6 +47,7 @@ fn main() {
             quick::watch(app.handle().clone(), library.clone());
             app.manage(admin::Admin::new(data_dir.clone()));
             remote::watch(app.handle().clone(), library.clone());
+            hosts::watch(library.clone());
             installs::watch(app.handle().clone(), library.clone());
             app.manage(library);
             // CarlaOS starts between games.
@@ -80,6 +81,10 @@ fn main() {
             hosts::hosts_refresh,
             hosts::hosts_discover,
             hosts::hosts_link,
+            hosts::hosts_link_ask,
+            hosts::hosts_link_wait,
+            hosts::hosts_link_cancel,
+            hosts::hosts_measure,
             hosts::hosts_remove,
             hosts::hosts_wake,
             hosts::hosts_rescan,

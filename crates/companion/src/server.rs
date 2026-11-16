@@ -8,7 +8,10 @@ use std::time::{Duration, Instant};
 use carla_core::library::achievements::Achievement;
 use carla_core::library::emulation;
 use carla_core::library::Scanned;
-use carla_core::link::enrol::{Exchange, Shared, Side};
+use carla_core::link::enrol::{self, Exchange, Shared, Side};
+use carla_core::link::health::{Asking, Overview, Pulse};
+use carla_core::link::probe::{self, BurstAsk};
+use carla_core::link::{EnrolAsk, EnrolReveal, FitAsk, ScreenFit};
 use carla_core::link::quality;
 use carla_core::link::sign::{self, Replay};
 use carla_core::library::saves::Backups;
@@ -19,7 +22,7 @@ use carla_core::link::{self, EnrolDone, EnrolFinish, EnrolOffer, EnrolStart, Hel
 use carla_core::{API_VERSION, VERSION};
 use serde::Serialize;
 
-use crate::files::{Config, Extra, Files, Pending, SaveFolder};
+use crate::files::{Config, Extra, Files, Pending, SaveFolder, Seen};
 use crate::sunshine::Streamer;
 use crate::virtual_screen::{self, Driver};
 
@@ -41,7 +44,12 @@ pub struct Request<'a> {
     pub body: &'a [u8],
     /// Address the request came from.
     pub from: &'a str,
+    /// What a program on this machine shows to use the local requests.
+    pub local: Option<&'a str>,
 }
+
+/// The header a local program puts its token in (see `Files::local_token`).
+pub const LOCAL: &str = "x-carla-local";
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct Reply {
@@ -63,9 +71,27 @@ pub struct Installs {
 }
 
 struct Waiting {
-    shared: Shared,
+    /// Missing while a link that is allowed at the desktop has only
+    /// committed to its message.
+    shared: Option<Shared>,
     device_name: String,
     started: i64,
+    /// Set for a link that someone at the desktop allows: this side's half
+    /// of the exchange until the Ally shows its message, what the Ally
+    /// committed to, and where it asks from.
+    approve: Option<Approve>,
+}
+
+struct Approve {
+    exchange: Option<Exchange>,
+    commit: String,
+    from: String,
+}
+
+impl Waiting {
+    fn fresh(&self, now: i64) -> bool {
+        now - self.started <= if self.approve.is_some() { enrol::APPROVE_LIFETIME } else { EXCHANGE_AGE }
+    }
 }
 
 pub struct Server {
@@ -95,6 +121,13 @@ pub struct Server {
     exchanges: Mutex<HashMap<String, Waiting>>,
     games: Mutex<Option<(Instant, Vec<Found>)>>,
     health: Mutex<Option<(Instant, Result<(), String>)>>,
+    /// Names of this desktop's graphics chips.
+    graphics: Vec<String>,
+    /// The socket measuring packets are sent from (see `probe`).
+    probe: Option<std::net::UdpSocket>,
+    bursting: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// When each Ally's last request was written down, to not write on every one.
+    seen: Mutex<HashMap<String, (Instant, String)>>,
 }
 
 /// An installed game and the store it is from ("steam", "epic", "gog").
@@ -175,7 +208,134 @@ impl Server {
             exchanges: Mutex::default(),
             games: Mutex::default(),
             health: Mutex::default(),
+            graphics: Vec::new(),
+            probe: None,
+            bursting: Default::default(),
+            seen: Mutex::default(),
         }
+    }
+
+    /// Say which graphics chips this desktop has.
+    pub fn with_graphics(mut self, graphics: Vec<String>) -> Self {
+        self.graphics = graphics;
+        self
+    }
+
+    /// Let linked devices measure the connection with packets sent from
+    /// this socket, which must be the one that answers echo packets.
+    pub fn with_probe(mut self, socket: std::net::UdpSocket) -> Self {
+        self.probe = Some(socket);
+        self
+    }
+
+    /// Send a linked Ally a burst of packets, to the address its signed
+    /// request came from. Answers at once with what is coming.
+    fn burst(&self, bytes: &[u8], from: &str, now: i64) -> Answer {
+        use std::sync::atomic::Ordering;
+        let ask: BurstAsk = body(bytes)?;
+        let Some(plan) = probe::plan(ask) else {
+            return refuse(400, "That is more than a measurement needs.");
+        };
+        let socket = self.probe.as_ref().and_then(|s| s.try_clone().ok());
+        let (Some(socket), Ok(ip)) = (socket, from.parse::<std::net::IpAddr>()) else {
+            return refuse(503, "This desktop cannot send measuring packets.");
+        };
+        if self.files.streaming(now) {
+            return refuse(409, "A stream is running. The connection is measured when it is over.");
+        }
+        if self.bursting.swap(true, Ordering::SeqCst) {
+            return refuse(409, "Another measurement is running. Try again in a moment.");
+        }
+        let busy = self.bursting.clone();
+        std::thread::spawn(move || {
+            // Let the answer reach the Ally first, so it is listening.
+            std::thread::sleep(Duration::from_millis(200));
+            probe::send_burst(&socket, std::net::SocketAddr::new(ip, ask.port), plan);
+            busy.store(false, Ordering::SeqCst);
+        });
+        json(&plan)
+    }
+
+    /// What screen a stream of this size would be shown on here.
+    fn fit(&self, bytes: &[u8]) -> Answer {
+        let ask: FitAsk = body(bytes)?;
+        let virtual_screen = self.config.virtual_screen && self.screens.as_ref().is_some_and(|d| d.present());
+        let mode = if virtual_screen { Some(ask.screen) } else { carla_core::display::choose(&carla_core::display::modes(), ask.screen) };
+        json(&ScreenFit { virtual_screen, mode })
+    }
+
+    fn pulse(&self, device: &str, bytes: &[u8], now: i64) -> Answer {
+        let pulse: Pulse = body(bytes)?;
+        self.files.set_ally_pulse(device, pulse, now).map_err(|e| (500, e))?;
+        json(&serde_json::json!({ "received": true }))
+    }
+
+    /// Write down that an Ally was heard from, at most every few seconds.
+    fn note_seen(&self, device: &str, from: &str, now: i64, prepared: bool) {
+        let mut seen = locked(&self.seen);
+        let due = seen.get(device).is_none_or(|(at, address)| at.elapsed() >= Duration::from_secs(10) || address != from);
+        if due || prepared {
+            seen.insert(device.to_string(), (Instant::now(), from.to_string()));
+            let before = self.files.ally_seen(device).and_then(|s| s.prepared);
+            self.files.set_ally_seen(device, &Seen { at: now, address: from.to_string(), prepared: if prepared { Some(now) } else { before } });
+        }
+    }
+
+    /// Everything a dashboard on this desktop shows.
+    pub fn overview(&self, now: i64) -> Overview {
+        let status = self.status(now);
+        let streaming = self.files.streaming(now);
+        Overview {
+            name: status.name,
+            id: status.id,
+            version: status.version,
+            state: status.state,
+            problem: status.problem,
+            playing: status.playing,
+            streaming,
+            hardware: status.hardware,
+            graphics: status.graphics,
+            addresses: status.addresses,
+            linking_until: self.files.linking_until(now),
+            asking: self.files.asking(now),
+            allies: self.files.allies(now, streaming),
+        }
+    }
+
+    /// Requests from a program on this machine that shows the local token:
+    /// the desktop's dashboard. `None` when this is not such a request.
+    fn local(&self, req: &Request, now: i64) -> Option<Answer> {
+        if !req.path.starts_with("/v1/local/") {
+            return None;
+        }
+        let here = req.from.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback());
+        let token = self.files.local_token().ok();
+        // Compared in full either way, so the time says nothing about the token.
+        let shown = req.local.unwrap_or_default().as_bytes();
+        let right = token.as_ref().is_some_and(|t| t.len() == shown.len() && t.bytes().zip(shown).fold(0u8, |acc, (a, b)| acc | (a ^ b)) == 0);
+        if !here || !right {
+            return Some(refuse(403, "Only this desktop's own programs may ask that."));
+        }
+        Some(match (req.method, req.path) {
+            ("GET", "/v1/local/overview") => json(&self.overview(now)),
+            ("POST", "/v1/local/link/open") => self.files.new_code().map_err(|e| (500, e)).and_then(|code| json(&serde_json::json!({ "code": code.code, "until": code.expires }))),
+            ("POST", "/v1/local/link/close") => {
+                self.files.clear_code();
+                json(&serde_json::json!({ "closed": true }))
+            }
+            ("POST", "/v1/local/link/answer") => body::<serde_json::Value>(req.body).and_then(|v| {
+                let (Some(id), Some(allow)) = (v["enrol_id"].as_str(), v["allow"].as_bool()) else {
+                    return refuse(400, "The request was not understood.");
+                };
+                let answered = self.files.answer_asking(id, allow, now).map_err(|e| (500, e))?;
+                json(&serde_json::json!({ "answered": answered }))
+            }),
+            ("POST", "/v1/local/forget") => body::<serde_json::Value>(req.body).and_then(|v| {
+                let forgotten = self.files.forget_device(v["id"].as_str().unwrap_or_default()).map_err(|e| (500, e))?;
+                json(&serde_json::json!({ "forgotten": forgotten }))
+            }),
+            _ => refuse(404, "The companion does not know that request."),
+        })
     }
 
     /// Let linked devices ask this companion to update itself.
@@ -273,7 +433,8 @@ impl Server {
     }
 
     pub fn hello(&self) -> Hello {
-        Hello { name: self.config.name.clone(), id: self.config.id.clone(), version: VERSION.to_string(), api_version: API_VERSION }
+        let approve = self.files.linking_until(crate::files::now()).is_some();
+        Hello { name: self.config.name.clone(), id: self.config.id.clone(), version: VERSION.to_string(), api_version: API_VERSION, approve }
     }
 
     fn games(&self, fresh: bool) -> Vec<Found> {
@@ -379,6 +540,7 @@ impl Server {
             playing: playing.map(|p| p.title),
             problem,
             hardware: self.hardware.clone(),
+            graphics: self.graphics.clone(),
         }
     }
 
@@ -400,23 +562,88 @@ impl Server {
         };
         let enrol_id = link::random_hex(16);
         let mut exchanges = locked(&self.exchanges);
-        exchanges.retain(|_, w| now - w.started <= EXCHANGE_AGE);
-        exchanges.insert(enrol_id.clone(), Waiting { shared, device_name: name.to_string(), started: now });
+        exchanges.retain(|_, w| w.fresh(now));
+        exchanges.insert(enrol_id.clone(), Waiting { shared: Some(shared), device_name: name.to_string(), started: now, approve: None });
         json(&EnrolOffer { enrol_id, message })
+    }
+
+    /// A device asks to be linked without a code: someone here allows it.
+    /// Only while linking is open, and one device at a time.
+    fn enrol_ask(&self, bytes: &[u8], from: &str, now: i64) -> Answer {
+        let ask: EnrolAsk = body(bytes)?;
+        let name = ask.device_name.trim();
+        if name.is_empty() || name.len() > 64 || !name.chars().all(|c| !c.is_control()) {
+            return refuse(400, "The device needs a name.");
+        }
+        if ask.commit.len() != 64 || !ask.commit.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return refuse(400, "The request was not understood.");
+        }
+        let mut exchanges = locked(&self.exchanges);
+        exchanges.retain(|_, w| w.fresh(now));
+        if exchanges.values().any(|w| w.approve.is_some()) {
+            return refuse(409, "Another device is asking to be linked. Answer that one at the desktop first.");
+        }
+        // Each request uses up one of the few tries of the open window, so
+        // nobody can keep the desktop asking for ever.
+        if self.files.use_code(now).is_none() {
+            return refuse(403, "Linking is not open on the desktop right now. Open CarlaOS Desktop Host there first.");
+        }
+        let exchange = Exchange::start(Side::Desktop, enrol::APPROVE);
+        let message = exchange.message();
+        let enrol_id = link::random_hex(16);
+        let approve = Approve { exchange: Some(exchange), commit: ask.commit.to_lowercase(), from: from.to_string() };
+        exchanges.insert(enrol_id.clone(), Waiting { shared: None, device_name: name.to_string(), started: now, approve: Some(approve) });
+        json(&EnrolOffer { enrol_id, message })
+    }
+
+    /// The device shows the message it committed to. From here both sides
+    /// know the number to compare, and the desktop starts asking.
+    fn enrol_reveal(&self, bytes: &[u8], now: i64) -> Answer {
+        let reveal: EnrolReveal = body(bytes)?;
+        let mut exchanges = locked(&self.exchanges);
+        let Some(waiting) = exchanges.get_mut(&reveal.enrol_id).filter(|w| w.fresh(now)) else {
+            return refuse(403, "That took too long. Start again.");
+        };
+        let Some((exchange, approve)) = waiting.approve.as_mut().and_then(|a| Some((a.exchange.take()?, a))) else {
+            return refuse(400, "The request was not understood.");
+        };
+        let shared = if enrol::commit(&reveal.message) == approve.commit { exchange.finish(&reveal.message) } else { None };
+        let Some(shared) = shared else {
+            exchanges.remove(&reveal.enrol_id);
+            return refuse(400, "The request was not understood.");
+        };
+        let asking = Asking { enrol_id: reveal.enrol_id.clone(), device_name: waiting.device_name.clone(), from: approve.from.clone(), check: shared.check(), at: now };
+        waiting.shared = Some(shared);
+        self.files.set_asking(&asking).map_err(|e| (500, e))?;
+        json(&serde_json::json!({ "asking": true }))
     }
 
     fn enrol_finish(&self, bytes: &[u8], now: i64) -> Answer {
         let finish: EnrolFinish = body(bytes)?;
-        let waiting = locked(&self.exchanges).remove(&finish.enrol_id);
-        let Some(waiting) = waiting.filter(|w| now - w.started <= EXCHANGE_AGE) else {
+        let mut exchanges = locked(&self.exchanges);
+        let waiting = exchanges.remove(&finish.enrol_id);
+        let Some((waiting, shared)) = waiting.filter(|w| w.fresh(now)).and_then(|mut w| Some((w.shared.take()?, w)).map(|(s, w)| (w, s))) else {
             return refuse(403, "That took too long. Start again.");
         };
-        if !waiting.shared.proof_ok(Side::Ally, &finish.proof) {
+        if waiting.approve.is_some() {
+            match self.files.asking_answer(&finish.enrol_id) {
+                Some(true) => {}
+                Some(false) => {
+                    self.files.clear_code();
+                    return refuse(403, "It was not allowed at the desktop.");
+                }
+                None => {
+                    exchanges.insert(finish.enrol_id, Waiting { shared: Some(shared), ..waiting });
+                    return refuse(409, enrol::WAITING);
+                }
+            }
+        }
+        if !shared.proof_ok(Side::Ally, &finish.proof) {
             return refuse(403, "That is not the code on the desktop.");
         }
-        let device = self.files.add_device(&waiting.device_name, &waiting.shared.device_key()).map_err(|e| (500, e))?;
+        let device = self.files.add_device(&waiting.device_name, &shared.device_key()).map_err(|e| (500, e))?;
         self.files.clear_code();
-        json(&EnrolDone { device_id: device.id, proof: waiting.shared.proof(Side::Desktop) })
+        json(&EnrolDone { device_id: device.id, proof: shared.proof(Side::Desktop) })
     }
 
     fn prepare(&self, bytes: &[u8], now: i64) -> Answer {
@@ -551,7 +778,12 @@ impl Server {
     }
 
     fn signed(&self, req: &Request, now: i64) -> Answer {
+        let device = req.device.unwrap_or_default();
+        self.note_seen(device, req.from, now, req.path == "/v1/stream/prepare");
         match (req.method, req.path) {
+            ("POST", "/v1/probe/burst") => self.burst(req.body, req.from, now),
+            ("POST", "/v1/stream/fit") => self.fit(req.body),
+            ("POST", "/v1/link/pulse") => self.pulse(device, req.body, now),
             ("GET", "/v1/status") => json(&self.status(now)),
             ("GET", "/v1/games") => json(&self.listed()),
             ("GET", path) if path.starts_with("/v1/cover/") => self.cover(&path["/v1/cover/".len()..]),
@@ -621,7 +853,9 @@ impl Server {
             ("GET", "/v1/hello") => Some(json(&self.hello())),
             ("POST", "/v1/enrol/start") => Some(self.enrol_start(req.body, now)),
             ("POST", "/v1/enrol/finish") => Some(self.enrol_finish(req.body, now)),
-            _ => None,
+            ("POST", "/v1/enrol/ask") => Some(self.enrol_ask(req.body, req.from, now)),
+            ("POST", "/v1/enrol/reveal") => Some(self.enrol_reveal(req.body, now)),
+            _ => self.local(req, now),
         };
         let (answer, key) = match open {
             Some(answer) => (answer, None),
@@ -653,6 +887,7 @@ pub fn serve(server: std::sync::Arc<Server>, http: tiny_http::Server) {
                         request.headers().iter().find(|h| h.field.as_str().as_str().eq_ignore_ascii_case(name)).map(|h| h.value.as_str().to_string())
                     };
                     let (device, time, nonce, signature) = (header(sign::DEVICE), header(sign::TIME), header(sign::NONCE), header(sign::SIGN));
+                    let local = header(LOCAL);
                     let method = request.method().as_str().to_ascii_uppercase();
                     let path = request.url().split('?').next().unwrap_or_default().to_string();
                     // Nothing the Ally sends is large, except a save file, and
@@ -681,6 +916,7 @@ pub fn serve(server: std::sync::Arc<Server>, http: tiny_http::Server) {
                                 sign: signature.as_deref(),
                                 body: &bytes,
                                 from: &from,
+                                local: local.as_deref(),
                             },
                             crate::files::now(),
                         )
@@ -794,6 +1030,16 @@ mod tests {
                 ("gog", Scanned { source_id: "30".into(), title: "Third Game".into(), install_path: dir.join("third"), exe: Some(dir.join("third").join("third.exe")), args: "-windowed".into(), ..Scanned::default() }),
             ]
         });
+        // The measuring packets are answered on the same port number as the
+        // API, as on a real desktop.
+        let (http, udp) = loop {
+            let http = tiny_http::Server::http("127.0.0.1:0").unwrap();
+            let port = http.server_addr().to_ip().unwrap().port();
+            if let Ok(udp) = std::net::UdpSocket::bind(("127.0.0.1", port)) {
+                break (http, udp);
+            }
+        };
+        let port = http.server_addr().to_ip().unwrap().port();
         let server = Arc::new(Server::new(
             files.clone(),
             config,
@@ -807,7 +1053,7 @@ mod tests {
                 SLEEPS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 Ok(())
             },
-        ).with_updater(|| Ok(Some("9.9.9".into()))).with_admin_hold(Duration::from_millis(400)).with_installs(Installs {
+        ).with_updater(|| Ok(Some("9.9.9".into()))).with_probe(udp.try_clone().unwrap()).with_graphics(vec!["AMD Radeon RX 9070 XT".into()]).with_admin_hold(Duration::from_millis(400)).with_installs(Installs {
             offered: || Ok(vec![App { appid: "40".into(), title: "Not Here Yet".into(), installdir: "NotHere".into() }, App { appid: "50".into(), title: "Needs Steam's Window".into(), installdir: String::new() }]),
             start: |app| {
                 locked(&ASKED_FOR).push(app.appid.clone());
@@ -816,8 +1062,8 @@ mod tests {
             downloads: || vec![Download { source: "steam".into(), source_id: "60".into(), title: "Half Way".into(), phase: carla_core::library::downloads::Phase::Downloading, done: 5, total: 10, update: false }],
             free: || Some(1_000),
         }));
-        let http = tiny_http::Server::http("127.0.0.1:0").unwrap();
-        let port = http.server_addr().to_ip().unwrap().port();
+        let answering = server.clone();
+        std::thread::spawn(move || carla_core::link::discover::answer(&udp, &|| answering.hello()));
         std::thread::spawn(move || serve(server, http));
         Desk { files, calls, port }
     }
@@ -960,6 +1206,7 @@ mod tests {
             sign: Some(&signature),
             body,
             from: "10.0.0.9",
+            local: None,
         };
         assert_eq!(server.handle(&request("/v1/stream/pair", body), now).status, 401, "signed for another path");
         assert_eq!(server.handle(&request("/v1/stream/prepare", br#"{"game_id":"steam:20"}"#), now).status, 401, "body changed");
@@ -1219,5 +1466,130 @@ mod tests {
         let stranger = Link { key: vec![7; 32], ..link.clone() };
         assert_eq!(stranger.admin_next().err(), Some(Error::Refused));
         assert_eq!(link.admin_next().unwrap().map(|c| c.id), Some("c2".to_string()));
+    }
+
+    #[test]
+    fn an_ally_is_linked_by_being_allowed_at_the_desktop_without_a_code() {
+        let desk = desk("approve", false);
+        // Linking is closed until someone opens it at the desktop.
+        assert!(!client::hello("127.0.0.1", desk.port).unwrap().approve);
+        assert!(matches!(client::enrol_ask("127.0.0.1", desk.port, "Ally").err(), Some(Error::Host(text)) if text.contains("not open")));
+        desk.files.new_code().unwrap();
+        assert!(client::hello("127.0.0.1", desk.port).unwrap().approve);
+
+        let asking = client::enrol_ask("127.0.0.1", desk.port, "ROGALLY").unwrap();
+        let shown = desk.files.asking(crate::files::now()).expect("the desktop is asking");
+        assert_eq!((shown.device_name.as_str(), shown.from.as_str()), ("ROGALLY", "127.0.0.1"));
+        assert_eq!(shown.check, asking.check, "both screens show the same number");
+        // Nothing is linked while nobody has answered, however often it asks.
+        assert!(asking.finish().unwrap().is_none());
+        assert!(asking.finish().unwrap().is_none());
+        assert!(desk.files.devices().is_empty());
+        // One device at a time.
+        assert!(matches!(client::enrol_ask("127.0.0.1", desk.port, "Other").err(), Some(Error::Host(text)) if text.contains("Another device")));
+
+        assert!(!desk.files.answer_asking("someone-else", true, crate::files::now()).unwrap());
+        assert!(desk.files.answer_asking(&shown.enrol_id, true, crate::files::now()).unwrap());
+        let (hello, link) = asking.finish().unwrap().expect("allowed");
+        assert_eq!(hello.name, "HOME PC");
+        assert_eq!(link.status().unwrap().name, "HOME PC");
+        assert_eq!(desk.files.devices().len(), 1);
+        // Linking closes with the first link, like a code that was used.
+        assert!(!client::hello("127.0.0.1", desk.port).unwrap().approve);
+        assert!(desk.files.asking(crate::files::now()).is_none());
+    }
+
+    #[test]
+    fn a_link_that_is_refused_at_the_desktop_links_nothing() {
+        let desk = desk("refuse", false);
+        desk.files.new_code().unwrap();
+        let asking = client::enrol_ask("127.0.0.1", desk.port, "Stranger").unwrap();
+        let shown = desk.files.asking(crate::files::now()).unwrap();
+        desk.files.answer_asking(&shown.enrol_id, false, crate::files::now()).unwrap();
+        assert_eq!(asking.finish().err(), Some(Error::Host("It was not allowed at the desktop.".into())));
+        assert!(desk.files.devices().is_empty());
+        assert!(desk.files.linking_until(crate::files::now()).is_none(), "and linking is closed");
+    }
+
+    #[test]
+    fn a_message_that_was_not_committed_to_is_refused() {
+        use carla_core::link::enrol::{commit, Exchange, Side, APPROVE};
+        let desk = desk("commit", false);
+        desk.files.new_code().unwrap();
+        let post = |path: &str, body: serde_json::Value| {
+            let agent: ureq::Agent = ureq::Agent::config_builder().http_status_as_error(false).build().into();
+            let mut reply = agent.post(&format!("http://127.0.0.1:{}{path}", desk.port)).send(body.to_string().as_bytes()).unwrap();
+            (reply.status().as_u16(), serde_json::from_str::<serde_json::Value>(&reply.body_mut().read_to_string().unwrap()).unwrap())
+        };
+        let committed = Exchange::start(Side::Ally, APPROVE).message();
+        let (status, offer) = post("/v1/enrol/ask", serde_json::json!({ "device_name": "Ally", "commit": commit(&committed) }));
+        assert_eq!(status, 200);
+        // Having seen the desktop's message, it tries another of its own.
+        let other = Exchange::start(Side::Ally, APPROVE).message();
+        assert_eq!(post("/v1/enrol/reveal", serde_json::json!({ "enrol_id": offer["enrol_id"], "message": other })).0, 400);
+        assert!(desk.files.asking(crate::files::now()).is_none(), "the desktop never asks about it");
+        assert_eq!(post("/v1/enrol/reveal", serde_json::json!({ "enrol_id": offer["enrol_id"], "message": committed })).0, 403, "and it is over");
+    }
+
+    #[test]
+    fn the_connection_is_measured_with_packets_and_the_desktop_keeps_what_the_ally_reports() {
+        use carla_core::display::Mode;
+        use carla_core::link::health::{Grade, Health, Pulse};
+        use carla_core::link::quality::{self, Depth, Setting};
+        let desk = desk("health", false);
+        let link = linked(&desk);
+        let echo = link.echo(20).expect("packets come back");
+        assert_eq!((echo.sent, echo.lost), (20, 0));
+        let burst = link.burst(8_000, 200, Duration::from_millis(1)).expect("a burst arrives");
+        assert_eq!((burst.asked_kbps, burst.lost), (8_000, 0), "{burst:?}");
+        assert!(link.burst(carla_core::link::probe::MOST_KBPS + 1, 200, Duration::from_millis(1)).is_none(), "never a flood");
+        let stranger = Link { key: vec![7; 32], ..link.clone() };
+        assert!(stranger.burst(8_000, 200, Duration::from_millis(1)).is_none(), "and never for a stranger");
+
+        // The whole measurement, as the check does it.
+        let measured = quality::survey(&link, false, Depth::Full).expect("measured");
+        assert!(measured.echo.is_some_and(|e| e.sent == 100) && measured.burst.is_some(), "{measured:?}");
+        assert_eq!(measured.loss_permille(), Some(0));
+        let choice = quality::choose(Setting::default(), Some(measured), false);
+        let health = Health::of(measured, choice, Some(Mode::new(1920, 1080, 120)), "127.0.0.1", None, crate::files::now());
+        assert!(health.grade >= Grade::Good, "{health:?}");
+
+        // The desktop's graphics chip and the screen a stream would get.
+        assert_eq!(link.status().unwrap().graphics, ["AMD Radeon RX 9070 XT"]);
+        assert!(!link.fit(Mode::new(1920, 1080, 120)).unwrap().virtual_screen);
+
+        // What the Ally reports is what the desktop's dashboard shows.
+        let pulse = Pulse { version: "0.17.0".into(), moonlight: true, paired: Some(true), playing: None, battery: Some(71), charging: Some(true), screen: Some(Mode::new(1920, 1080, 120)), health: Some(health.clone()) };
+        link.pulse(&pulse).unwrap();
+        let get = |token: &str| {
+            let agent: ureq::Agent = ureq::Agent::config_builder().http_status_as_error(false).build().into();
+            let mut reply = agent.get(&format!("http://127.0.0.1:{}/v1/local/overview", desk.port)).header(LOCAL, token).call().unwrap();
+            (reply.status().as_u16(), reply.body_mut().read_to_string().unwrap())
+        };
+        assert_eq!(get("").0, 403);
+        assert_eq!(get(&"0".repeat(64)).0, 403);
+        let (status, text) = get(&desk.files.local_token().unwrap());
+        assert_eq!(status, 200, "{text}");
+        let overview: Overview = serde_json::from_str(&text).unwrap();
+        assert_eq!((overview.name.as_str(), overview.state, overview.streaming), ("HOME PC", State::Ready, false));
+        let ally = &overview.allies[0];
+        assert_eq!((ally.name.as_str(), ally.connected, ally.address.as_deref()), ("Ally", true, Some("127.0.0.1")));
+        assert_eq!(ally.health.as_ref(), Some(&health));
+        assert_eq!(ally.pulse.as_ref().and_then(|p| p.battery), Some(71));
+
+        // A pulse sent under a running game carries no measurement and keeps the last one.
+        link.pulse(&Pulse { playing: Some("First Game".into()), health: None, ..pulse }).unwrap();
+        let kept = desk.files.allies(crate::files::now(), false);
+        assert_eq!(kept[0].health.as_ref(), Some(&health));
+        assert_eq!(kept[0].pulse.as_ref().and_then(|p| p.playing.clone()), Some("First Game".into()));
+        // Long silent, it is no longer connected; unless it is being streamed to.
+        link.prepare("steam:10").unwrap();
+        let later = crate::files::now() + 600;
+        assert!(!desk.files.allies(later, false)[0].connected);
+        let streaming = &desk.files.allies(later, true)[0];
+        assert!(streaming.connected && streaming.streaming);
+        // Forgetting it takes what was kept about it along.
+        desk.files.forget_device(&ally.id).unwrap();
+        assert!(desk.files.ally_pulse(&ally.id).is_none() && desk.files.allies(later, false).is_empty());
     }
 }

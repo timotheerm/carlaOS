@@ -14,7 +14,8 @@ use carla_core::link::discover::{self, Found};
 use carla_core::library::Streamed;
 use carla_core::link::check::{self, Facts, Fix, Outcome, Report};
 use carla_core::link::moonlight;
-use carla_core::link::quality::{self, Choice, Setting};
+use carla_core::link::health::{Health, Pulse};
+use carla_core::link::quality::{self, Choice, Depth, Setting};
 use carla_core::link::{wake, State as HostState, Status, Updating, PORT};
 use carla_core::{secret, VERSION};
 use serde::Serialize;
@@ -46,6 +47,9 @@ pub struct HostView {
     can_wake: bool,
     /// The companion's version, once the desktop has answered.
     version: Option<String>,
+    /// The connection as it was last measured: ping, jitter, lost packets,
+    /// a grade and the picture streams get.
+    health: Option<Health>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -78,7 +82,13 @@ fn view(host: &HostRow) -> HostView {
         route: None,
         can_wake: !host.macs.is_empty(),
         version: None,
+        health: None,
     }
+}
+
+/// The same with the last measurement of the connection.
+fn view_with_health(library: &Library, host: &HostRow) -> HostView {
+    HostView { health: library.store().host_health(&host.id).ok().flatten(), ..view(host) }
 }
 
 /// The picture setting of a desktop and what its last stream got.
@@ -255,7 +265,7 @@ fn refresh(library: &Library, host: &HostRow) -> HostView {
     match reach(host) {
         Ok((link, status, latency)) => {
             let host = seen(library, host, &link, &status);
-            let mut out = view(&host);
+            let mut out = view_with_health(library, &host);
             out.latency_ms = Some(latency);
             out.route = Some(if wake::is_tailscale(&link.address) { "remote" } else { "local" });
             out.state = match status.state {
@@ -271,15 +281,16 @@ fn refresh(library: &Library, host: &HostRow) -> HostView {
             }
             out
         }
-        Err(Error::Unreachable) => HostView { state: "unreachable", ..view(host) },
-        Err(e) => HostView { state: "not_ready", problem: Some(e.to_string()), ..view(host) },
+        Err(Error::Unreachable) => HostView { state: "unreachable", ..view_with_health(library, host) },
+        Err(e) => HostView { state: "not_ready", problem: Some(e.to_string()), ..view_with_health(library, host) },
     }
 }
 
 /// Linked desktops as last known, without asking them. Instant.
 #[tauri::command]
 pub fn hosts_list(library: State<'_, Library>) -> Result<Vec<HostView>, String> {
-    Ok(library.store().hosts()?.iter().map(view).collect())
+    let hosts = library.store().hosts()?;
+    Ok(hosts.iter().map(|host| view_with_health(&library, host)).collect())
 }
 
 /// Ask every desktop at once how it is.
@@ -309,7 +320,11 @@ pub fn hosts_discover(admin: State<'_, Admin>) -> Result<Vec<Found>, String> {
 /// typing a PIN: we choose it, give it to Moonlight, and hand it to the
 /// desktop over the link that was just made.
 fn pair_moonlight(link: &Link) -> Result<(), String> {
-    let exe = moonlight::find().ok_or("Moonlight is not installed on this Ally yet. Install it, then link this desktop again.")?;
+    // Without Moonlight, install it first: one thing less to do by hand.
+    let exe = match moonlight::find() {
+        Some(exe) => exe,
+        None => install_moonlight()?,
+    };
     if moonlight::paired(&exe, &link.address) {
         return Ok(());
     }
@@ -327,6 +342,95 @@ fn pair_moonlight(link: &Link) -> Result<(), String> {
     } else {
         Err("Moonlight and the desktop did not finish pairing. Link this desktop again.".to_string())
     }
+}
+
+/// Install Moonlight with Windows' own package manager. Windows asks once
+/// to allow it. Returns where it then is.
+fn install_moonlight() -> Result<std::path::PathBuf, String> {
+    let by_hand = "Install Moonlight from moonlight-stream.org on the Ally, then choose \"Check streaming from it\".";
+    let mut command = std::process::Command::new("winget");
+    command.args(["install", "--id", "MoonlightGameStreamingProject.Moonlight", "--exact", "--source", "winget", "--silent", "--accept-package-agreements", "--accept-source-agreements"]);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // No console window in front of CarlaOS.
+        command.creation_flags(0x0800_0000);
+    }
+    let status = command.status().map_err(|e| format!("Windows' package manager (winget) could not be started: {e}. {by_hand}"))?;
+    moonlight::find().ok_or_else(|| if status.success() { format!("Moonlight was installed but CarlaOS cannot find it. {by_hand}") } else { format!("Moonlight was not installed. {by_hand}") })
+}
+
+/// What this Ally tells a desktop about itself.
+fn pulse_of(library: &Library, address: &str, health: Option<Health>) -> Pulse {
+    let battery = crate::device::battery();
+    Pulse {
+        version: VERSION.to_string(),
+        moonlight: moonlight::find().is_some(),
+        // Only what is known already: asking Moonlight would start it.
+        paired: known_paired(address).then_some(true),
+        playing: crate::library::locked(&library.0.active).as_ref().map(|a| a.view.title.clone()),
+        battery: battery.as_ref().map(|b| b.percent),
+        charging: battery.as_ref().map(|b| b.charging),
+        screen: carla_core::display::current(),
+        health,
+    }
+}
+
+/// Measure the connection to a desktop, keep the result for its card and
+/// tell the desktop, whose dashboard shows it. `None` when it could not be
+/// measured.
+fn measure_host(library: &Library, host: &HostRow, link: &Link, status: &Status, depth: Depth) -> Option<Health> {
+    let away = wake::is_tailscale(&link.address);
+    let measure = quality::survey(link, away, depth)?;
+    let setting = library.store().host_quality(&host.id).map(|(s, _)| s).unwrap_or_default();
+    let choice = quality::choose(setting, Some(measure), away);
+    let codec = carla_core::link::codec::fit(&status.graphics, &carla_core::link::codec::graphics());
+    let codec = (!status.graphics.is_empty()).then_some(codec);
+    let health = Health::of(measure, choice, carla_core::display::current(), &link.address, codec, now());
+    let _ = library.store().set_host_health(&host.id, &health);
+    let _ = link.pulse(&pulse_of(library, &link.address, Some(health.clone())));
+    Some(health)
+}
+
+/// Measure the connection to a desktop now, thoroughly. A few seconds.
+#[tauri::command(async)]
+pub fn hosts_measure(admin: State<'_, Admin>, library: State<'_, Library>, id: String) -> Result<Health, String> {
+    admin.require()?;
+    if crate::library::locked(&library.0.active).is_some() {
+        return Err("A game is running. The connection is measured when it is closed.".to_string());
+    }
+    let host = library.store().hosts()?.into_iter().find(|h| h.id == id).ok_or("That desktop is no longer set up.")?;
+    let (link, status, _) = reach(&host).map_err(|e| match e {
+        Error::Unreachable => format!("{} did not answer. It may be off or asleep.", host.name),
+        e => e.to_string(),
+    })?;
+    let host = seen(&library, &host, &link, &status);
+    measure_host(&library, &host, &link, &status, Depth::Full).ok_or_else(|| format!("The connection to {} could not be measured.", host.name))
+}
+
+/// How often the connection to each desktop is measured in the background.
+const PULSE_EVERY: Duration = Duration::from_secs(45);
+
+/// For as long as CarlaOS runs: measure the connection to every desktop
+/// that is on, lightly, and tell each how this Ally is. While a game runs
+/// nothing is measured, so a stream never shares the connection with it.
+pub fn watch(library: Library) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(PULSE_EVERY);
+        let playing = crate::library::locked(&library.0.active).is_some();
+        for host in library.store().hosts().unwrap_or_default() {
+            // A desktop that is off is left alone: asking costs seconds.
+            let Ok((link, status, _)) = reach(&host) else { continue };
+            if playing {
+                let _ = link.pulse(&pulse_of(&library, &link.address, None));
+            } else {
+                let host = seen(&library, &host, &link, &status);
+                if measure_host(&library, &host, &link, &status, Depth::Quick).is_none() {
+                    let _ = link.pulse(&pulse_of(&library, &link.address, None));
+                }
+            }
+        }
+    });
 }
 
 /// Desktops Moonlight was seen paired with since CarlaOS started, by address.
@@ -402,13 +506,41 @@ pub(crate) fn check_host(library: &Library, host: &HostRow, repair: bool) -> Rep
             }
             _ => None,
         };
-        let measure = link.as_ref().and_then(|link| quality::measure(&|bytes| link.probe(bytes).ok(), wake::is_tailscale(&link.address)));
+        // Not under a running game: the measuring packets would share its stream.
+        let playing = crate::library::locked(&library.0.active).is_some();
+        let measure = link.as_ref().filter(|_| !playing).and_then(|link| quality::survey(link, wake::is_tailscale(&link.address), Depth::Full));
         let setting = library.store().host_quality(&host.id).map(|(s, _)| s).unwrap_or_default();
         let fresh = library.store().hosts().ok().and_then(|hs| hs.into_iter().find(|h| h.id == host.id)).unwrap_or_else(|| host.clone());
-        let facts = Facts { ally_version: VERSION, answer, can_wake: !fresh.macs.is_empty(), moonlight: exe.is_some(), paired, measure, setting };
-        (check::steps(&facts), link, fresh)
+        let screen = carla_core::display::current();
+        let ports = link.as_ref().map(|link| {
+            client::SUNSHINE_PORTS.iter().map(|port| (*port, client::port_open(&link.address, *port, Duration::from_secs(2)).is_some())).collect()
+        });
+        let fit = match (&link, screen) {
+            (Some(link), Some(screen)) => link.fit(screen).ok(),
+            _ => None,
+        };
+        let facts = Facts {
+            ally_version: VERSION,
+            answer,
+            can_wake: !fresh.macs.is_empty(),
+            moonlight: exe.is_some(),
+            paired,
+            measure,
+            setting,
+            ports,
+            screen,
+            fit,
+            graphics: carla_core::link::codec::graphics(),
+            now: now(),
+        };
+        let health = facts.health();
+        if let (Some(health), Some(link)) = (&health, &link) {
+            let _ = library.store().set_host_health(&fresh.id, health);
+            let _ = link.pulse(&pulse_of(library, &link.address, Some(health.clone())));
+        }
+        (check::steps(&facts), link, fresh, health)
     };
-    let (mut steps, mut link, mut fresh) = gather(host);
+    let (mut steps, mut link, mut fresh, mut health) = gather(host);
     let mut repaired = Vec::new();
     if repair {
         let failing = |steps: &[check::Step], fix: Fix| steps.iter().any(|s| s.fix == Some(fix) && matches!(s.outcome, Outcome::Fail | Outcome::Warn));
@@ -420,8 +552,15 @@ pub(crate) fn check_host(library: &Library, host: &HostRow, repair: bool) -> Rep
             }
             again = true;
         }
+        if failing(&steps, Fix::Moonlight) {
+            match install_moonlight() {
+                Ok(_) => repaired.push("Installed Moonlight on the Ally.".to_string()),
+                Err(e) => repaired.push(e),
+            }
+            again = true;
+        }
         if again {
-            (steps, link, fresh) = gather(&fresh);
+            (steps, link, fresh, health) = gather(&fresh);
             again = false;
         }
         if let Some(l) = link.as_ref().filter(|_| failing(&steps, Fix::Pair)) {
@@ -442,10 +581,10 @@ pub(crate) fn check_host(library: &Library, host: &HostRow, repair: bool) -> Rep
             }
         }
         if again {
-            (steps, _, fresh) = gather(&fresh);
+            (steps, _, fresh, health) = gather(&fresh);
         }
     }
-    Report { id: fresh.id.clone(), name: fresh.name.clone(), steps, repaired }
+    Report { id: fresh.id.clone(), name: fresh.name.clone(), steps, repaired, health }
 }
 
 /// Check a desktop step by step: what works, what does not, and what would fix it.
@@ -480,7 +619,11 @@ pub fn hosts_repair(admin: State<'_, Admin>, library: State<'_, Library>, id: St
                 format!("The desktop already has the newest release, {}.", u.version)
             }
         }
-        Fix::Relink => return Err("Linking again needs a new code from the desktop: choose Add a desktop.".to_string()),
+        Fix::Moonlight => {
+            install_moonlight()?;
+            "Installed Moonlight on the Ally.".to_string()
+        }
+        Fix::Relink => return Err("Linking again starts at the desktop: open CarlaOS Desktop Host there, then choose Add a desktop here.".to_string()),
     };
     let mut report = check_host(&library, &host, false);
     report.repaired.push(note);
@@ -498,6 +641,56 @@ pub fn hosts_link(app: AppHandle, admin: State<'_, Admin>, library: State<'_, Li
         Error::Unreachable => "Nothing answered at that address. Is the companion running on the desktop?".to_string(),
         other => other.to_string(),
     })?;
+    finish_link(&app, &library, hello, link)
+}
+
+/// A link that waits to be allowed at the desktop. One at a time.
+static ASKING: Mutex<Option<std::sync::Arc<client::Asking>>> = Mutex::new(None);
+
+/// Ask a desktop to link without a code. Answers with the number both
+/// screens show; `hosts_link_wait` then waits for someone to allow it there.
+#[tauri::command(async)]
+pub fn hosts_link_ask(admin: State<'_, Admin>, address: String) -> Result<String, String> {
+    admin.require()?;
+    let asking = client::enrol_ask(address.trim(), PORT, &this_device()).map_err(|e| match e {
+        Error::Unreachable => "Nothing answered at that address. Is the companion running on the desktop?".to_string(),
+        other => other.to_string(),
+    })?;
+    let check = asking.check.clone();
+    *ASKING.lock().unwrap_or_else(|e| e.into_inner()) = Some(std::sync::Arc::new(asking));
+    Ok(check)
+}
+
+/// Wait until the link that was asked for is allowed at the desktop, then
+/// finish it as a code would.
+#[tauri::command(async)]
+pub fn hosts_link_wait(app: AppHandle, admin: State<'_, Admin>, library: State<'_, Library>) -> Result<Linked, String> {
+    admin.require()?;
+    let asking = ASKING.lock().unwrap_or_else(|e| e.into_inner()).clone().ok_or("Choose the desktop again.")?;
+    let still_ours = || ASKING.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|a| std::sync::Arc::ptr_eq(a, &asking));
+    let end = Instant::now() + Duration::from_secs(carla_core::link::enrol::APPROVE_LIFETIME as u64);
+    let (hello, link) = loop {
+        match asking.finish() {
+            Ok(Some(done)) => break done,
+            Ok(None) if Instant::now() < end && still_ours() => std::thread::sleep(Duration::from_secs(1)),
+            Ok(None) => return Err("Nobody allowed it at the desktop in time. Choose the desktop again.".to_string()),
+            Err(Error::Unreachable) => return Err("The desktop stopped answering.".to_string()),
+            Err(e) => return Err(e.to_string()),
+        }
+    };
+    *ASKING.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    finish_link(&app, &library, hello, link)
+}
+
+/// Stop waiting for a link to be allowed.
+#[tauri::command]
+pub fn hosts_link_cancel() {
+    *ASKING.lock().unwrap_or_else(|e| e.into_inner()) = None;
+}
+
+/// What follows every new link, however it was made: keep it, pair
+/// Moonlight, fetch the desktop's games and measure the connection.
+fn finish_link(app: &AppHandle, library: &Library, hello: carla_core::link::Hello, link: Link) -> Result<Linked, String> {
     let host = HostRow {
         id: hello.id,
         name: hello.name,
@@ -513,9 +706,12 @@ pub fn hosts_link(app: AppHandle, admin: State<'_, Admin>, library: State<'_, Li
     library.store().save_host(&host, now())?;
     let warning = pair_moonlight(&link).err();
     note_paired(&link.address, warning.is_none());
-    let games = sync_games(&library, &host, &link).unwrap_or(0);
-    allow_pictures(&app, &art_dir(&library));
-    Ok(Linked { host: refresh(&library, &host), games, warning })
+    let games = sync_games(library, &host, &link).unwrap_or(0);
+    allow_pictures(app, &art_dir(library));
+    if let Ok(status) = link.status() {
+        measure_host(library, &host, &link, &status, Depth::Full);
+    }
+    Ok(Linked { host: refresh(library, &host), games, warning })
 }
 
 #[tauri::command]
@@ -665,7 +861,7 @@ fn picture_for(library: &Library, host: &HostRow, link: &Link) -> Choice {
     let away = wake::is_tailscale(&link.address);
     let measure = match setting {
         Setting::Fixed(_) => None,
-        Setting::Auto { .. } => quality::measure(&|bytes| link.probe(bytes).ok(), away),
+        Setting::Auto { .. } => quality::survey(link, away, Depth::Quick),
     };
     let choice = quality::choose(setting, measure, away);
     let _ = library.store().set_host_streamed(&host.id, &Streamed { choice, at: now() });

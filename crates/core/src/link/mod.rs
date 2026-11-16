@@ -15,9 +15,12 @@ use serde::{Deserialize, Serialize};
 
 pub mod check;
 pub mod client;
+pub mod codec;
 pub mod discover;
 pub mod enrol;
+pub mod health;
 pub mod moonlight;
+pub mod probe;
 pub mod quality;
 pub mod sign;
 pub mod wake;
@@ -36,6 +39,10 @@ pub struct Hello {
     pub id: String,
     pub version: String,
     pub api_version: u32,
+    /// Someone at the desktop has opened linking: an Ally can be linked by
+    /// being allowed there, without a code being typed.
+    #[serde(default)]
+    pub approve: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -67,6 +74,25 @@ pub struct Status {
     /// Hardware addresses of its network adapters, for waking it.
     #[serde(default)]
     pub macs: Vec<String>,
+    /// Names of its graphics chips, for knowing which codec a stream gets.
+    #[serde(default)]
+    pub graphics: Vec<String>,
+}
+
+/// Asks what screen the desktop would give a stream of this size.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FitAsk {
+    pub screen: crate::display::Mode,
+}
+
+/// What screen a stream would be shown on at the desktop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScreenFit {
+    /// The stream gets a virtual screen of its own, of exactly its size.
+    pub virtual_screen: bool,
+    /// The mode the desktop's screen would take. `None`: it has nothing
+    /// suitable and stays as it is, so the picture is scaled.
+    pub mode: Option<crate::display::Mode>,
 }
 
 /// What a desktop answers when it is asked to update itself.
@@ -129,6 +155,23 @@ pub struct Installing {
 pub struct EnrolStart {
     pub device_name: String,
     /// The Ally's key-exchange message, hex.
+    pub message: String,
+}
+
+/// Starts a link that someone at the desktop allows, instead of a code.
+/// The Ally first only commits to its key-exchange message, so that neither
+/// side can steer the number both screens show.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EnrolAsk {
+    pub device_name: String,
+    /// SHA-256 of the Ally's key-exchange message, hex.
+    pub commit: String,
+}
+
+/// The Ally's message itself, once it has the desktop's.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EnrolReveal {
+    pub enrol_id: String,
     pub message: String,
 }
 
