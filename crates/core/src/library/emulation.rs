@@ -61,6 +61,21 @@ const KNOWN: &[(&str, Suggestion)] = &[
     ("rpcs3", Suggestion { name: "PlayStation 3", options: "--no-gui --fullscreen \"{game}\"", endings: &["iso"] }),
     ("lime3ds", Suggestion { name: "Nintendo 3DS", options: "\"{game}\"", endings: &["3ds", "cci", "cxi"] }),
     ("azahar", Suggestion { name: "Nintendo 3DS", options: "\"{game}\"", endings: &["3ds", "cci", "cxi"] }),
+    ("citra", Suggestion { name: "Nintendo 3DS", options: "\"{game}\"", endings: &["3ds", "cci", "cxi"] }),
+    ("ryujinx", Suggestion { name: "Switch", options: "--fullscreen \"{game}\"", endings: &["nsp", "xci", "nca", "nro"] }),
+    ("ryubing", Suggestion { name: "Switch", options: "--fullscreen \"{game}\"", endings: &["nsp", "xci", "nca", "nro"] }),
+    ("eden", Suggestion { name: "Switch", options: "-f -g \"{game}\"", endings: &["nsp", "xci", "nca", "nro"] }),
+    ("citron", Suggestion { name: "Switch", options: "-f -g \"{game}\"", endings: &["nsp", "xci", "nca", "nro"] }),
+    ("sudachi", Suggestion { name: "Switch", options: "-f -g \"{game}\"", endings: &["nsp", "xci", "nca", "nro"] }),
+    ("suyu", Suggestion { name: "Switch", options: "-f -g \"{game}\"", endings: &["nsp", "xci", "nca", "nro"] }),
+    ("yuzu", Suggestion { name: "Switch", options: "-f -g \"{game}\"", endings: &["nsp", "xci", "nca", "nro"] }),
+    ("xenia", Suggestion { name: "Xbox 360", options: "--fullscreen \"{game}\"", endings: &["iso", "xex", "zar"] }),
+    ("rmg", Suggestion { name: "Nintendo 64", options: "--fullscreen \"{game}\"", endings: &["z64", "n64", "v64", "zip"] }),
+    ("project64", Suggestion { name: "Nintendo 64", options: "\"{game}\"", endings: &["z64", "n64", "v64", "zip"] }),
+    ("ares", Suggestion { name: "Nintendo 64", options: "--fullscreen \"{game}\"", endings: &["z64", "n64", "v64"] }),
+    ("bsnes", Suggestion { name: "Super Nintendo", options: "--fullscreen \"{game}\"", endings: &["sfc", "smc"] }),
+    ("redream", Suggestion { name: "Dreamcast", options: "\"{game}\"", endings: &["chd", "gdi", "cdi", "cue"] }),
+    ("sameboy", Suggestion { name: "Game Boy", options: "--fullscreen \"{game}\"", endings: &["gb", "gbc"] }),
 ];
 
 /// What to fill in for an emulator, going by its program's name. A program
@@ -74,6 +89,13 @@ pub fn suggest(emulator: &Path) -> Suggestion {
         .find(|(start, _)| file.starts_with(start))
         .map(|(_, s)| s.clone())
         .unwrap_or(Suggestion { name: "", options: "\"{game}\"", endings: &[] })
+}
+
+/// The start of the program's name CarlaOS knew it by.
+pub fn known_start(emulator: &Path) -> Option<&'static str> {
+    let path = emulator.to_string_lossy().to_lowercase();
+    let file = path.rsplit(['/', '\\']).next().unwrap_or_default();
+    KNOWN.iter().map(|(start, _)| *start).find(|start| file.starts_with(start))
 }
 
 /// Tidy what the administrator typed, or say what is missing.

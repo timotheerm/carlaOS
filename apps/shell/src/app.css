@@ -2283,3 +2283,578 @@ button {
   background: #5a2b3c;
   color: #ffd6e2;
 }
+
+/* ================= the immersive look ================= */
+
+/* ---------- the picture of the game in focus, behind everything ---------- */
+/* A wide picture made for the purpose is shown as it is, filling the screen,
+   the way a console does. A cover alone stays a soft wash of its colours. */
+.ambient--full .ambient__layer--sharp {
+  inset: -1.5rem;
+  filter: none;
+  background-position: center 22%;
+  animation: backdrop-drift 48s ease-in-out infinite alternate;
+}
+
+.ambient--full .ambient__layer--sharp.ambient__layer--on,
+:root[data-theme="dark"] .ambient--full .ambient__layer--sharp.ambient__layer--on {
+  opacity: 1;
+}
+
+@keyframes backdrop-drift {
+  from {
+    transform: scale(1) translate3d(0, 0, 0);
+  }
+  to {
+    transform: scale(1.045) translate3d(-0.6rem, -0.4rem, 0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ambient--full .ambient__layer--sharp {
+    animation: none;
+  }
+}
+
+/* Clear at the top where the picture shows, the page's own colour by the
+   middle of the screen, so every word stays as readable as on a plain page. */
+.ambient--full .ambient__veil {
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--bg) 62%, transparent), transparent 62%),
+    linear-gradient(180deg, color-mix(in srgb, var(--bg) 38%, transparent) 0%, color-mix(in srgb, var(--bg) 70%, transparent) 30%, color-mix(in srgb, var(--bg) 92%, transparent) 58%, var(--bg) 84%);
+}
+
+.shell--playing .ambient--full .ambient__veil {
+  background: radial-gradient(60% 60% at 50% 45%, color-mix(in srgb, var(--bg) 82%, transparent), color-mix(in srgb, var(--bg) 45%, transparent));
+}
+
+/* Over a picture the bar at the top needs a ground of its own. */
+:root[data-backdrop="full"] .rail,
+:root[data-backdrop="full"] .status {
+  padding: 0.3rem;
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--surface) 72%, transparent);
+  box-shadow: 0 0.25rem 1rem rgb(0 0 0 / 8%);
+}
+
+:root[data-backdrop="full"] .status {
+  padding: 0.6rem 1.4rem;
+  color: var(--text);
+}
+
+:root[data-backdrop="full"] .rail__item {
+  min-height: 3.4rem;
+}
+
+/* ---------- how a game stands: one dot, a few words ---------- */
+.stateline {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+  font-weight: 800;
+  color: var(--text);
+}
+
+.stateline > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stateline i {
+  flex: none;
+  width: 0.8rem;
+  height: 0.8rem;
+  border-radius: 50%;
+  background: var(--off);
+}
+
+.stateline--ok i {
+  background: var(--ok);
+}
+
+.stateline--busy i {
+  background: var(--accent);
+  box-shadow: 0 0 0 0.25rem color-mix(in srgb, var(--accent) 30%, transparent);
+  animation: state-pulse 1.6s ease-in-out infinite;
+}
+
+.stateline--wait i {
+  background: transparent;
+  border: 0.2rem solid var(--accent);
+}
+
+.stateline--warn i {
+  background: var(--warn);
+  border-radius: 0.2rem;
+  transform: rotate(45deg);
+}
+
+/* Not installed: a hollow dot, so it differs by shape and not only colour. */
+.stateline--off i {
+  background: transparent;
+  border: 0.2rem solid var(--text-quiet);
+}
+
+.stateline--off {
+  color: var(--text-quiet);
+}
+
+@keyframes state-pulse {
+  50% {
+    box-shadow: 0 0 0 0.45rem color-mix(in srgb, var(--accent) 0%, transparent);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .stateline--busy i {
+    animation: none;
+  }
+}
+
+.card__meta {
+  display: grid;
+  gap: 0.1rem;
+  min-width: 0;
+  font-size: 1.1rem;
+}
+
+.card__sub {
+  overflow: hidden;
+  color: var(--text-quiet);
+  font-size: 1rem;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.card:focus .cover {
+  box-shadow: 0 1.25rem 2.5rem rgb(0 0 0 / 28%);
+}
+
+/* A game that is being fetched: its picture dims and a ring says how far. */
+.card__veil {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  aspect-ratio: 2 / 3;
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius-card);
+  background: rgb(30 18 32 / 58%);
+  pointer-events: none;
+}
+
+.ring {
+  position: relative;
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 7.5rem;
+  height: 7.5rem;
+}
+
+.ring svg {
+  position: absolute;
+  inset: 0;
+  transform: rotate(-90deg);
+}
+
+.ring circle {
+  fill: none;
+  stroke-width: 9;
+  stroke-linecap: round;
+}
+
+.ring__track {
+  stroke: rgb(255 255 255 / 28%);
+}
+
+.ring__fill {
+  stroke: #f7b3c6;
+  transition: stroke-dasharray 600ms linear;
+}
+
+.ring--paused .ring__fill {
+  stroke: #cfc6cb;
+}
+
+.ring--turning svg {
+  animation: ring-turn 1.8s linear infinite;
+}
+
+@keyframes ring-turn {
+  to {
+    transform: rotate(270deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ring--turning svg {
+    animation: none;
+  }
+}
+
+.ring__text {
+  position: relative;
+  color: #fff;
+  font-size: 2rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  text-shadow: 0 0.1rem 0.5rem rgb(0 0 0 / 40%);
+}
+
+.ring--turning .ring__text,
+.ring--paused .ring__text {
+  font-size: 1.05rem;
+}
+
+.ring__text small {
+  margin-left: 0.1rem;
+  font-size: 1.1rem;
+}
+
+.card--more {
+  align-content: start;
+}
+
+.card__more {
+  display: grid;
+  place-items: center;
+  aspect-ratio: 2 / 3;
+  padding: 1rem;
+  border-radius: var(--radius-card);
+  border: 0.2rem dashed var(--accent);
+  color: var(--text);
+  font-size: 1.4rem;
+  font-weight: 800;
+  text-align: center;
+}
+
+/* ---------- Home: continue playing, on the game's own picture ---------- */
+.hero {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: end;
+  gap: 2rem;
+  height: 22rem;
+  padding: 2.25rem 2.5rem;
+  background: color-mix(in srgb, var(--surface) 46%, transparent);
+  overflow: visible;
+}
+
+.hero__text {
+  position: static;
+  color: var(--text);
+  text-shadow: none;
+  gap: 0.6rem;
+  min-width: 0;
+}
+
+.hero__eyebrow {
+  color: color-mix(in srgb, var(--accent) 60%, var(--text));
+}
+
+.hero__title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding-bottom: 0.1em;
+}
+
+.hero__meta .stateline {
+  font-size: 1.375rem;
+}
+
+.hero__go {
+  justify-self: start;
+  display: inline-grid;
+  place-items: center;
+  min-height: 3.4rem;
+  margin-top: 0.5rem;
+  padding: 0 2.25rem;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 800;
+}
+
+:root[data-theme="dark"] .hero__go {
+  color: var(--bg);
+}
+
+.hero__cover {
+  align-self: center;
+  width: 11.5rem;
+  border-radius: var(--radius-card);
+  box-shadow: 0 1rem 2.5rem rgb(0 0 0 / 30%);
+  transform: rotate(2deg);
+}
+
+.hero__cover .cover__title {
+  font-size: 1.2rem;
+}
+
+/* ---------- the foot of the screen: the game in focus ---------- */
+.hints {
+  justify-content: space-between;
+  align-items: center;
+  min-height: 3.2rem;
+}
+
+.hints__keys {
+  display: flex;
+  gap: 2rem;
+  margin-left: auto;
+}
+
+.focusline {
+  display: inline-flex;
+  align-items: center;
+  gap: 1rem;
+  min-width: 0;
+  max-width: 50%;
+  font-size: 1.15rem;
+}
+
+.focusline b {
+  overflow: hidden;
+  color: var(--text);
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.focusline .stateline {
+  color: var(--text-quiet);
+  font-weight: 700;
+}
+
+/* ---------- what is being fetched, in the top bar ---------- */
+.top__downloads {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 2.6rem;
+  margin: -0.3rem 0;
+  padding: 0 1.1rem;
+  border-radius: var(--radius-pill);
+  background: var(--accent-soft);
+  color: var(--text);
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+}
+
+.top__downloads i {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 0.3rem;
+  background: var(--accent);
+  transition: width 600ms linear;
+}
+
+/* ---------- the downloads page ---------- */
+.downloads {
+  display: grid;
+  gap: 1.25rem;
+  max-width: 78rem;
+}
+
+.downloads__title {
+  margin: 1.5rem 0 0;
+}
+
+.download {
+  display: grid;
+  grid-template-columns: 7rem 1fr auto;
+  align-items: center;
+  gap: 2rem;
+  padding: 1.25rem 2rem 1.25rem 1.25rem;
+  border-radius: var(--radius-card);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.download--waiting {
+  grid-template-columns: 5rem 1fr;
+}
+
+.download__cover .cover {
+  padding: 0.5rem;
+  border-radius: 0.8rem;
+}
+
+.download__cover .cover__title {
+  font-size: 0.8rem;
+}
+
+.download__body {
+  display: grid;
+  gap: 0.55rem;
+  min-width: 0;
+}
+
+.download__title {
+  font-size: var(--text-title);
+  font-weight: 800;
+  line-height: 1.1;
+}
+
+.download__where,
+.download__how {
+  color: var(--text-quiet);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.download .progress {
+  height: 0.8rem;
+}
+
+.download .ring__track {
+  stroke: var(--accent-soft);
+}
+
+.download .ring__fill {
+  stroke: var(--accent);
+}
+
+.download .ring__text {
+  color: var(--text);
+  text-shadow: none;
+}
+
+/* The four steps of an install, the one it is at filled in. */
+.steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 1.5rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: var(--text-quiet);
+}
+
+.steps__step {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.steps__step i {
+  display: grid;
+  place-items: center;
+  width: 1.7rem;
+  height: 1.7rem;
+  border-radius: 50%;
+  border: 0.15rem solid var(--off);
+  font-size: 0.9rem;
+  font-style: normal;
+  font-weight: 800;
+}
+
+.steps__step--done {
+  color: var(--text);
+}
+
+.steps__step--done i {
+  border-color: var(--ok);
+  background: var(--ok);
+  color: var(--surface);
+}
+
+.steps__step--now {
+  color: var(--text);
+  font-weight: 800;
+}
+
+.steps__step--now i {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.fetching .steps {
+  grid-column: 1 / -1;
+}
+
+/* ---------- a game's page: every place it is, and how it stands there ---------- */
+.detail__body > .stateline {
+  font-size: 1.3rem;
+}
+
+.places {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(26rem, 1fr));
+  gap: 1.25rem;
+}
+
+.place {
+  display: grid;
+  gap: 0.4rem;
+  padding: 1.25rem 1.5rem;
+  border-radius: var(--radius-card);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  border-left: 0.5rem solid var(--off);
+}
+
+.place--ok {
+  border-left-color: var(--ok);
+}
+
+.place--busy,
+.place--wait {
+  border-left-color: var(--accent);
+}
+
+.place--warn {
+  border-left-color: var(--warn);
+}
+
+.place__name {
+  font-size: 1.5rem;
+  font-weight: 800;
+}
+
+.place__note {
+  color: var(--text-quiet);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* On its own picture, the game's page keeps its words on a ground. */
+:root[data-backdrop="full"] .pregame .detail__body {
+  padding: 2rem 2.25rem;
+  border-radius: 1.75rem;
+  background: color-mix(in srgb, var(--surface) 62%, transparent);
+}
+
+/* The top of a game's page grows with what it has to say (an install in
+   progress adds lines), so nothing below is ever covered. */
+.pregame .detail {
+  height: auto;
+  min-height: 34rem;
+}
+
+.pregame .detail > .cover {
+  min-height: 34rem;
+}
+
+:root:not([data-theme="dark"]) .ambient--full .ambient__veil {
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--bg) 48%, transparent), transparent 60%),
+    linear-gradient(180deg, color-mix(in srgb, var(--bg) 22%, transparent) 0%, color-mix(in srgb, var(--bg) 62%, transparent) 30%, color-mix(in srgb, var(--bg) 92%, transparent) 58%, var(--bg) 84%);
+}
+
+.hero {
+  background: color-mix(in srgb, var(--surface) 34%, transparent);
+}

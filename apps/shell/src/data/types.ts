@@ -36,7 +36,18 @@ export type Download = {
   done: number; // bytes; both 0 until the store knows how much there is
   total: number;
   update: boolean; // an installed game being brought up to date
+  rate?: number; // bytes a second lately; 0 or missing when not known
+  eta?: number | null; // seconds until everything is fetched
 };
+
+/// A program on the Ally that looks like a game and is not in the library.
+export type FoundGame = { exe: string; args: string; title: string; kind: Kind; origin: string; port: string; from: string };
+/// An emulator on the Ally that CarlaOS knows how to start.
+export type FoundEmulator = { exe: string; program: string; name: string; options: string; endings: string[]; from: string };
+export type Discovered = { games: FoundGame[]; emulators: FoundEmulator[] };
+
+/// How much of a game's picture is put behind everything.
+export type Backdrop = "full" | "soft" | "off";
 
 /// What fills the disks Steam installs to on this Ally.
 export type Storage = {

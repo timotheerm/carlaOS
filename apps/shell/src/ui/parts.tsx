@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import type { Download, Game, Host, HostState, Waiting } from "../data/types";
 import { CloudIcon, Heart, OnDevice, Source, Streamed } from "./icons";
+import { Ring, StateLine, downloadOf, installState } from "./install";
 import { banner } from "./platform";
 
 export function playtime(minutes: number): string {
@@ -89,16 +90,17 @@ export function Progress({ download }: { download: Download }) {
 
 // A game's picture. Without real artwork: a soft gradient from the game's
 // hue with its name on it.
-export function Cover({ game, wide = false, band = true }: { game: Game; wide?: boolean; band?: boolean }) {
-  const picture = wide ? (game.hero ?? game.cover) : (game.cover ?? game.hero);
+export function Cover({ game, wide = false, band = true, poster = false }: { game: Game; wide?: boolean; band?: boolean; /** In a wide frame, show the cover whole when there is one. */ poster?: boolean }) {
+  const picture = wide ? (poster ? (game.cover ?? game.hero) : (game.hero ?? game.cover)) : (game.cover ?? game.hero);
+  // A tall cover in a wide frame sits whole on a soft copy of itself.
+  const whole = wide && (poster ? !!game.cover : !game.hero);
   const banded = band && banner(game) !== null;
   const shape = `${wide ? "cover cover--wide" : "cover"}${banded ? " cover--banded" : ""}`;
   if (picture) {
     return (
       <div className={`${shape} cover--art`} aria-hidden>
-        {/* A tall cover in a wide frame sits whole on a soft copy of itself. */}
-        {wide && !game.hero && <img className="cover__behind" src={picture} alt="" draggable={false} />}
-        <img className={wide && !game.hero ? "cover__whole" : undefined} src={picture} alt="" loading="lazy" draggable={false} />
+        {whole && <img className="cover__behind" src={picture} alt="" draggable={false} />}
+        <img className={whole ? "cover__whole" : undefined} src={picture} alt="" loading="lazy" draggable={false} />
         {band && <Band game={game} />}
       </div>
     );
@@ -123,11 +125,6 @@ export function Badges({ game, hosts }: { game: Game; hosts?: Host[] }) {
         <Source kind={game.kind} />
         {game.kind === "port" && game.platform === "Standalone" ? "Port" : game.platform}
       </span>
-      {game.places.length === 0 && (
-        <span className="badge badge--absent" title="In the library, not installed yet.">
-          Not installed
-        </span>
-      )}
       {local && (
         <span className="badge badge--offline" title="Installed on this Ally. Plays without a desktop.">
           <OnDevice />
@@ -144,11 +141,6 @@ export function Badges({ game, hosts }: { game: Game; hosts?: Host[] }) {
         <span className="badge badge--stream" title={`Streams from ${from}. Needs a connection to it.`}>
           <Streamed />
           {local ? "" : "Stream"}
-        </span>
-      )}
-      {(game.updates?.length ?? 0) > 0 && (
-        <span className="badge badge--update" title="A store has to update this game before it starts.">
-          Update
         </span>
       )}
     </span>
@@ -177,23 +169,26 @@ export function GameCard({
   game,
   favourite,
   onOpen,
-  download,
+  downloads,
 }: {
   game: Game;
   favourite: boolean;
   onOpen: (id: string) => void;
-  /** What its store is fetching for it, if anything. */
-  download?: Download;
+  /** Everything the stores are fetching, to find what is fetched for this game. */
+  downloads: Download[];
 }) {
-  const absent = game.places.length === 0;
+  const download = downloadOf(game.id, downloads);
+  const state = installState(game, downloads);
+  // The second line: how long is left, or how long it has been played.
+  const sub = download ? (state.left ?? (download.total ? `${size(download.done)} of ${size(download.total)}` : "Steam is getting ready")) : state.key === "absent" ? "In your library" : playtime(game.playtimeMinutes);
   return (
     <button
-      className={absent ? "card card--absent" : "card"}
+      className={`card card--${state.key}`}
       data-focus
       data-fid={`game:${game.id}`}
       data-game={game.id}
       onClick={() => onOpen(game.id)}
-      aria-label={`${game.title}, from ${game.platform}, ${download ? `installing, ${fetching(download)}` : availability(game)}${favourite ? ", favourite" : ""}`}
+      aria-label={`${game.title}, from ${game.platform}, ${state.label}${state.left ? `, ${state.left}` : ""}, ${availability(game)}${favourite ? ", favourite" : ""}`}
     >
       <Cover game={game} />
       <Badges game={game} />
@@ -202,9 +197,15 @@ export function GameCard({
           <Heart />
         </span>
       )}
+      {download && (
+        <span className="card__veil">
+          <Ring state={state} />
+        </span>
+      )}
       {download && <Progress download={download} />}
       <span className="card__meta">
-        {download ? `${download.update ? "Updating" : "Installing"} · ${fetching(download)}` : absent ? "Ready to install" : playtime(game.playtimeMinutes)}
+        <StateLine state={state} />
+        <span className="card__sub">{sub}</span>
       </span>
     </button>
   );

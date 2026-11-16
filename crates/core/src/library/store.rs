@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use rusqlite::{params, Connection, OptionalExtension};
 
 use super::emulation::Console;
-use super::{GameView, HostRow, Install, Kind, ManualGame, Offered, Scanned, Streamed, Synced, Update, Waiting, LOCAL};
+use super::{Artless, GameView, HostRow, Install, Kind, ManualGame, Offered, Scanned, Streamed, Synced, Update, Waiting, LOCAL};
 use crate::link::quality::Setting;
 
 type Result<T> = std::result::Result<T, String>;
@@ -144,6 +144,8 @@ impl Store {
             ("games", "cover_own", "TEXT"),
             ("games", "hero_own", "TEXT"),
             ("games", "origin", "TEXT NOT NULL DEFAULT ''"),
+            // When CarlaOS last looked for pictures of a game by itself.
+            ("games", "art_tried", "INTEGER NOT NULL DEFAULT 0"),
         ];
         for (table, column, kind) in added {
             let has: bool = db
@@ -237,6 +239,57 @@ impl Store {
     pub fn set_cover_if_none(&mut self, game_id: &str, cover: &Path) -> Result<()> {
         self.db.execute("UPDATE games SET cover = ?2 WHERE id = ?1 AND cover IS NULL", params![game_id, text(cover)]).map_err(err)?;
         Ok(())
+    }
+
+    /// Games that have no cover or no wide picture and were not looked up
+    /// since `before`, the ones played last first. Only installed games: the
+    /// rest of a store library gets covers elsewhere, and no wide pictures.
+    pub fn artless(&self, before: i64) -> Result<Vec<Artless>> {
+        let mut query = self
+            .db
+            .prepare(
+                "SELECT g.id, g.title, g.kind, g.platform, g.origin, COALESCE(g.cover_own, g.cover) IS NULL, COALESCE(g.hero_own, g.hero) IS NULL
+                 FROM games g
+                 WHERE (COALESCE(g.cover_own, g.cover) IS NULL OR COALESCE(g.hero_own, g.hero) IS NULL) AND g.art_tried < ?1
+                   AND EXISTS (SELECT 1 FROM installs i WHERE i.game_id = g.id)
+                 ORDER BY
+                 (SELECT MAX(started) FROM play_sessions p WHERE p.game_id = g.id) DESC, g.title COLLATE NOCASE",
+            )
+            .map_err(err)?;
+        let rows = query
+            .query_map(params![before], |r| {
+                Ok(Artless { id: r.get(0)?, title: r.get(1)?, kind: Kind::parse(&r.get::<_, String>(2)?), platform: r.get(3)?, origin: r.get(4)?, need_cover: r.get(5)?, need_hero: r.get(6)? })
+            })
+            .map_err(err)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(err)?;
+        Ok(rows)
+    }
+
+    /// Give a game a cover (`wide` false) or a wide picture, unless it has one.
+    pub fn set_art_if_none(&mut self, game_id: &str, wide: bool, picture: &Path) -> Result<()> {
+        let column = if wide { "hero" } else { "cover" };
+        self.db.execute(&format!("UPDATE games SET {column} = ?2 WHERE id = ?1 AND {column} IS NULL"), params![game_id, text(picture)]).map_err(err)?;
+        Ok(())
+    }
+
+    /// Note that a game's pictures were looked for just now.
+    pub fn art_tried(&mut self, game_id: &str, now: i64) -> Result<()> {
+        self.db.execute("UPDATE games SET art_tried = ?2 WHERE id = ?1", params![game_id, now]).map_err(err)?;
+        Ok(())
+    }
+
+    /// Look every game up again the next time, whatever was found before.
+    pub fn forget_art_tried(&mut self) -> Result<()> {
+        self.db.execute("UPDATE games SET art_tried = 0", []).map_err(err)?;
+        Ok(())
+    }
+
+    /// The programs of the games and consoles added by hand, lower case.
+    pub fn known_programs(&self) -> Result<Vec<String>> {
+        let mut query = self.db.prepare("SELECT exe FROM installs WHERE place = 'local' AND exe IS NOT NULL UNION SELECT emulator FROM consoles").map_err(err)?;
+        let rows = query.query_map([], |r| r.get::<_, String>(0)).map_err(err)?.collect::<rusqlite::Result<Vec<_>>>().map_err(err)?;
+        Ok(rows.into_iter().map(|p| p.replace('/', "\\").to_lowercase()).collect())
     }
 
     /// Add a game by hand. Adding the same program again updates it.
@@ -743,6 +796,29 @@ mod tests {
 
     fn scanned(id: &str, title: &str) -> Scanned {
         Scanned { source_id: id.into(), title: title.into(), install_path: PathBuf::from("/games").join(title), ..Scanned::default() }
+    }
+
+    #[test]
+    fn games_without_pictures_are_listed_once_and_left_alone_after_a_look() {
+        let mut store = Store::in_memory().unwrap();
+        let scanned = |id: &str, title: &str, cover: Option<&str>| Scanned { source_id: id.into(), title: title.into(), cover: cover.map(PathBuf::from), ..Scanned::default() };
+        store.sync(LOCAL, "steam", &[scanned("1", "Bare", None), scanned("2", "Covered", Some("/c.jpg"))], 100).unwrap();
+        let wanting = store.artless(1).unwrap();
+        assert_eq!(wanting.iter().map(|a| (a.id.as_str(), a.need_cover, a.need_hero)).collect::<Vec<_>>(), [("steam:1", true, true), ("steam:2", false, true)]);
+        store.set_art_if_none("steam:1", false, Path::new("/auto.jpg")).unwrap();
+        store.set_art_if_none("steam:2", false, Path::new("/never.jpg")).unwrap();
+        store.set_art_if_none("steam:2", true, Path::new("/wide.jpg")).unwrap();
+        store.art_tried("steam:1", 500).unwrap();
+        let games = store.list().unwrap();
+        assert_eq!((games[0].cover.as_deref(), games[1].cover.as_deref(), games[1].hero.as_deref()), (Some("/auto.jpg"), Some("/c.jpg"), Some("/wide.jpg")));
+        // Looked up at 500: not again until that is long enough ago.
+        assert!(store.artless(400).unwrap().is_empty());
+        assert_eq!(store.artless(501).unwrap().len(), 1);
+        store.forget_art_tried().unwrap();
+        assert_eq!(store.artless(1).unwrap().len(), 1);
+        // A picture chosen by hand counts as having one.
+        store.set_own_art("steam:1", true, Some(Path::new("/own.jpg"))).unwrap();
+        assert!(store.artless(1).unwrap().is_empty());
     }
 
     #[test]

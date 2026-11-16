@@ -4,7 +4,9 @@ import { useEffect, useState } from "react";
 import { POWERS, POWER_TEXT, type Achievement, type Details, type Download, type Game, type Host, type PowerView, type SaveSync, type Saves } from "../data/types";
 import { library, message } from "../library/store";
 import { Clock, Download as Download_, Heart, Lock, SaveIcon, Sparkle, Trophy } from "../ui/icons";
-import { Badges, Cover, Empty, Progress, Row, amount, day, fetching, placeLabel, size, updateLine, when } from "../ui/parts";
+import { Badges, Cover, Empty, Progress, Row, amount, day, placeLabel, size, updateLine, when } from "../ui/parts";
+import { StateLine, Steps, installState, placeName, stateAt } from "../ui/install";
+import { howFar } from "./downloads";
 import type { Ctx } from "./screens";
 
 // More than this many tiles in one row stops being a pleasure to scroll.
@@ -176,7 +178,8 @@ function PowerPanel({ game, place, notify }: { game: Game; place: string; notify
   );
 }
 
-// One line per machine that is fetching the game: where, how far, how much.
+// One block per machine that is fetching the game: where, which step, how
+// far, how fast and how long still.
 function Fetching({ downloads, hosts }: { downloads: Download[]; hosts: Host[] }) {
   return (
     <div className="fetching">
@@ -185,14 +188,49 @@ function Fetching({ downloads, hosts }: { downloads: Download[]; hosts: Host[] }
           <span className="fetching__where">
             {d.update ? "Updating" : "Installing"} {d.place === "local" ? "on this Ally" : `on ${placeLabel(d.place, hosts)}`}
           </span>
-          <span className="fetching__how">
-            {fetching(d)}
-            {d.total > 0 && d.phase !== "finishing" ? ` · ${size(d.done)} of ${size(d.total)}` : ""}
-          </span>
+          <span className="fetching__how">{howFar(d)}</span>
+          <Steps download={d} />
           <Progress download={d} />
         </div>
       ))}
     </div>
+  );
+}
+
+// Every place the game is or could be, and how it stands there.
+function Places({ game, downloads, hosts }: { game: Game; downloads: Download[]; hosts: Host[] }) {
+  const places = [...new Set([...game.places, ...downloads.map((d) => d.place), ...game.installable])];
+  places.sort((a, b) => Number(a !== "local") - Number(b !== "local"));
+  if (places.length === 0) return null;
+  return (
+    <section className="row">
+      <h2 className="row__title">Where it is</h2>
+      <div className="places">
+        {places.map((place) => {
+          const state = stateAt(game, place, downloads);
+          const download = downloads.find((d) => d.place === place);
+          return (
+            <div key={place} className={`place place--${state.tone}`}>
+              <span className="place__name">{placeName(place, hosts)}</span>
+              <StateLine state={state} />
+              <span className="place__note">
+                {download
+                  ? howFar(download)
+                  : state.key === "installed"
+                    ? "Plays here, without a desktop or the internet."
+                    : state.key === "stream"
+                      ? "Streams to this Ally when you choose it."
+                      : state.key === "cloud"
+                        ? "Plays over the internet."
+                        : state.key === "absent"
+                          ? "In your library. It can be installed here."
+                          : "The store finishes this before the game starts."}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    </section>
   );
 }
 
@@ -237,9 +275,10 @@ export function GameDetail({ gameId, onToggleFavourite, ...ctx }: Ctx & { gameId
   return (
     <div className="pregame" data-game={game.id}>
       <article className="detail">
-        <Cover game={game} wide />
+        <Cover game={game} wide poster />
         <div className="detail__body">
           <Badges game={game} hosts={ctx.hosts} />
+          <StateLine state={installState(game, ctx.downloads)} />
           <h1 className="detail__title">{game.title}</h1>
           {game.description && <p className="detail__desc">{game.description}</p>}
           {(game.updates ?? []).map((u) => (
@@ -306,6 +345,7 @@ export function GameDetail({ gameId, onToggleFavourite, ...ctx }: Ctx & { gameId
         </div>
       </article>
 
+      <Places game={game} downloads={fetched} hosts={ctx.hosts} />
       {own.length > 0 && (
         <Row title={`Achievements · ${earned(own)} of ${own.length}${from && from !== "steam" ? ` · from ${from}` : ""}`}>
           <Trophies list={own} prefix="ach" />

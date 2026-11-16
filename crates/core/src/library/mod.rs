@@ -27,6 +27,9 @@ pub mod meta;
 pub mod art;
 pub mod cloud;
 pub mod ports;
+pub mod pe;
+pub mod discover;
+pub mod autoart;
 pub mod shortcut;
 
 pub use store::Store;
@@ -217,6 +220,18 @@ pub struct GameView {
     pub origin: String,
     /// The administrator chose its pictures, so they can be given back.
     pub own_art: bool,
+}
+
+/// A game without a cover or without a wide picture.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Artless {
+    pub id: String,
+    pub title: String,
+    pub kind: Kind,
+    pub platform: String,
+    pub origin: String,
+    pub need_cover: bool,
+    pub need_hero: bool,
 }
 
 /// How to start one install.
