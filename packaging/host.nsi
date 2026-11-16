@@ -91,6 +91,8 @@ Section "Install"
   WriteUninstaller "$INSTDIR\uninstall.exe"
 
   CreateShortcut "$SMPROGRAMS\${PRODUCT}.lnk" "$INSTDIR\${EXE}" "" "$INSTDIR\carlaos.ico"
+  CreateShortcut "$SMPROGRAMS\CarlaOS Dashboard.lnk" "$INSTDIR\${EXE}" "dashboard" "$INSTDIR\carlaos.ico" 0 SW_SHOWMINIMIZED
+  CreateShortcut "$DESKTOP\CarlaOS Dashboard.lnk" "$INSTDIR\${EXE}" "dashboard" "$INSTDIR\carlaos.ico" 0 SW_SHOWMINIMIZED
   CreateShortcut "$SMPROGRAMS\Update ${PRODUCT}.lnk" "$INSTDIR\${EXE}" "update" "$INSTDIR\carlaos.ico"
 
   WriteRegStr HKCU "${UNINSTALL_KEY}" "DisplayName" "${PRODUCT}"
@@ -125,6 +127,8 @@ Section "Uninstall"
   Delete "$INSTDIR\uninstall.exe"
   RMDir "$INSTDIR"
   Delete "$SMPROGRAMS\${PRODUCT}.lnk"
+  Delete "$SMPROGRAMS\CarlaOS Dashboard.lnk"
+  Delete "$DESKTOP\CarlaOS Dashboard.lnk"
   Delete "$SMPROGRAMS\Update ${PRODUCT}.lnk"
   DeleteRegKey HKCU "${UNINSTALL_KEY}"
 SectionEnd

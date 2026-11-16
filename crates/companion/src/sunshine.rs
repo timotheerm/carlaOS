@@ -19,6 +19,11 @@ pub trait Streamer: Send + Sync {
     fn ensure_app(&self, command: &str) -> Result<(), String>;
     /// Complete the pairing Moonlight started from `from` with this PIN.
     fn pair(&self, pin: &str, name: &str, from: &str) -> Result<(), String>;
+    /// The names of the Moonlight devices it is paired with. `None` when it
+    /// does not say.
+    fn paired(&self) -> Option<Vec<String>> {
+        None
+    }
 }
 
 pub struct Sunshine {
@@ -144,6 +149,13 @@ const PAIRING: Duration = Duration::from_secs(60);
 impl Streamer for Sunshine {
     fn check(&self) -> Result<(), String> {
         self.json("GET", "/api/apps", None, SHORT).map(|_| ())
+    }
+
+    fn paired(&self) -> Option<Vec<String>> {
+        // Older releases have no such list, and answer in a way that is not it.
+        let clients = self.json("GET", "/api/clients/list", None, SHORT).ok()?;
+        let named = clients.get("named_certs")?.as_array()?;
+        Some(named.iter().filter_map(|c| c.get("name").and_then(Value::as_str)).map(str::to_string).collect())
     }
 
     fn ensure_app(&self, command: &str) -> Result<(), String> {
