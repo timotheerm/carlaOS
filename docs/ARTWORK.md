@@ -13,6 +13,8 @@ Settings, Manage games, Add a game. Choose the game's program **or a shortcut to
 
 ## Choosing pictures
 
+Games without a picture are now looked up by themselves: see [IMMERSIVE.md](IMMERSIVE.md). This page is for choosing between pictures by hand.
+
 Settings, Manage games, Game artwork lists every game, the ones without a picture first. Choosing a game looks for pictures and shows them to pick from: covers (the tall picture on the card) and wide pictures (the game's page and the top of Home). A newly added game goes straight to this page.
 
 Where pictures come from, and what is sent there:

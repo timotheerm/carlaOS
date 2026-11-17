@@ -2,18 +2,18 @@
 // very soft, behind everything. Two layers take turns so one fades into the
 // next. Nothing here can be focused or pressed.
 import { useEffect, useRef, useState } from "react";
-import type { Game } from "../data/types";
+import type { Backdrop, Game } from "../data/types";
 
-type Look = { key: string; picture?: string; hue: number };
+type Look = { key: string; picture?: string; hue: number; /** A wide picture, made to fill a screen. */ sharp: boolean };
 
-const lookOf = (game: Game): Look => ({ key: game.id, picture: game.hero ?? game.cover, hue: game.hue });
+const lookOf = (game: Game): Look => ({ key: game.id, picture: game.hero ?? game.cover, hue: game.hue, sharp: !!game.hero });
 
 function style(look: Look | null): React.CSSProperties | undefined {
   if (!look) return undefined;
   return look.picture ? { backgroundImage: `url("${look.picture}")` } : ({ "--hue": look.hue } as React.CSSProperties);
 }
 
-export function Ambient({ games, fixed }: { games: Game[]; fixed?: Game | null }) {
+export function Ambient({ games, fixed, backdrop = "full" }: { games: Game[]; fixed?: Game | null; backdrop?: Backdrop }) {
   // Two layers; `front` says which one shows.
   const [{ layers, front }, setState] = useState<{ layers: [Look | null, Look | null]; front: number }>({ layers: [null, null], front: 0 });
   const shown = useRef<string | null>(null);
@@ -51,12 +51,13 @@ export function Ambient({ games, fixed }: { games: Game[]; fixed?: Game | null }
     };
   }, [fixed]);
 
+  if (backdrop === "off") return null;
   return (
-    <div className="ambient" aria-hidden>
+    <div className={`ambient ambient--${backdrop}`} aria-hidden>
       {layers.map((look, i) => (
         <div
           key={i}
-          className={`ambient__layer${look && !look.picture ? " ambient__layer--hue" : ""}${look && front === i ? " ambient__layer--on" : ""}`}
+          className={`ambient__layer${look && !look.picture ? " ambient__layer--hue" : ""}${look?.picture && look.sharp ? " ambient__layer--sharp" : ""}${look && front === i ? " ambient__layer--on" : ""}`}
           style={style(look)}
         />
       ))}

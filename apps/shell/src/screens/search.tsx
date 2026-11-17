@@ -110,6 +110,7 @@ export function Search({
               game={g}
               favourite={ctx.favourites.has(g.id)}
               onOpen={ctx.openGame}
+              downloads={ctx.downloads}
             />
           ))}
         </Grid>

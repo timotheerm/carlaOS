@@ -21,7 +21,7 @@ use crate::library::{allow_pictures, Library};
 const KEY: &str = "steamgriddb_key";
 
 /// The administrator's SteamGridDB key, when one was entered.
-fn key(library: &Library) -> Option<String> {
+pub(crate) fn key(library: &Library) -> Option<String> {
     let sealed = library.store().setting(KEY).ok().flatten()?;
     String::from_utf8(secret::open(&sealed).ok()?).ok().filter(|k| art::key_shape(k))
 }
@@ -44,7 +44,7 @@ pub(crate) fn set_key(library: &Library, key: &str) -> Result<bool, String> {
 
 /// The game file an emulated game starts, without its ending: the name box
 /// art is filed under.
-fn game_file(library: &Library, game_id: &str) -> Option<String> {
+pub(crate) fn game_file(library: &Library, game_id: &str) -> Option<String> {
     let install = library.store().install(game_id, LOCAL).ok()?;
     split_args(&install.args).iter().rev().map(Path::new).find(|p| p.is_absolute() && p.extension().is_some())?.file_stem().map(|s| s.to_string_lossy().into_owned())
 }
