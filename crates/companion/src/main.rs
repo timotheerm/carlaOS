@@ -10,6 +10,7 @@ mod ally;
 mod describe;
 mod files;
 mod launcher;
+mod logview;
 mod screen;
 mod server;
 mod setup;
@@ -112,6 +113,13 @@ const HELP: &str = "CarlaOS desktop companion
                              put the screens back now
   carla-companion sleep-test put this desktop to sleep now, the way the Ally would
   carla-companion status     show whether everything is ready
+  carla-companion log [--lines N] [--follow] [--launcher]
+                             print the newest N lines (default 100) of what the
+                             companion did: requests, the Ally coming and going,
+                             Sunshine, streams. --follow keeps printing new lines,
+                             so it can sit in a terminal next to the running
+                             companion; --launcher shows the launcher's own log
+  carla-companion log path   print where the log file is
   carla-companion serve      run quietly (what happens when Windows starts)
   carla-companion update     install the newest release, if there is one
   carla-companion remove     stop starting with Windows
@@ -610,7 +618,19 @@ fn update_here() -> Result<(), String> {
 /// Run the API. `Err` when the port is taken, which means it already runs.
 fn serve(files: &Files, config: Config) -> Result<(), String> {
     let port = config.port;
-    let http = tiny_http::Server::http((Ipv4Addr::UNSPECIFIED, port)).map_err(|e| e.to_string())?;
+    let (http, timeouts) = server::bind((Ipv4Addr::UNSPECIFIED, port)).map_err(|e| {
+        files.host(&format!("Could not listen on port {port} ({e}): another companion most likely runs already."));
+        e.to_string()
+    })?;
+    match timeouts {
+        Ok(()) => files.host("Socket timeouts active: a client that goes quiet mid-request is let go."),
+        Err(e) => {
+            let warning = format!("WARNING: socket timeouts are not active ({e}); relying on the body deadline only.");
+            eprintln!("{warning}");
+            files.host(&warning);
+        }
+    }
+    files.host(&format!("Companion {VERSION} started, listening on port {port}; {} linked device(s).", files.devices().len()));
     // One socket finds this desktop, answers the measuring packets and sends
     // the bursts, so answers always come from the port they were asked at.
     let udp = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, port)).ok();
@@ -1009,6 +1029,7 @@ fn run(args: &[String]) -> Result<i32, String> {
             Ok(0)
         }
         Some("allies") => allies(&files, args.get(1).is_some_and(|a| a == "--json")),
+        Some("log") => logview::run(&files, &args[1..]),
         Some("firewall") => {
             let exe = std::env::current_exe().map_err(|e| e.to_string())?;
             if setup::firewall_open(&exe) {

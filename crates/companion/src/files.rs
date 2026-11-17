@@ -18,6 +18,11 @@ use carla_core::secret;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
+/// The companion's own log, next to `launcher.log`.
+pub const HOST_LOG: &str = "host.log";
+pub const LAUNCHER_LOG: &str = "launcher.log";
+const HOST_LOG_MAX: usize = 256 * 1024;
+
 pub fn now() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
 }
@@ -699,11 +704,25 @@ impl Files {
             .collect()
     }
 
+    /// The log of what this companion does (`host.log`): requests, the
+    /// Ally coming and going, Sunshine, streams. Read it with `carla-companion log`.
+    pub fn host_log(&self) -> carla_core::applog::Log {
+        carla_core::applog::Log::new(&self.dir, HOST_LOG, HOST_LOG_MAX)
+    }
+
+    /// Write one line to `host.log`. Plain words and short ids only: never a
+    /// key, PIN, token, signature or what is in a save.
+    pub fn host(&self, line: &str) {
+        self.host_log().line(line);
+    }
+
     /// Note what the launcher did, for whoever wonders why a stream ended.
-    /// Sunshine runs the launcher unseen, so this file is all there is.
+    /// Sunshine runs the launcher unseen, so this file is all there is. The
+    /// same line goes to `host.log`, so that one file tells the whole story.
     pub fn log(&self, line: &str) {
         use std::io::Write;
-        let path = self.dir.join("launcher.log");
+        self.host(&format!("launcher: {line}"));
+        let path = self.dir.join(LAUNCHER_LOG);
         // Start again rather than grow without end.
         if fs::metadata(&path).is_ok_and(|m| m.len() > 256 * 1024) {
             let _ = fs::remove_file(&path);
