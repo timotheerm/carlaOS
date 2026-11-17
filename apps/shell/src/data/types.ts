@@ -137,6 +137,26 @@ export type Host = {
   address?: string;
   canWake?: boolean; // the desktop has said how to wake it
   version?: string | null; // the companion's version, once it has answered
+  health?: Health | null; // the connection as it was last measured
+};
+
+/// One measurement of the connection to a desktop, as the Ally worked it
+/// out. The desktop's dashboard is handed the same shape.
+export type Health = {
+  at: number; // Unix seconds
+  route: "home" | "away";
+  address: string;
+  grade: "excellent" | "good" | "playable" | "poor";
+  summary: string;
+  ping_us: number; // there and back, millionths of a second
+  best_us: number | null;
+  p95_us: number | null;
+  jitter_us: number;
+  loss_permille: number | null; // lost packets in a thousand
+  link_kbps: number | null;
+  picture: { level: string; automatic: boolean; width: number; height: number; fps: number; kbps: number; pacing: boolean };
+  codec: { codec: "h264" | "hevc" | "av1"; known: boolean; desktop: string; ally: string } | null;
+  advice: string[];
 };
 
 /// The picture of streams from one desktop: what the administrator chose and
@@ -158,7 +178,7 @@ export type HostPicture = {
 };
 
 /// One step of checking a desktop, as the Rust side words it.
-export type CheckFix = "pair" | "wake" | "update" | "relink";
+export type CheckFix = "pair" | "wake" | "update" | "relink" | "moonlight";
 export type CheckStep = {
   key: string;
   title: string;
@@ -166,10 +186,10 @@ export type CheckStep = {
   detail: string;
   fix: CheckFix | null;
 };
-export type CheckReport = { id: string; name: string; steps: CheckStep[]; repaired: string[] };
+export type CheckReport = { id: string; name: string; steps: CheckStep[]; repaired: string[]; health?: Health | null };
 
 /// A companion found on the network, not linked yet.
-export type FoundHost = { address: string; name: string; id: string };
+export type FoundHost = { address: string; name: string; id: string; approve?: boolean };
 
 export type CloudService = { id: string; name: string; note: string; hue: number; kind: string };
 
