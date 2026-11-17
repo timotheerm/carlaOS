@@ -73,4 +73,20 @@ let caught = null;
 await bad.catch((e) => { caught = e; });
 await tick(0);
 check('a failing command reaches its caller and is noted', caught && caught.message === 'nope' && notes.at(-1) === 'command hosts_wake failed after 9 s');
+// 5. installing must never throw, whatever the page's internals look like (a white screen otherwise)
+for (const [name, shape] of [
+  ['a frozen object', () => Object.freeze({ invoke: () => Promise.resolve(1) })],
+  ['a read-only invoke', () => Object.defineProperty({}, 'invoke', { value: () => Promise.resolve(1), writable: false })],
+  ['no invoke at all', () => ({})],
+  ['no internals', () => undefined],
+]) {
+  win.__TAURI_INTERNALS__ = shape();
+  let threw = null;
+  try { module.exports.watchCommands(); } catch (e) { threw = e; }
+  check(`installing on ${name} does not throw`, threw === null);
+}
+// 6. a call that returns something that is not a promise is handed back untouched
+win.__TAURI_INTERNALS__ = { invoke: () => 42 };
+module.exports.watchCommands();
+check('a non-promise result is passed through', win.__TAURI_INTERNALS__.invoke('x') === 42);
 console.log('all passed');
