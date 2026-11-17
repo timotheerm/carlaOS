@@ -317,7 +317,7 @@ pub fn default_roots() -> Vec<PathBuf> {
 /// Whether a text can sit inside quotes in PowerShell and in cmd without any
 /// part of it being read as something to run or expand.
 fn safe_to_paste(text: &str, path: bool) -> bool {
-    !text.is_empty() && text.chars().all(|c| !hidden(c) && (c.is_alphanumeric() || matches!(c, ' ' | '.' | '_' | '-' | '(' | ')' | '+' | ',') || (path && matches!(c, '\\' | ':' | '/'))))
+    !text.is_empty() && text.chars().all(|c| !hidden(c) && (c.is_alphanumeric() || matches!(c, ' ' | '.' | '_' | '-' | '(' | ')' | '+' | ',') || (path && matches!(c, '\\' | ':' | '/' | '~'))))
 }
 
 /// Characters that show as nothing, or change the way the text around them
@@ -422,6 +422,9 @@ mod tests {
         let line = add_line(&launcher).unwrap();
         assert!(line.starts_with("carla-companion add \"Pixel Quest\" \"") && line.ends_with("--watch \"Quest.exe\""), "{line}");
         assert!(!add_line(&quest).unwrap().contains("--watch"));
+        // Windows' short (8.3) folder names, such as a CI runner's temp folder, are plain paths.
+        assert!(safe_to_paste(r"C:\Users\RUNNER~1\AppData\Local\Temp\q.exe", true));
+        assert!(!safe_to_paste("a~b", false), "a tilde is only accepted in a path");
         // A name a terminal would read as a command gets no line to paste.
         for bad in ["Foo $(calc)", "Foo `calc`", "100% %PATH%", "Say \"hi\"", "It's", "a;b", "a&b", "a|b", "a<b", "a^b", "a\nb", "a\u{202E}b", "a\u{200B}b", "\u{FEFF}a", "a\u{AD}b", "a\u{2066}b", "a\u{61C}b", "\u{2018}a\u{2019}", "x \u{201C}y\u{201D}", "a\tb", "a!b{c}", "a@b#c", "a=b"] {
             assert!(add_line(&Candidate { title: bad.into(), ..quest.clone() }).is_none(), "title {bad:?}");
