@@ -11,57 +11,42 @@
 //! - everything but the page itself needs a token that only the page holds,
 //!   sent in a header no other site's page is allowed to send.
 //!
-//! What the connection is like is measured by the Ally, which is the side
-//! that asks and can time the answer, and told to the desktop in
-//! `POST /v1/report`: when the Ally looks at its desktops, and every few
-//! seconds during a stream.
+//! What the connection is like is measured by the Ally and told to the desktop
+//! with each pulse (`carla_core::link::health`). This page only shows that.
 
 use std::collections::VecDeque;
 
+use carla_core::display::Mode;
+use carla_core::link::health::{AllyView as Linked, Grade as Rating, Pulse, Route, CONNECTED_FOR};
 use carla_core::link::wake;
-use carla_core::link::AllyReport;
 use serde::Deserialize;
 
 use super::*;
 
 const PAGE: &str = include_str!("dashboard.html");
 
-/// An Ally that was heard from this recently counts as connected.
-const NEAR: i64 = 90;
 /// A measurement older than this is shown as history, not as "now".
-const FRESH: i64 = 20;
-/// How many measurements the chart keeps: about five minutes of a stream.
+const LIVE_FOR: i64 = 120;
+/// How many measurements the chart keeps.
 const HISTORY: usize = 60;
-/// What was heard is written down at most this often, to show after a restart.
-const SAVE_EVERY: i64 = 60;
 /// How long the answer about paired Moonlight devices is reused.
 const CLIENTS_AGE: Duration = Duration::from_secs(30);
 /// How long the answer about a newer version is reused.
 const NEWER_AGE: Duration = Duration::from_secs(6 * 3600);
 
-/// What is known about one linked Ally from its own requests.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct Heard {
-    /// When it last asked anything.
+/// The delays of one Ally's measurements, oldest first, for the chart.
+#[derive(Debug, Clone, Default)]
+pub struct Pings {
+    /// When the last measurement that was counted was made.
     pub at: i64,
-    /// The address it asked from.
-    pub from: String,
-    /// Its last report and when that came.
-    #[serde(default)]
-    pub report: Option<(i64, AllyReport)>,
-    /// The delays of its last reports, oldest first.
-    #[serde(default)]
-    pub pings: VecDeque<u32>,
-    #[serde(skip)]
-    saved: i64,
+    pub values: VecDeque<u32>,
 }
 
 /// The stream an Ally last asked this desktop to get ready.
 #[derive(Debug, Clone)]
 pub(super) struct Asked {
-    device: String,
     game_id: String,
-    screen: Option<carla_core::display::Mode>,
+    screen: Option<Mode>,
     at: i64,
 }
 
@@ -84,30 +69,20 @@ struct Headline {
 
 /// A connection in one word, with what to do about it when it is not good.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-pub struct Grade {
-    pub name: &'static str,
+struct GradeView {
+    name: &'static str,
     /// "ok", "fair" or "poor".
-    pub tone: &'static str,
-    pub advice: &'static str,
+    tone: &'static str,
+    advice: String,
 }
 
-/// Judge a connection the way it feels in a game: the delay, and how steady it is.
-pub fn grade(latency_ms: u32, jitter_ms: u32, away: bool) -> Grade {
-    let felt = latency_ms + jitter_ms;
-    let (name, tone) = match felt {
-        0..=10 => ("Excellent", "ok"),
-        11..=25 => ("Very good", "ok"),
-        26..=50 => ("Good", "ok"),
-        51..=90 => ("Playable", "fair"),
-        _ => ("Slow", "poor"),
-    };
-    let advice = match (tone, away, jitter_ms > latency_ms.max(15)) {
-        ("ok", _, _) => "",
-        (_, true, _) => "The Ally is away from home, so the internet in between sets the pace.",
-        (_, false, true) => "The connection is unsteady. Wi-Fi is usually why: move the Ally closer to the router, or use its 5 GHz or 6 GHz network.",
-        (_, false, false) => "Plug this PC into the router with a cable if it is on Wi-Fi, and keep the Ally near the router.",
-    };
-    Grade { name, tone, advice }
+/// The colour a grade shows in on the page.
+pub fn tone(grade: Rating) -> &'static str {
+    match grade {
+        Rating::Excellent | Rating::Good => "ok",
+        Rating::Playable => "fair",
+        Rating::Poor => "poor",
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -147,7 +122,7 @@ struct AllyView {
     /// Whether that measurement is of right now.
     live: bool,
     pings: Vec<u32>,
-    grade: Option<Grade>,
+    grade: Option<GradeView>,
     version: Option<String>,
     /// Whether Sunshine knows a Moonlight of that name. `None` when Sunshine did not say.
     paired: Option<bool>,
@@ -223,50 +198,36 @@ fn own_name(host: Option<&str>) -> bool {
     name == "127.0.0.1" || name.eq_ignore_ascii_case("localhost")
 }
 
-impl Server {
-    /// Note that a linked device asked something just now.
-    pub(super) fn heard_from(&self, device: &str, from: &str, now: i64) {
-        let mut all = locked(&self.heard);
-        let heard = all.entry(device.to_string()).or_insert_with(|| self.files.ally_heard(device).unwrap_or_default());
-        heard.at = now;
-        heard.from = from.to_string();
-        if now - heard.saved >= SAVE_EVERY {
-            heard.saved = now;
-            self.files.set_ally_heard(device, heard);
-        }
-    }
+/// A name the Ally chose, shortened and cleaned for the page.
+fn plain(text: &str) -> String {
+    text.chars().filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+' | ' ')).take(24).collect()
+}
 
-    /// An Ally says what the connection is like from its side.
-    pub(super) fn report(&self, device: &str, bytes: &[u8], now: i64) -> Answer {
-        let mut report: AllyReport = body(bytes)?;
-        // Shown on a page: keep what a device may put there short and plain.
-        let plain = |text: &str| text.chars().filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+' | ' ')).take(24).collect::<String>();
-        report.version = plain(&report.version);
-        report.level = report.level.as_deref().map(plain);
-        let mut all = locked(&self.heard);
-        if let Some(heard) = all.get_mut(device) {
-            heard.pings.push_back(report.latency_ms);
-            while heard.pings.len() > HISTORY {
-                heard.pings.pop_front();
-            }
-            heard.report = Some((now, report));
+impl Server {
+    /// Keep the delays of an Ally's measurements for the chart. Each one is
+    /// counted once, however many pulses carry it.
+    pub(super) fn pulsed(&self, device: &str, pulse: &Pulse) {
+        let Some(health) = &pulse.health else { return };
+        let mut all = locked(&self.pings);
+        let known = all.entry(device.to_string()).or_default();
+        if known.at == health.at {
+            return;
         }
-        json(&link::Reported { playing: self.files.playing(now).is_some() })
+        known.at = health.at;
+        known.values.push_back(health.ping_us / 1000);
+        while known.values.len() > HISTORY {
+            known.values.pop_front();
+        }
     }
 
     /// Note which Ally asked for which game, for the dashboard.
-    pub(super) fn asked_for(&self, device: &str, prepare: &Prepare, now: i64) {
+    pub(super) fn asked_for(&self, prepare: &Prepare, now: i64) {
         let mut asked = locked(&self.asked);
         // The same game picked up again is still the same stream.
         if asked.as_ref().is_some_and(|a| a.game_id == prepare.game_id && self.files.playing(now).is_some()) {
             return;
         }
-        *asked = Some(Asked { device: device.to_string(), game_id: prepare.game_id.clone(), screen: prepare.screen, at: now });
-    }
-
-    fn heard(&self, device: &str) -> Option<Heard> {
-        let known = locked(&self.heard).get(device).cloned();
-        known.or_else(|| self.files.ally_heard(device))
+        *asked = Some(Asked { game_id: prepare.game_id.clone(), screen: prepare.screen, at: now });
     }
 
     /// The names Sunshine has paired a Moonlight under, when it says.
@@ -282,55 +243,60 @@ impl Server {
         }
     }
 
-    fn allies(&self, now: i64, streaming: bool, asked: Option<&Asked>) -> Vec<AllyView> {
+    /// Every linked Ally as the page shows it, from what the desktop knows
+    /// of each one (see `Files::allies`).
+    fn allies(&self, now: i64, linked: &[Linked]) -> Vec<AllyView> {
         let paired = self.paired_names();
-        let devices = self.files.devices();
-        let single = devices.len() == 1;
-        devices
-            .into_iter()
-            .map(|device| {
-                let heard = self.heard(&device.id);
-                let heard_ago = heard.as_ref().filter(|h| h.at > 0).map(|h| (now - h.at).max(0));
-                let report = heard.as_ref().and_then(|h| h.report.clone());
-                let reports_stream = report.as_ref().is_some_and(|(at, r)| r.streaming && now - at <= FRESH);
-                let asked_it = asked.is_some_and(|a| a.device == device.id);
-                let state = match (streaming && (reports_stream || asked_it || (single && asked.is_none())), heard_ago) {
-                    (true, _) => "streaming",
-                    (false, Some(ago)) if ago <= NEAR => "connected",
-                    _ => "away",
-                };
-                let address = heard.as_ref().map(|h| h.from.clone()).filter(|a| !a.is_empty());
-                let route = address.as_deref().map(|a| if wake::is_tailscale(a) { "tailscale" } else { "home" });
-                let measured_ago = report.as_ref().map(|(at, _)| (now - at).max(0));
-                let measure = report.as_ref().map(|(_, r)| r);
+        let pings = locked(&self.pings).clone();
+        linked
+            .iter()
+            .map(|ally| {
+                let health = ally.health.as_ref();
+                let measured_ago = health.map(|h| (now - h.at).max(0));
+                let route = health
+                    .map(|h| match h.route {
+                        Route::Home => "home",
+                        Route::Away => "tailscale",
+                    })
+                    .or_else(|| ally.address.as_deref().map(|a| if wake::is_tailscale(a) { "tailscale" } else { "home" }));
                 AllyView {
-                    state,
-                    heard_ago,
+                    state: if ally.streaming {
+                        "streaming"
+                    } else if ally.connected {
+                        "connected"
+                    } else {
+                        "away"
+                    },
+                    heard_ago: ally.last_seen.map(|at| (now - at).max(0)),
+                    address: ally.address.clone(),
                     route,
-                    ping_ms: measure.map(|r| r.latency_ms),
-                    jitter_ms: measure.map(|r| r.jitter_ms),
-                    mbps: measure.and_then(|r| r.kbps).map(|kbps| (kbps as f64 / 100.0).round() / 10.0),
-                    live: measured_ago.is_some_and(|ago| ago <= FRESH),
+                    ping_ms: health.map(|h| h.ping_us / 1000),
+                    jitter_ms: health.map(|h| h.jitter_us / 1000),
+                    mbps: health.and_then(|h| h.link_kbps).map(|kbps| (kbps as f64 / 100.0).round() / 10.0),
                     measured_ago,
-                    pings: heard.as_ref().map(|h| h.pings.iter().copied().collect()).unwrap_or_default(),
-                    grade: measure.map(|r| grade(r.latency_ms, r.jitter_ms, r.away || route == Some("tailscale"))),
-                    version: measure.map(|r| r.version.clone()).filter(|v| !v.is_empty()),
-                    paired: paired.as_ref().map(|names| names.iter().any(|n| n.eq_ignore_ascii_case(&device.name))),
-                    remote_admin: self.files.ally_listening(&device.id).is_some_and(|at| now - at <= NEAR),
-                    address,
-                    id: device.id,
-                    name: device.name,
+                    live: measured_ago.is_some_and(|ago| ago <= LIVE_FOR),
+                    pings: pings.get(&ally.id).map(|p| p.values.iter().copied().collect()).unwrap_or_default(),
+                    grade: health.map(|h| GradeView {
+                        name: h.grade.word(),
+                        tone: tone(h.grade),
+                        advice: h.advice.first().cloned().unwrap_or_default(),
+                    }),
+                    version: ally.pulse.as_ref().map(|p| plain(&p.version)).filter(|v| !v.is_empty()),
+                    paired: paired.as_ref().map(|names| names.iter().any(|n| n.eq_ignore_ascii_case(&ally.name))),
+                    remote_admin: self.files.ally_listening(&ally.id).is_some_and(|at| now - at <= CONNECTED_FOR),
+                    id: ally.id.clone(),
+                    name: ally.name.clone(),
                 }
             })
             .collect()
     }
 
-    fn stream_view(&self, now: i64, allies: &[AllyView], asked: Option<&Asked>) -> Option<StreamView> {
+    fn stream_view(&self, now: i64, linked: &[Linked], asked: Option<&Asked>) -> Option<StreamView> {
         let playing = self.files.playing(now)?;
         let asked = asked.filter(|a| a.game_id == playing.game_id);
-        let ally = allies.iter().find(|a| a.state == "streaming");
-        let report = ally.and_then(|a| self.heard(&a.id)).and_then(|h| h.report).map(|(_, r)| r);
-        let picture = report.as_ref().and_then(|r| r.picture);
+        let ally = linked.iter().find(|a| a.streaming);
+        // The picture the last measurement chose for that Ally.
+        let picture = ally.and_then(|a| a.health.as_ref()).map(|h| h.picture.clone());
         let screen = asked.and_then(|a| a.screen);
         let shows = if self.files.virtual_screen().is_some() {
             "A screen of its own, so this PC's monitor stays as it is".to_string()
@@ -343,12 +309,12 @@ impl Server {
             game: playing.title,
             ally: ally.map(|a| a.name.clone()),
             minutes: asked.map(|a| (now - a.at).max(0) / 60),
-            width: picture.map(|p| p.width).or(screen.map(|s| s.width)),
-            height: picture.map(|p| p.height).or(screen.map(|s| s.height)),
-            fps: picture.map(|p| p.fps).or(screen.map(|s| s.hz).filter(|hz| *hz > 0)),
-            mbps: picture.map(|p| p.kbps / 1000),
-            level: report.as_ref().and_then(|r| r.level.clone()),
-            automatic: report.as_ref().is_some_and(|r| r.automatic),
+            width: picture.as_ref().map(|p| p.width).or(screen.map(|s| s.width)),
+            height: picture.as_ref().map(|p| p.height).or(screen.map(|s| s.height)),
+            fps: picture.as_ref().map(|p| p.fps).or(screen.map(|s| s.hz).filter(|hz| *hz > 0)),
+            mbps: picture.as_ref().map(|p| p.kbps / 1000),
+            level: picture.as_ref().map(|p| p.level.clone()),
+            automatic: picture.as_ref().is_some_and(|p| p.automatic),
             screen: shows,
         })
     }
@@ -382,15 +348,13 @@ impl Server {
             (false, _, true) => Check { key: "screen", title: "Picture for the Ally", tone: "ok", detail: "This PC's screen switches to the Ally's size during a stream, and back after.".to_string() },
             (false, _, false) => Check { key: "screen", title: "Picture for the Ally", tone: "off", detail: "This PC's screen is streamed as it is.".to_string() },
         });
-        if !allies.is_empty() {
+        if !allies.is_empty() && allies.iter().all(|a| a.paired.is_some()) {
             let unpaired: Vec<&str> = allies.iter().filter(|a| a.paired == Some(false)).map(|a| a.name.as_str()).collect();
-            if allies.iter().all(|a| a.paired.is_some()) {
-                checks.push(if unpaired.is_empty() {
-                    Check { key: "moonlight", title: "Moonlight", tone: "ok", detail: "Paired with Sunshine on this PC.".to_string() }
-                } else {
-                    Check { key: "moonlight", title: "Moonlight", tone: "off", detail: format!("{} is not paired yet. That happens by itself at its first stream.", unpaired.join(" and ")) }
-                });
-            }
+            checks.push(if unpaired.is_empty() {
+                Check { key: "moonlight", title: "Moonlight", tone: "ok", detail: "Paired with Sunshine on this PC.".to_string() }
+            } else {
+                Check { key: "moonlight", title: "Moonlight", tone: "off", detail: format!("{} is not paired yet. That happens by itself at its first stream.", unpaired.join(" and ")) }
+            });
         }
         checks
     }
@@ -411,8 +375,9 @@ impl Server {
         let status = self.status(now);
         let asked = locked(&self.asked).clone();
         let streaming = status.playing.is_some();
-        let allies = self.allies(now, streaming, asked.as_ref());
-        let stream = self.stream_view(now, &allies, asked.as_ref());
+        let linked = self.files.allies(now, streaming);
+        let allies = self.allies(now, &linked);
+        let stream = self.stream_view(now, &linked, asked.as_ref());
         let near = allies.iter().find(|a| a.state == "connected");
         let headline = match (&status.problem, &stream, near) {
             (Some(problem), _, _) => Headline { kind: "attention", title: "This PC needs a hand".to_string(), detail: problem.clone() },
@@ -463,7 +428,7 @@ impl Server {
         if !self.files.forget_device(&forget.id).map_err(|e| (500, e))? {
             return refuse(404, "That device is no longer linked.");
         }
-        locked(&self.heard).remove(&forget.id);
+        locked(&self.pings).remove(&forget.id);
         ok()
     }
 
@@ -514,7 +479,8 @@ mod tests {
     use super::super::tests::desk;
     use super::*;
     use carla_core::link::client::Error;
-    use carla_core::link::moonlight::Picture;
+    use carla_core::link::health::Health;
+    use carla_core::link::quality::{self, Measure, Setting};
 
     fn get(port: u16, path: &str, host: &str, token: Option<&str>) -> (u16, String) {
         ask("GET", port, path, host, token, "")
@@ -544,6 +510,18 @@ mod tests {
         let (status, body) = get(port, "/local/overview", &format!("localhost:{port}"), Some(token));
         assert_eq!(status, 200, "{body}");
         serde_json::from_str(&body).unwrap()
+    }
+
+    /// A measurement as the Ally makes one, for a desktop at home or away.
+    fn measured(latency_ms: u32, jitter_ms: u32, kbps: u32, away: bool) -> Health {
+        let measure = Measure::plain(latency_ms, jitter_ms, Some(kbps), away);
+        let choice = quality::choose(Setting::default(), Some(measure), away);
+        let address = if away { "100.84.12.7" } else { "127.0.0.1" };
+        Health::of(measure, choice, Some(Mode::new(1920, 1080, 120)), address, None, crate::files::now())
+    }
+
+    fn pulse(health: Option<Health>, playing: Option<&str>) -> Pulse {
+        Pulse { version: "0.17.0".into(), moonlight: true, paired: Some(true), playing: playing.map(str::to_string), battery: None, charging: None, screen: None, health }
     }
 
     #[test]
@@ -584,32 +562,36 @@ mod tests {
         assert_eq!(linked["allies"][0]["name"], "Ally");
         assert_eq!(linked["allies"][0]["state"], "away", "linked, but it has asked nothing yet");
 
-        // It asks something: connected. It reports: the numbers are there.
+        // It asks something: connected. It reports its measurement: the numbers are there.
         link.status().unwrap();
         let near = overview(desk.port, &token);
         assert_eq!((near["headline"]["kind"].as_str(), near["headline"]["title"].as_str()), (Some("connected"), Some("Ally is connected")));
         assert!(near["allies"][0]["ping_ms"].is_null());
-        let report = AllyReport { version: "0.9.1<b>".into(), latency_ms: 4, jitter_ms: 1, kbps: Some(310_000), ..AllyReport::default() };
-        assert!(!link.report(&report).unwrap().playing);
+        let health = measured(4, 1, 310_000, false);
+        link.pulse(&pulse(Some(health.clone()), None)).unwrap();
         let ally = &overview(desk.port, &token)["allies"][0];
         assert_eq!((ally["ping_ms"].as_u64(), ally["jitter_ms"].as_u64(), ally["mbps"].as_f64(), ally["live"].as_bool()), (Some(4), Some(1), Some(310.0), Some(true)));
-        assert_eq!((ally["grade"]["name"].as_str(), ally["route"].as_str(), ally["version"].as_str()), (Some("Excellent"), Some("home"), Some("0.9.1b")));
+        assert_eq!((ally["grade"]["name"].as_str(), ally["route"].as_str(), ally["version"].as_str()), (Some(health.grade.word()), Some("home"), Some("0.17.0")));
+        assert_eq!(ally["pings"], serde_json::json!([4]));
         assert_eq!(ally["paired"], true, "Sunshine knows a Moonlight of that name");
 
-        // A stream: the game, the Ally, its picture, and a chart of the delay.
-        link.prepare_for("steam:10", Some(carla_core::display::Mode::new(1920, 1080, 60))).unwrap();
+        // A stream: the game, the Ally, its picture; nothing is measured under it, so the last one stays.
+        link.prepare_for("steam:10", Some(Mode::new(1920, 1080, 60))).unwrap();
         desk.files.set_playing(Some(&crate::files::Playing { game_id: "steam:10".into(), title: "First Game".into(), at: crate::files::now() }));
-        let picture = Picture { width: 1920, height: 1080, fps: 60, kbps: 25_000, pacing: false };
-        for latency_ms in [5, 6, 4] {
-            let report = AllyReport { latency_ms, streaming: true, picture: Some(picture), level: Some("sharp".into()), automatic: true, ..report.clone() };
-            assert!(link.report(&report).unwrap().playing);
-        }
+        link.pulse(&pulse(None, Some("First Game"))).unwrap();
         let live = overview(desk.port, &token);
         assert_eq!((live["headline"]["kind"].as_str(), live["headline"]["title"].as_str()), (Some("streaming"), Some("Streaming First Game")));
         let stream = &live["stream"];
-        assert_eq!((stream["ally"].as_str(), stream["height"].as_u64(), stream["fps"].as_u64(), stream["mbps"].as_u64(), stream["level"].as_str()), (Some("Ally"), Some(1080), Some(60), Some(25), Some("sharp")));
+        assert_eq!((stream["ally"].as_str(), stream["height"].as_u64(), stream["fps"].as_u64(), stream["mbps"].as_u64()), (Some("Ally"), Some(1080), Some(health.picture.fps as u64), Some(health.picture.kbps as u64 / 1000)));
+        assert_eq!(stream["level"].as_str(), Some(health.picture.level.as_str()));
         assert_eq!(live["allies"][0]["state"], "streaming");
-        assert_eq!(live["allies"][0]["pings"], serde_json::json!([4, 5, 6, 4]));
+        assert_eq!(live["allies"][0]["ping_ms"], 4, "the last measurement is kept");
+
+        // The next measurement is counted in the chart.
+        // A measurement is counted by the second it was made, so the next one is a little later.
+        let next = Health { at: health.at + 5, ..measured(6, 1, 310_000, false) };
+        link.pulse(&pulse(Some(next), Some("First Game"))).unwrap();
+        assert_eq!(overview(desk.port, &token)["allies"][0]["pings"], serde_json::json!([4, 6]));
 
         // The game can be closed from the page, and the Ally forgotten.
         assert_eq!(ask("POST", desk.port, "/local/end", &own, Some(&token), "").0, 200);
@@ -635,16 +617,7 @@ mod tests {
     }
 
     #[test]
-    fn a_connection_is_judged_by_how_it_feels() {
-        assert_eq!((grade(3, 1, false).name, grade(3, 1, false).advice), ("Excellent", ""));
-        assert_eq!(grade(18, 4, false).name, "Very good");
-        assert_eq!(grade(35, 10, true).name, "Good");
-        let unsteady = grade(20, 45, false);
-        assert_eq!((unsteady.name, unsteady.tone), ("Playable", "fair"));
-        assert!(unsteady.advice.contains("unsteady"));
-        assert!(grade(70, 5, false).advice.contains("cable"));
-        let far = grade(120, 10, true);
-        assert_eq!((far.name, far.tone), ("Slow", "poor"));
-        assert!(far.advice.contains("away from home"));
+    fn grades_show_in_three_colours() {
+        assert_eq!([tone(Rating::Excellent), tone(Rating::Good), tone(Rating::Playable), tone(Rating::Poor)], ["ok", "ok", "fair", "poor"]);
     }
 }

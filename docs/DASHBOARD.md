@@ -29,26 +29,17 @@ ready. It is for whoever sits at the desktop; nothing on it needs explaining.
 
 ## Where the numbers come from
 
-Only the Ally can time the connection: it asks, and times the answer. So it
-tells the desktop, signed like every other request:
+The Ally measures the connection (`carla_core::link::probe`, `health`) and
+hands the result to the desktop with each pulse (`POST /v1/pulse`, a
+`Pulse` with a `Health`). The desktop keeps the last measurement of each
+Ally and this page shows it. A pulse sent under a running game carries no
+measurement, so the last one is kept and the stream's picture comes from it.
 
-```
-POST /v1/report
-{ "version": "0.10.0", "latency_ms": 4, "jitter_ms": 1, "kbps": 310000,
-  "away": false, "streaming": true,
-  "picture": { "width": 1920, "height": 1080, "fps": 120, "kbps": 40000 },
-  "level": "smooth", "automatic": true }
-```
+The same data is what `carla-companion allies` prints, so the page and the
+terminal agree. An Ally counts as connected when it was heard from in the
+last 90 seconds (`CONNECTED_FOR`), or while it is being streamed to.
 
-It does so when it looks at its desktops, and every five seconds during a
-stream (three empty questions and one short answer, which is nothing beside
-the stream). Every field after the first three is optional, and a desktop
-ignores fields it does not know, so more measurements can be added without
-breaking an older desktop. `carla_core::link::AllyReport` is the type and
-`Link::report` sends it. A desktop from before this answers "not known" and
-the Ally stops telling it.
-
-An Ally counts as connected when it was heard from in the last 90 seconds.
+Each measurement is counted in the chart once, by the second it was made.
 
 ## Who may see it
 
