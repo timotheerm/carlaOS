@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod admin;
 pub mod boot;
+pub mod crash;
 pub mod debloat;
 pub mod display;
 pub mod layout;

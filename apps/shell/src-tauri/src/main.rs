@@ -7,6 +7,7 @@ mod autoart;
 mod boot;
 mod cloud;
 mod consoles;
+mod crash;
 mod details;
 mod device;
 mod discover;
@@ -42,7 +43,14 @@ fn main() {
     if !boot::should_start(&guard) {
         return;
     }
+    // From here a crash leaves a report, and a run that ends without saying so
+    // is reported at the next start.
+    let reports = crash::open(&context.config().identifier);
+    reports.install_panic_hook(crash::state);
+    reports.begin();
+    let ending = reports.clone();
     tauri::Builder::default()
+        .manage(crash::Reports(reports))
         .manage(boot::Boot(guard))
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
@@ -55,6 +63,7 @@ fn main() {
             installs::watch(app.handle().clone(), library.clone());
             presence::watch(app.handle().clone(), library.clone());
             system::watch(app.handle().clone(), library.clone());
+            crash::watch_state(&library);
             app.manage(library);
             // CarlaOS starts between games.
             std::thread::spawn(power::rest);
@@ -149,11 +158,17 @@ fn main() {
             system::system_set_sound,
             system::system_set_brightness,
             system::system_power,
+            crash::crash_reports,
+            crash::crash_report_text,
+            crash::crash_seen,
+            crash::crash_note,
+            crash::crash_open_folder,
         ])
         .build(context)
         .expect("failed to start the CarlaOS shell")
-        .run(|_, event| {
+        .run(move |_, event| {
             if let tauri::RunEvent::Exit = event {
+                ending.end();
                 power::leave();
             }
         });

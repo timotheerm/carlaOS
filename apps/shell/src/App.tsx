@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { cloud } from "./data/sample";
 import { library, message, useLibrary } from "./library/store";
-import { appInfo, boot, inTauri, quit } from "./native";
+import { appInfo, boot, crash, inTauri, quit } from "./native";
 import { listen } from "@tauri-apps/api/event";
 import { currentFocusId, focusById, focusFirst, installScrollIntoView } from "./nav/focus";
 import { installInput, type Action } from "./nav/input";
@@ -13,6 +13,7 @@ import { Playing } from "./screens/playing";
 import { SideMenu } from "./screens/sidemenu";
 import { Search } from "./screens/search";
 import { Startup } from "./screens/startup";
+import { Crash } from "./screens/crash";
 import { Storage } from "./screens/storage";
 import { GameDetail } from "./screens/pregame";
 import { Cloud, Desktops, Games, Home, HostView, Settings, type Ctx } from "./screens/screens";
@@ -26,7 +27,7 @@ import { Splash } from "./ui/splash";
 
 type Page = { kind: "game"; id: string } | { kind: "host"; id: string } | { kind: "cleanup"; id: CleanupView }
   | { kind: "manage"; id: "home" } | { kind: "desktops"; id: "home" } | { kind: "search"; id: "home" }
-  | { kind: "updates"; id: "home" } | { kind: "startup"; id: "home" } | { kind: "storage"; id: "home" } | { kind: "downloads"; id: "home" };
+  | { kind: "updates"; id: "home" } | { kind: "startup"; id: "home" } | { kind: "crash"; id: "home" } | { kind: "storage"; id: "home" } | { kind: "downloads"; id: "home" };
 type Theme = "light" | "dark";
 
 const THEME_KEY = "carla.theme";
@@ -70,6 +71,12 @@ export function App() {
     // The library is on the screen: this start worked.
     void boot.ready().then(
       (s) => s.stood_down && setToast("CarlaOS failed to start twice, so it left the desktop alone once."),
+      () => undefined,
+    );
+    void crash.reports().then(
+      // Only a real crash is announced. A report for a run that "did not end"
+        // also follows Windows shutting down or a power cut, so it waits in Settings.
+        (r) => r.some((x) => x.new && x.kind === "panic") && setToast((t) => t ?? "CarlaOS crashed last time. A report is in Settings, Crash reports."),
       () => undefined,
     );
     if (main.current && !main.current.contains(document.activeElement)) focusFirst(main.current);
@@ -251,6 +258,7 @@ export function App() {
   else if (top?.kind === "desktops") page = <LinkDesktops hosts={hosts} notify={setToast} />;
   else if (top?.kind === "updates") page = <Updates hosts={hosts} notify={setToast} refreshHosts={() => void library.refreshHosts().catch(() => undefined)} />;
   else if (top?.kind === "startup") page = <Startup notify={setToast} />;
+  else if (top?.kind === "crash") page = <Crash />;
   else if (top?.kind === "storage") page = <Storage notify={setToast} />;
   else if (top?.kind === "downloads") page = <Downloads library={everything} downloads={downloads} hosts={hosts} openGame={ctx.openGame} />;
   else if (top?.kind === "cleanup") page = <Cleanup view={top.id} open={(view) => push({ kind: "cleanup", id: view })} />;
@@ -268,6 +276,7 @@ export function App() {
         onDesktops={() => push({ kind: "desktops", id: "home" })}
         onUpdates={() => push({ kind: "updates", id: "home" })}
         onStartup={() => push({ kind: "startup", id: "home" })}
+        onCrash={() => push({ kind: "crash", id: "home" })}
         onStorage={() => push({ kind: "storage", id: "home" })}
         onDownloads={ctx.openDownloads}
         downloading={downloads.length}

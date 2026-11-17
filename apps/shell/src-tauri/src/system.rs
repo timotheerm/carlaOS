@@ -82,11 +82,16 @@ fn shutdown(flag: &str) -> Result<(), String> {
     let mut command = Command::new("shutdown.exe");
     command.args([flag, "/t", "0"]);
     hidden(&mut command);
-    match command.status() {
-        Ok(status) if status.success() => Ok(()),
-        Ok(_) => Err("Windows would not do that just now.".to_string()),
-        Err(e) => Err(format!("Windows would not do that: {e}.")),
-    }
+    // Windows may end this program before the command returns, without telling
+    // it: say now that this is a normal end, and take it back if it fails.
+    crate::crash::ended();
+    let failed = match command.status() {
+        Ok(status) if status.success() => return Ok(()),
+        Ok(_) => "Windows would not do that just now.".to_string(),
+        Err(e) => format!("Windows would not do that: {e}."),
+    };
+    crate::crash::resumed();
+    Err(failed)
 }
 
 /// Sleep, restart or turn off the Ally. The player chose it from the side
