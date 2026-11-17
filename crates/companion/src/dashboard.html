@@ -413,8 +413,16 @@ function code(o) {
     h("div", { class: "actions" }, h("button", { class: "btn small quiet", type: "button", onclick: (e) => act(e.currentTarget, "POST", "/local/code/hide") }, "Hide the code")))];
 }
 
+/* The one check that can be put right from here: a virtual screen is switched on but its driver is missing. */
+function checkAction(c, o) {
+  if (c.key !== "screen" || c.tone !== "warn") return null;
+  if (o.installing_driver) return h("p", {}, "Installing… allow it when Windows asks");
+  return h("div", { class: "actions" },
+    h("button", { class: "btn small", type: "button", onclick: (e) => act(e.currentTarget, "POST", "/local/virtual/install", null, () => toast("Installing… allow it when Windows asks.")) }, "Install the screen driver"),
+    h("small", {}, "Windows asks you to allow it"));
+}
 function checks(o) {
-  return o.checks.map((c) => h("li", {}, h("span", { class: `dot ${c.tone}`, "aria-hidden": "true" }), h("div", { class: "body" }, h("b", {}, c.title), h("span", { class: "sr-only" }, c.tone === "ok" ? " is fine. " : c.tone === "warn" ? " needs attention. " : ". "), h("p", {}, c.detail))));
+  return o.checks.map((c) => h("li", {}, h("span", { class: `dot ${c.tone}`, "aria-hidden": "true" }), h("div", { class: "body" }, h("b", {}, c.title), h("span", { class: "sr-only" }, c.tone === "ok" ? " is fine. " : c.tone === "warn" ? " needs attention. " : ". "), h("p", {}, c.detail), checkAction(c, o))));
 }
 
 function meter(label, percent, words) {
