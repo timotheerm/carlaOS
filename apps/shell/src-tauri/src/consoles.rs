@@ -9,7 +9,7 @@ use tauri::{AppHandle, State};
 use crate::admin::Admin;
 use crate::library::{now, Library};
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn consoles_list(admin: State<'_, Admin>, library: State<'_, Library>) -> Result<Vec<Console>, String> {
     admin.require()?;
     library.store().consoles()

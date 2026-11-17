@@ -244,7 +244,7 @@ fn look(app: &AppHandle, library: &Library) -> Vec<DownloadView> {
     let finished: HashSet<&str> = gone.iter().filter(|d| d.place != LOCAL).map(|d| d.place.as_str()).collect();
     for place in finished {
         if let Some((host, link)) = links.get(place) {
-            changed |= crate::hosts::sync_games(library, host, link).is_ok();
+            changed |= crate::hosts::sync_games(library, host, link, std::time::Instant::now() + Duration::from_secs(20)).is_ok();
         }
     }
     if changed {

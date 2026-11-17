@@ -6,6 +6,7 @@ mod art;
 mod autoart;
 mod boot;
 mod cloud;
+mod conn_log;
 mod consoles;
 mod crash;
 mod details;
@@ -48,6 +49,7 @@ fn main() {
     let reports = crash::open(&context.config().identifier);
     reports.install_panic_hook(crash::state);
     reports.begin();
+    conn_log::open(&context.config().identifier, carla_core::VERSION);
     let ending = reports.clone();
     tauri::Builder::default()
         .manage(crash::Reports(reports))
@@ -165,6 +167,9 @@ fn main() {
             crash::crash_note,
             crash::crash_alive,
             crash::crash_open_folder,
+            conn_log::log_tail,
+            conn_log::log_text,
+            conn_log::log_open_folder,
         ])
         .build(context)
         .expect("failed to start the CarlaOS shell")

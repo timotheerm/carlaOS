@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 
 use carla_core::library::{HostRow, Scanned};
 use carla_core::link::client::{self, Error, Link};
+use carla_core::link::deadline::{collect_until, Job};
 use carla_core::link::discover::{self, Found};
 use carla_core::library::Streamed;
 use carla_core::link::check::{self, Facts, Fix, Outcome, Report};
@@ -19,7 +20,7 @@ use carla_core::link::quality::{self, Choice, Depth, Setting};
 use carla_core::link::{wake, State as HostState, Status, Updating, PORT};
 use carla_core::{secret, VERSION};
 use serde::Serialize;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Emitter, State};
 
 use crate::admin::Admin;
 use crate::library::{allow_pictures, now, Library};
@@ -137,13 +138,13 @@ fn picture_view(library: &Library, id: &str) -> Result<PictureView, String> {
 }
 
 /// A desktop's picture setting and what its last stream got.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn hosts_picture(library: State<'_, Library>, id: String) -> Result<PictureView, String> {
     picture_view(&library, &id)
 }
 
 /// Choose the picture of streams from a desktop.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn hosts_set_picture(admin: State<'_, Admin>, library: State<'_, Library>, id: String, setting: String) -> Result<PictureView, String> {
     admin.require()?;
     let setting = Setting::parse(&setting).ok_or("That is not a picture setting.")?;
@@ -155,12 +156,16 @@ pub(crate) fn this_device() -> String {
     std::env::var("COMPUTERNAME").ok().filter(|n| !n.is_empty()).unwrap_or_else(|| "Ally".to_string())
 }
 
-/// Bring the catalogue in line with what a desktop has installed.
-pub(crate) fn sync_games(library: &Library, host: &HostRow, link: &Link) -> Result<usize, String> {
+/// Bring the catalogue in line with what a desktop has installed. Covers are
+/// fetched only until `until`, and not at all once the desktop stops answering,
+/// so a desktop that goes away half way costs seconds, not minutes.
+pub(crate) fn sync_games(library: &Library, host: &HostRow, link: &Link, until: Instant) -> Result<usize, String> {
     let games = link.games().map_err(|e| e.to_string())?;
     let have_cover: std::collections::HashSet<String> =
         library.store().list()?.into_iter().filter(|g| g.cover.is_some()).map(|g| g.id).collect();
     let dir = art_dir(library);
+    // Covers in a row that did not arrive because the desktop did not answer.
+    let silent = std::cell::Cell::new(0u32);
     // Games from the stores, programs the administrator added on the desktop,
     // and game files of the consoles set up there.
     let from = |source: &'static str| -> Vec<Scanned> {
@@ -174,9 +179,16 @@ pub(crate) fn sync_games(library: &Library, host: &HostRow, link: &Link) -> Resu
                 let path = dir.join(format!("{source}-{}.jpg", g.source_id));
                 if path.is_file() {
                     cover = Some(path);
-                } else if let Ok(bytes) = link.cover(&g.id) {
-                    if std::fs::create_dir_all(&dir).is_ok() && std::fs::write(&path, bytes).is_ok() {
-                        cover = Some(path);
+                } else if silent.get() < 3 && Instant::now() < until {
+                    match link.cover(&g.id) {
+                        Ok(bytes) => {
+                            silent.set(0);
+                            if std::fs::create_dir_all(&dir).is_ok() && std::fs::write(&path, bytes).is_ok() {
+                                cover = Some(path);
+                            }
+                        }
+                        Err(Error::Unreachable) => silent.set(silent.get() + 1),
+                        Err(_) => {}
                     }
                 }
             }
@@ -197,20 +209,74 @@ pub(crate) fn sync_games(library: &Library, host: &HostRow, link: &Link) -> Resu
     Ok(total)
 }
 
+/// How long one desktop's games and covers may take to bring over in the background.
+const SYNC_BUDGET: Duration = Duration::from_secs(20);
+
+/// Desktops whose games are being brought over now: one at a time each.
+static SYNCING: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// Held while a desktop is being brought over; lets go when dropped, however it ends.
+struct Syncing(String);
+
+impl Drop for Syncing {
+    fn drop(&mut self) {
+        SYNCING.lock().unwrap_or_else(|e| e.into_inner()).retain(|id| id != &self.0);
+    }
+}
+
+fn start_syncing(id: &str) -> Option<Syncing> {
+    let mut now = SYNCING.lock().unwrap_or_else(|e| e.into_inner());
+    if now.iter().any(|x| x == id) {
+        return None;
+    }
+    now.push(id.to_string());
+    Some(Syncing(id.to_string()))
+}
+
+/// Bring a desktop's games and covers over on a thread of its own, so that
+/// asking how the desktop is never waits for it. One at a time per desktop and
+/// for no longer than `SYNC_BUDGET`. No lock is held while the desktop is asked.
+fn sync_in_background(app: &AppHandle, library: &Library, host: HostRow, link: Link) {
+    let Some(busy) = start_syncing(&host.id) else { return };
+    // Only a sync that really starts uses up the wait until the next one.
+    mark_synced(&host.id);
+    let (app, library) = (app.clone(), library.clone());
+    std::thread::spawn(move || {
+        let _busy = busy;
+        let started = Instant::now();
+        let result = sync_games(&library, &host, &link, started + SYNC_BUDGET);
+        let took = started.elapsed().as_millis();
+        match result {
+            Ok(games) => crate::conn_log::line(&format!("games of desktop {} brought over in the background: {games} games, {took} ms", host.id)),
+            Err(e) => crate::conn_log::line(&format!("games of desktop {} could not be brought over after {took} ms: {e}", host.id)),
+        }
+        // Covers may be the first pictures from this desktop: let the interface show them.
+        allow_pictures(&app, &art_dir(&library));
+        let _ = app.emit("library://changed", ());
+    });
+}
+
 /// A desktop's game list changes rarely, and reading it makes the desktop
 /// look through its disks, so it is mirrored at most this often.
 const SYNC_EVERY: Duration = Duration::from_secs(300);
 
+static LAST_SYNC: Mutex<Option<HashMap<String, Instant>>> = Mutex::new(None);
+
+/// Whether it is time to mirror this desktop's games again. Does not use the time up.
 fn sync_due(host_id: &str) -> bool {
-    static LAST: Mutex<Option<HashMap<String, Instant>>> = Mutex::new(None);
-    let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
-    let last = last.get_or_insert_with(HashMap::new);
-    if last.get(host_id).is_some_and(|t| t.elapsed() < SYNC_EVERY) {
-        return false;
-    }
-    last.insert(host_id.to_string(), Instant::now());
-    true
+    let last = LAST_SYNC.lock().unwrap_or_else(|e| e.into_inner());
+    !last.as_ref().and_then(|m| m.get(host_id)).is_some_and(|t| t.elapsed() < SYNC_EVERY)
 }
+
+/// A sync of this desktop's games has started (or just finished).
+fn mark_synced(host_id: &str) {
+    LAST_SYNC.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(host_id.to_string(), Instant::now());
+}
+
+/// Counts the looks at all desktops, so that a look that finishes after it was
+/// given up on (see `hosts_refresh`) knows a newer one has begun, and leaves
+/// what that one found alone.
+static REFRESHES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Find the address a desktop answers at. Every known address is asked at
 /// once, so a desktop that has moved (home network to Tailscale, or a new
@@ -260,11 +326,44 @@ fn seen(library: &Library, host: &HostRow, link: &Link, status: &Status) -> Host
     now_known
 }
 
-/// Ask one desktop how it is, and mirror its games while it is awake.
-fn refresh(library: &Library, host: &HostRow) -> HostView {
-    match reach(host) {
+/// Write down a desktop becoming reachable or unreachable, and for how long it
+/// had been the other. Only a change is written; the first answer is a change
+/// from "unknown".
+fn track_reach(id: &str, up: bool) {
+    static STATE: Mutex<Option<HashMap<String, (bool, Instant)>>> = Mutex::new(None);
+    let mut states = STATE.lock().unwrap_or_else(|e| e.into_inner());
+    let states = states.get_or_insert_with(HashMap::new);
+    let words = |up: bool| if up { "reachable" } else { "unreachable" };
+    match states.get(id) {
+        Some((before, _)) if *before == up => {}
+        Some((before, since)) => {
+            crate::conn_log::line(&format!("desktop {id}: {} -> {} (was {} for {} ms)", words(*before), words(up), words(*before), since.elapsed().as_millis()));
+            states.insert(id.to_string(), (up, Instant::now()));
+        }
+        None => {
+            crate::conn_log::line(&format!("desktop {id}: first look, {}", words(up)));
+            states.insert(id.to_string(), (up, Instant::now()));
+        }
+    }
+}
+
+/// Ask one desktop how it is, and start mirroring its games in the background
+/// while it is awake. Never waits for the games.
+///
+/// With `generation`, a look that was overtaken by a newer one (it answered after
+/// its deadline) writes nothing: no record, no log, no sync.
+fn refresh(app: &AppHandle, library: &Library, host: &HostRow, generation: Option<u64>) -> HostView {
+    crate::conn_log::know_name(&host.name);
+    let answer = reach(host);
+    let current = generation.is_none_or(|g| g == REFRESHES.load(std::sync::atomic::Ordering::SeqCst));
+    // A desktop that refuses or complains has answered: it is there.
+    if current {
+        track_reach(&host.id, !matches!(answer, Err(Error::Unreachable)));
+    }
+    match answer {
         Ok((link, status, latency)) => {
-            let host = seen(library, host, &link, &status);
+            crate::conn_log::know_name(&status.name);
+            let host = if current { seen(library, host, &link, &status) } else { host.clone() };
             let mut out = view_with_health(library, &host);
             out.latency_ms = Some(latency);
             out.route = Some(if wake::is_tailscale(&link.address) { "remote" } else { "local" });
@@ -276,8 +375,8 @@ fn refresh(library: &Library, host: &HostRow) -> HostView {
             out.version = Some(status.version.clone());
             out.playing = status.playing;
             out.problem = status.problem;
-            if sync_due(&host.id) {
-                let _ = sync_games(library, &host, &link);
+            if current && sync_due(&host.id) {
+                sync_in_background(app, library, host, link);
             }
             out
         }
@@ -286,26 +385,56 @@ fn refresh(library: &Library, host: &HostRow) -> HostView {
     }
 }
 
-/// Linked desktops as last known, without asking them. Instant.
-#[tauri::command]
+/// Linked desktops as last known, without asking them. Instant. Not run on the
+/// interface's own thread: it waits for the catalogue's lock like the rest.
+#[tauri::command(async)]
 pub fn hosts_list(library: State<'_, Library>) -> Result<Vec<HostView>, String> {
     let hosts = library.store().hosts()?;
     Ok(hosts.iter().map(|host| view_with_health(&library, host)).collect())
 }
 
-/// Ask every desktop at once how it is.
+/// However many desktops there are, asking all of them takes no longer than this.
+const REFRESH_LIMIT: Duration = Duration::from_secs(10);
+
+/// What is shown of a desktop that did not answer in time: what was known.
+fn late_view(library: &Library, host: &HostRow) -> HostView {
+    HostView { state: "unreachable", problem: Some("did not answer in time".to_string()), ..view_with_health(library, host) }
+}
+
+/// Ask every desktop at once how it is, for no longer than `REFRESH_LIMIT` in
+/// all. A desktop that has not answered by then is shown as unreachable, and
+/// its look is left to finish by itself.
 #[tauri::command(async)]
 pub fn hosts_refresh(app: AppHandle, library: State<'_, Library>) -> Result<Vec<HostView>, String> {
+    let started = Instant::now();
     let hosts = library.store().hosts()?;
-    let asking: Vec<_> = hosts
-        .into_iter()
+    let generation = REFRESHES.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+    let jobs: Vec<Job<HostView>> = hosts
+        .iter()
         .map(|host| {
-            let library = library.inner().clone();
-            std::thread::spawn(move || refresh(&library, &host))
+            let (app, library, host) = (app.clone(), library.inner().clone(), host.clone());
+            Box::new(move || refresh(&app, &library, &host, Some(generation))) as Job<HostView>
         })
         .collect();
-    let views = asking.into_iter().filter_map(|t| t.join().ok()).collect();
+    let answers = collect_until(jobs, REFRESH_LIMIT);
+    let cut = answers.iter().filter(|a| a.is_none()).count();
+    let views: Vec<HostView> = hosts
+        .iter()
+        .zip(answers)
+        .map(|(host, answer)| {
+            answer.unwrap_or_else(|| {
+                track_reach(&host.id, false);
+                late_view(&library, host)
+            })
+        })
+        .collect();
     allow_pictures(&app, &art_dir(&library));
+    let ms = started.elapsed().as_millis();
+    if cut > 0 {
+        crate::conn_log::line(&format!("hosts_refresh: {} desktops, {cut} did not answer in {ms} ms (cut at the {} s limit)", views.len(), REFRESH_LIMIT.as_secs()));
+    } else if ms >= 1500 {
+        crate::conn_log::line(&format!("hosts_refresh: {} desktops, all answered in {ms} ms", views.len()));
+    }
     Ok(views)
 }
 
@@ -424,6 +553,7 @@ pub fn watch(library: Library) {
             for host in library.store().hosts().unwrap_or_default() {
                 let reached = reach(&host);
                 let up = reached.is_ok();
+                track_reach(&host.id, !matches!(reached, Err(Error::Unreachable)));
                 if answered.insert(host.id.clone(), up).is_some_and(|before| before != up) {
                     crate::crash::note(&format!("desktop {} {} (a game or stream is running: {playing})", host.id, if up { "answers again" } else { "stopped answering" }));
                 }
@@ -716,15 +846,17 @@ fn finish_link(app: &AppHandle, library: &Library, hello: carla_core::link::Hell
     library.store().save_host(&host, now())?;
     let warning = pair_moonlight(&link).err();
     note_paired(&link.address, warning.is_none());
-    let games = sync_games(library, &host, &link).unwrap_or(0);
+    let games = sync_games(library, &host, &link, Instant::now() + Duration::from_secs(60)).unwrap_or(0);
+    // Just brought over: the look below need not do it again.
+    mark_synced(&host.id);
     allow_pictures(app, &art_dir(library));
     if let Ok(status) = link.status() {
         measure_host(library, &host, &link, &status, Depth::Full);
     }
-    Ok(Linked { host: refresh(library, &host), games, warning })
+    Ok(Linked { host: refresh(app, library, &host, None), games, warning })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn hosts_remove(admin: State<'_, Admin>, library: State<'_, Library>, id: String) -> Result<(), String> {
     admin.require()?;
     library.store().remove_host(&id)
@@ -741,7 +873,7 @@ pub fn hosts_rescan(app: AppHandle, admin: State<'_, Admin>, library: State<'_, 
         e => e.to_string(),
     })?;
     let host = seen(&library, &host, &link, &status);
-    let games = sync_games(&library, &host, &link)?;
+    let games = sync_games(&library, &host, &link, Instant::now() + Duration::from_secs(60))?;
     allow_pictures(&app, &art_dir(&library));
     Ok(games)
 }
@@ -886,7 +1018,19 @@ fn picture_for(library: &Library, host: &HostRow, link: &Link) -> Choice {
 /// picture is fetched again: saves are left alone, since the game there is
 /// using them.
 pub(crate) fn start_stream(library: &Library, game_id: &str, place: &str, waking: &dyn Fn(), stopped: &dyn Fn() -> bool, resuming: bool) -> Result<(Child, bool), String> {
+    let began = Instant::now();
+    let step = |what: &str| crate::conn_log::line(&format!("start_stream {game_id} at {place}{}: {what} (+{} ms)", if resuming { " (resuming)" } else { "" }, began.elapsed().as_millis()));
+    step("begin");
+    let result = start_stream_steps(library, game_id, place, waking, stopped, resuming, &step);
+    if let Err(e) = &result {
+        step(&format!("failed: {e}"));
+    }
+    result
+}
+
+fn start_stream_steps(library: &Library, game_id: &str, place: &str, waking: &dyn Fn(), stopped: &dyn Fn() -> bool, resuming: bool, step: &dyn Fn(&str)) -> Result<(Child, bool), String> {
     let host = library.store().hosts()?.into_iter().find(|h| h.id == place).ok_or("That desktop is no longer set up.")?;
+    crate::conn_log::know_name(&host.name);
     let exe = moonlight::find().ok_or("Moonlight is not installed on this Ally.")?;
     let mut woke = false;
     let (link, status, _) = match reach(&host) {
@@ -900,9 +1044,11 @@ pub(crate) fn start_stream(library: &Library, game_id: &str, place: &str, waking
         Err(e) => return Err(e.to_string()),
     };
     seen(library, &host, &link, &status);
+    step(if woke { "desktop answers after waking" } else { "desktop answers" });
     // What was played on the Ally since goes to the desktop first.
     if !resuming {
         crate::savesync::before_stream(library, game_id, &host, &link)?;
+        step("before_stream save sync done");
     }
     // A desktop that has just woken may need a moment before Sunshine is up.
     // The picture is made for this Ally's own screen, and the desktop is told
@@ -910,10 +1056,14 @@ pub(crate) fn start_stream(library: &Library, game_id: &str, place: &str, waking
     let choice = picture_for(library, &host, &link);
     let picture = choice.picture_on(carla_core::display::current());
     let screen = carla_core::display::Mode::new(picture.width, picture.height, picture.fps);
+    step("picture chosen");
     let mut tries = 0;
     loop {
         match link.prepare_for(game_id, Some(screen)) {
-            Ok(_) => break,
+            Ok(_) => {
+                step(&format!("prepare done after {tries} retries"));
+                break;
+            }
             Err(Error::Host(text)) if text.contains("Sunshine is not running") && tries < 10 && !stopped() => {
                 tries += 1;
                 std::thread::sleep(Duration::from_secs(3));
@@ -923,6 +1073,8 @@ pub(crate) fn start_stream(library: &Library, game_id: &str, place: &str, waking
         }
     }
     ensure_paired(&exe, &link)?;
+    step("pairing checked");
     let moonlight = moonlight::stream(&exe, &link.address, picture).map_err(|e| format!("Moonlight could not be started: {e}."))?;
+    step("Moonlight started");
     Ok((moonlight, woke))
 }

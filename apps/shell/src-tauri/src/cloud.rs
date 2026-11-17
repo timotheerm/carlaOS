@@ -24,7 +24,7 @@ pub fn cloud_inspect(admin: State<'_, Admin>, link: String) -> Result<Seen, Stri
 }
 
 /// Add a cloud game. Returns its id.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn cloud_add(admin: State<'_, Admin>, library: State<'_, Library>, link: String, title: String) -> Result<String, String> {
     admin.require()?;
     library.store().add_cloud(&link, &title, now())

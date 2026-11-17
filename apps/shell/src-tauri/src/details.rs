@@ -165,7 +165,7 @@ pub fn saves_pick_folder(app: AppHandle, admin: State<'_, Admin>, library: State
 }
 
 /// Forget a chosen save folder. Backups already made are kept.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn saves_forget_folder(admin: State<'_, Admin>, library: State<'_, Library>, game_id: String) -> Result<(), String> {
     admin.require()?;
     library.store().set_save_folder_of(&game_id, None)

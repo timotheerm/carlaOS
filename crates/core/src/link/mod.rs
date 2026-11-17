@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 pub mod check;
 pub mod client;
 pub mod codec;
+pub mod deadline;
 pub mod discover;
 pub mod enrol;
 pub mod health;

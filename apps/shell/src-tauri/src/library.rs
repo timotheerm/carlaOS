@@ -160,28 +160,48 @@ impl Library {
     }
 }
 
+/// A look through the disks that is under way. The interface gives up waiting
+/// after a while and may ask again; two looks must not run at once.
+static SCANNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Lets the next scan start when this one ends, however it ends.
+struct Scanning;
+
+impl Drop for Scanning {
+    fn drop(&mut self) {
+        SCANNING.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 #[tauri::command(async)]
 pub fn library_scan(app: AppHandle, library: State<'_, Library>) -> Result<Vec<GameView>, String> {
+    if SCANNING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        // Already looking: say what is known now, at once. The look under way
+        // tells the interface when it has changed the library.
+        crate::conn_log::line("library_scan asked while another scan runs: answered with the catalogue as it is");
+        return library.store().list_all();
+    }
+    let _scanning = Scanning;
     library.scan(&app)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn library_list(library: State<'_, Library>) -> Result<Vec<GameView>, String> {
     library.store().list_all()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn library_set_favourite(library: State<'_, Library>, id: String, favourite: bool) -> Result<(), String> {
     library.store().set_favourite(&id, favourite)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn library_session(library: State<'_, Library>) -> Option<SessionView> {
     locked(&library.0.active).as_ref().map(|a| a.view.clone())
 }
 
 /// The player says the game is over. Used when we could not tell by ourselves.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn library_end_session(library: State<'_, Library>) {
     if let Some(active) = locked(&library.0.active).as_mut() {
         active.stop = true;
@@ -271,11 +291,17 @@ pub(crate) fn play(app: AppHandle, library: &Library, mut install: Install, plac
             .map_err(|e| format!("{} could not be opened: {e}.", install.title))
     } else if place == LOCAL {
         // What was played on a desktop since comes here first.
-        crate::savesync::all(library, &game_id, true);
-        let steam_root = locked(&library.0.steam_root).clone();
-        launch::start(&install, steam_root.as_deref())
-            .map(|child| Running::Game(Watch::new(&install, child)))
-            .map_err(|e| format!("{} could not be started: {e}.", install.title))
+        // A game must not start while a fetch from a desktop is still writing
+        // into its save folder: it is refused, and the claim is let go below.
+        match crate::savesync::launch_may_start(crate::savesync::all(library, &game_id, true)) {
+            Err(e) => Err(e),
+            Ok(()) => {
+                let steam_root = locked(&library.0.steam_root).clone();
+                launch::start(&install, steam_root.as_deref())
+                    .map(|child| Running::Game(Watch::new(&install, child)))
+                    .map_err(|e| format!("{} could not be started: {e}.", install.title))
+            }
+        }
     } else {
         let waking = || {
             if let Some(current) = locked(&library.0.active).as_mut() {
@@ -434,7 +460,11 @@ fn follow(app: AppHandle, library: &Library, mut running: Running, install: Inst
             let mut active = locked(&library.0.active);
             let Some(current) = active.as_mut() else { break };
             if current.stop {
-                running.stop(current.end);
+                let end = current.end;
+                // Not under the lock: closing a game looks through every process,
+                // and the interface asks about the session meanwhile.
+                drop(active);
+                running.stop(end);
                 break;
             }
             match phase {
@@ -459,6 +489,9 @@ fn follow(app: AppHandle, library: &Library, mut running: Running, install: Inst
             crate::hosts::stream_failed(&library, &place);
         }
         crate::crash::note(&format!("session ended: {game_id} at {place}, played {played}, never started {never_started}"));
+        if let Running::Stream { since, .. } = &running {
+            crate::conn_log::line(&format!("Moonlight exited: {game_id} at {place} after {} ms, never started {never_started}", since.elapsed().as_millis()));
+        }
         // A game that never appeared was not played.
         let ended = if played { now() } else { started };
         let _ = library.store().end_session(session, ended);
@@ -470,27 +503,38 @@ fn follow(app: AppHandle, library: &Library, mut running: Running, install: Inst
         *locked(&library.0.active) = None;
         // Each step is written down before it starts: if one of them never
         // returns, the last line of the trail says which.
+        // The connection log gets how long each step took.
+        let ending = Instant::now();
+        let took = |what: &str| crate::conn_log::line(&format!("session end {game_id}: {what} (+{} ms)", ending.elapsed().as_millis()));
+        took("begin");
         crate::crash::note("session end: starting power::rest");
         crate::power::rest();
+        took("power::rest done");
         crate::crash::note("session end: closing the quick menu window");
         crate::quick::ended(&app);
+        took("quick menu window closed");
         crate::crash::note("session end: telling the interface");
         let _ = app.emit(SESSION_EVENT, None::<SessionView>);
+        took("interface told");
         crate::crash::note("session end: bringing CarlaOS back");
         if let Some(window) = app.get_webview_window("main") {
             let _ = window.unminimize();
             let _ = window.set_focus();
         }
         crate::crash::note("session end: done");
+        took("CarlaOS back");
         // Saves follow the player: to the desktops after playing here, back
         // from the desktop after a stream.
         if played && place == LOCAL {
             crate::savesync::all(&library, &game_id, false);
+            took("saves sent to the desktops");
         } else if played && !cloud {
             crate::savesync::after_stream(&library, &game_id, &place);
+            took("saves fetched after the stream");
         }
         if sleep_again {
             crate::hosts::sleep_again(&library, &place);
+            took("desktop told to sleep again");
         }
     });
 }
@@ -551,7 +595,7 @@ pub fn library_add_manual(
     library.store().add_manual(&game, now())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn library_remove_manual(admin: State<'_, Admin>, library: State<'_, Library>, id: String) -> Result<(), String> {
     admin.require()?;
     library.store().remove_manual(&id)

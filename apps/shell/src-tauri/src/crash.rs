@@ -90,6 +90,11 @@ pub fn note(text: &str) {
     }
 }
 
+/// The newest notes of the trail, oldest first. Empty before `open`.
+pub fn trail(count: usize) -> Vec<String> {
+    CRASH.get().map(|crash| crash.trail(count)).unwrap_or_default()
+}
+
 /// The program ends normally: call before anything that ends it without
 /// `RunEvent::Exit`, such as asking Windows to restart or switch off.
 pub fn ended() {
