@@ -42,7 +42,8 @@ fn backups(library: &Library, game_id: &str) -> Backups {
 /// Where this game's saves are on this machine: where the administrator
 /// said, or Steam's own cloud folder for a Steam game.
 fn save_dir(library: &Library, game_id: &str) -> Option<PathBuf> {
-    if let Ok(Some(chosen)) = library.store().save_folder_of(game_id) {
+    let chosen = library.store().save_folder_of(game_id);
+    if let Ok(Some(chosen)) = chosen {
         return chosen.is_dir().then_some(chosen);
     }
     let root = locked(&library.0.steam_root).clone()?;

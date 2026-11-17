@@ -107,6 +107,8 @@ jobs:
             packaging
             scripts/release
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
       - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-node@v4
         with:
@@ -130,6 +132,14 @@ jobs:
       - name: Build the shell installer
         run: npx tauri build
         working-directory: apps/shell
+      # The shell's own tests (they need the interface built above), and the lint for a lock
+      # guard kept alive by a `for`/`if let`/`match` header, which froze the Ally in 0.20-0.34.
+      - name: Test the shell
+        if: needs.plan.outputs.tests == 'true'
+        run: cargo test --locked -p carlaos-shell
+      - name: Check the shell for lock guards held by a loop or match
+        if: needs.plan.outputs.tests == 'true'
+        run: cargo clippy --locked -p carlaos-shell -- -A clippy::all -D clippy::significant_drop_in_scrutinee
       - name: Build the companion
         run: cargo build --release --locked -p carla-companion
       - name: Find NSIS
