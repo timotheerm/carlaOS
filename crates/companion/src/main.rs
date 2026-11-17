@@ -35,6 +35,8 @@ use sunshine::{Streamer, Sunshine};
 const HELP: &str = "CarlaOS desktop companion
 
   carla-companion            set up if needed, open linking for an Ally, and run
+  carla-companion dashboard  open the dashboard: the Ally, the connection, the
+                             stream and this PC at a glance
   carla-companion setup      set up again, asking for the name too
   carla-companion code       open linking again and show a new code
   carla-companion allies [--json]
@@ -150,6 +152,69 @@ fn network() -> (Vec<String>, Vec<String>) {
     addresses.sort();
     macs.sort();
     (addresses, macs)
+}
+
+/// How busy this PC is. Processor use is what it was since the last time
+/// this was asked, so the first answer has none.
+fn vitals() -> server::Vitals {
+    static SYSTEM: std::sync::Mutex<Option<(sysinfo::System, bool)>> = std::sync::Mutex::new(None);
+    let mut system = SYSTEM.lock().unwrap_or_else(|e| e.into_inner());
+    if system.is_none() {
+        *system = sysinfo::System::new().ok().map(|s| (s, false));
+    }
+    let Some((system, asked_before)) = system.as_mut() else { return server::Vitals::default() };
+    system.refresh_cpu_usage();
+    system.refresh_memory();
+    let cpu = asked_before.then(|| system.global_cpu_usage().round().clamp(0.0, 100.0) as u8);
+    *asked_before = true;
+    server::Vitals { cpu, memory_used: system.used_memory(), memory_total: system.total_memory() }
+}
+
+/// Show the dashboard in a window of its own when Edge is there (it is on
+/// every Windows 11), and in the usual browser otherwise.
+#[cfg(windows)]
+fn open_dashboard(port: u16) {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let url = format!("http://127.0.0.1:{port}/");
+    let start = |what: &[&str]| std::process::Command::new("cmd").args(["/C", "start", ""]).args(what).creation_flags(CREATE_NO_WINDOW).status().is_ok_and(|s| s.success());
+    if !start(&["msedge", &format!("--app={url}"), "--window-size=1240,860"]) {
+        start(&[&url]);
+    }
+}
+
+#[cfg(not(windows))]
+fn open_dashboard(port: u16) {
+    println!("The dashboard is at http://127.0.0.1:{port}/");
+}
+
+/// Whether the companion is running and answering on this machine.
+fn answering(port: u16) -> bool {
+    let address = std::net::SocketAddr::from((Ipv4Addr::LOCALHOST, port));
+    std::net::TcpStream::connect_timeout(&address, std::time::Duration::from_millis(500)).is_ok()
+}
+
+/// `carla-companion dashboard`, also behind the Start menu's entry. Starts
+/// the companion in the background first when it is not running.
+fn dashboard(files: &Files) -> Result<i32, String> {
+    let config = match files.config() {
+        Some(config) => config,
+        None => setup(files, false)?,
+    };
+    if !answering(config.port) {
+        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        // The same way Windows starts it at sign-in: without a window.
+        let quiet = std::process::Command::new("conhost.exe").arg("--headless").arg(&exe).arg("serve").spawn();
+        if quiet.is_err() {
+            std::process::Command::new(&exe).arg("serve").spawn().map_err(|e| format!("The companion could not be started: {e}."))?;
+        }
+        let waited = std::time::Instant::now();
+        while !answering(config.port) && waited.elapsed() < std::time::Duration::from_secs(8) {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+    }
+    open_dashboard(config.port);
+    Ok(0)
 }
 
 /// The command Sunshine runs for a stream: this program, wherever it is.
@@ -323,16 +388,7 @@ fn attend(files: &Files) {
 fn allies(files: &Files, json: bool) -> Result<i32, String> {
     let now = files::now();
     if json {
-        // The companion in the background knows the whole picture.
-        let whole = files.config().and_then(|config| {
-            let agent: ureq::Agent = ureq::Agent::config_builder().timeout_global(Some(std::time::Duration::from_secs(8))).http_status_as_error(false).build().into();
-            let mut reply = agent.get(&format!("http://127.0.0.1:{}/v1/local/overview", config.port)).header(server::LOCAL, &files.local_token().ok()?).call().ok()?;
-            (reply.status().as_u16() == 200).then(|| reply.body_mut().read_to_string().ok()).flatten()
-        });
-        match whole {
-            Some(text) => println!("{text}"),
-            None => println!("{}", serde_json::to_string_pretty(&serde_json::json!({ "allies": files.allies(now, files.streaming(now)) })).expect("serialisable")),
-        }
+        println!("{}", serde_json::to_string_pretty(&serde_json::json!({ "allies": files.allies(now, files.streaming(now)) })).expect("serialisable"));
         return Ok(0);
     }
     let list = files.allies(now, files.streaming(now));
@@ -466,6 +522,7 @@ fn build(files: &Files, config: Config) -> Server {
         sleep_soon,
     )
     .with_updater(update_from_afar)
+    .with_dashboard(vitals, || update::check(Part::DesktopHost).map(|found| found.map(|f| f.version)))
     .with_virtual_screens(Box::new(virtual_screen::Vdd))
     .with_installs(server::Installs {
         offered: steam_library,
@@ -769,8 +826,15 @@ fn run(args: &[String]) -> Result<i32, String> {
             show_code(&files)?;
             println!("Leave this window open until the Ally is linked. After that the companion");
             println!("runs in the background by itself, also after you sign in to Windows.");
+            println!("The dashboard that opens now shows the same code, and the Ally once it is linked.");
             let attending = files.clone();
             std::thread::spawn(move || attend(&attending));
+            let port = config.port;
+            std::thread::spawn(move || {
+                // Once this window's own companion, or the one in the background, answers.
+                std::thread::sleep(std::time::Duration::from_millis(800));
+                open_dashboard(port);
+            });
             if serve(&files, config).is_err() {
                 // Already running in the background, which does the linking;
                 // this window only answers its questions.
@@ -780,6 +844,7 @@ fn run(args: &[String]) -> Result<i32, String> {
             }
             Ok(0)
         }
+        Some("dashboard") => dashboard(&files),
         Some("setup") => {
             setup(&files, true)?;
             println!("Done. If the companion is already running, sign out and in again (or restart it) to use the new settings.");

@@ -12,7 +12,7 @@ use super::{random, SUNSHINE_APP};
 
 /// Picture settings for a stream. Made for the screen it is shown on: see
 /// `quality::Level::picture_on`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Picture {
     pub width: u32,
     pub height: u32,

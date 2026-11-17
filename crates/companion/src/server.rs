@@ -9,7 +9,7 @@ use carla_core::library::achievements::Achievement;
 use carla_core::library::emulation;
 use carla_core::library::Scanned;
 use carla_core::link::enrol::{self, Exchange, Shared, Side};
-use carla_core::link::health::{Asking, Overview, Pulse};
+use carla_core::link::health::{Asking, Pulse};
 use carla_core::link::probe::{self, BurstAsk};
 use carla_core::link::{EnrolAsk, EnrolReveal, FitAsk, ScreenFit};
 use carla_core::link::quality;
@@ -25,6 +25,10 @@ use serde::Serialize;
 use crate::files::{Config, Extra, Files, Pending, SaveFolder, Seen};
 use crate::sunshine::Streamer;
 use crate::virtual_screen::{self, Driver};
+
+#[path = "dashboard.rs"]
+mod dashboard;
+pub use dashboard::Vitals;
 
 /// How long a scan of the installed games is reused.
 const SCAN_AGE: Duration = Duration::from_secs(60);
@@ -44,12 +48,9 @@ pub struct Request<'a> {
     pub body: &'a [u8],
     /// Address the request came from.
     pub from: &'a str,
-    /// What a program on this machine shows to use the local requests.
-    pub local: Option<&'a str>,
 }
 
 /// The header a local program puts its token in (see `Files::local_token`).
-pub const LOCAL: &str = "x-carla-local";
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct Reply {
@@ -128,6 +129,17 @@ pub struct Server {
     bursting: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// When each Ally's last request was written down, to not write on every one.
     seen: Mutex<HashMap<String, (Instant, String)>>,
+    /// How busy this PC is, for the dashboard.
+    vitals: fn() -> Vitals,
+    /// Looks for a newer release, for the dashboard.
+    newer: fn() -> Result<Option<String>, String>,
+    newest: Mutex<Option<(Instant, Result<Option<String>, String>)>>,
+    /// Lets the dashboard's page, and nothing else, ask for more than the page.
+    token: String,
+    /// What each linked Ally was last heard saying.
+    heard: Mutex<HashMap<String, dashboard::Heard>>,
+    asked: Mutex<Option<dashboard::Asked>>,
+    clients: Mutex<Option<(Instant, Option<Vec<String>>)>>,
 }
 
 /// An installed game and the store it is from ("steam", "epic", "gog").
@@ -212,6 +224,13 @@ impl Server {
             probe: None,
             bursting: Default::default(),
             seen: Mutex::default(),
+            vitals: Vitals::default,
+            newer: || Ok(None),
+            newest: Mutex::default(),
+            token: link::random_hex(16),
+            heard: Mutex::default(),
+            asked: Mutex::default(),
+            clients: Mutex::default(),
         }
     }
 
@@ -281,61 +300,11 @@ impl Server {
         }
     }
 
-    /// Everything a dashboard on this desktop shows.
-    pub fn overview(&self, now: i64) -> Overview {
-        let status = self.status(now);
-        let streaming = self.files.streaming(now);
-        Overview {
-            name: status.name,
-            id: status.id,
-            version: status.version,
-            state: status.state,
-            problem: status.problem,
-            playing: status.playing,
-            streaming,
-            hardware: status.hardware,
-            graphics: status.graphics,
-            addresses: status.addresses,
-            linking_until: self.files.linking_until(now),
-            asking: self.files.asking(now),
-            allies: self.files.allies(now, streaming),
-        }
-    }
-
-    /// Requests from a program on this machine that shows the local token:
-    /// the desktop's dashboard. `None` when this is not such a request.
-    fn local(&self, req: &Request, now: i64) -> Option<Answer> {
-        if !req.path.starts_with("/v1/local/") {
-            return None;
-        }
-        let here = req.from.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback());
-        let token = self.files.local_token().ok();
-        // Compared in full either way, so the time says nothing about the token.
-        let shown = req.local.unwrap_or_default().as_bytes();
-        let right = token.as_ref().is_some_and(|t| t.len() == shown.len() && t.bytes().zip(shown).fold(0u8, |acc, (a, b)| acc | (a ^ b)) == 0);
-        if !here || !right {
-            return Some(refuse(403, "Only this desktop's own programs may ask that."));
-        }
-        Some(match (req.method, req.path) {
-            ("GET", "/v1/local/overview") => json(&self.overview(now)),
-            ("POST", "/v1/local/link/open") => self.files.new_code().map_err(|e| (500, e)).and_then(|code| json(&serde_json::json!({ "code": code.code, "until": code.expires }))),
-            ("POST", "/v1/local/link/close") => {
-                self.files.clear_code();
-                json(&serde_json::json!({ "closed": true }))
-            }
-            ("POST", "/v1/local/link/answer") => body::<serde_json::Value>(req.body).and_then(|v| {
-                let (Some(id), Some(allow)) = (v["enrol_id"].as_str(), v["allow"].as_bool()) else {
-                    return refuse(400, "The request was not understood.");
-                };
-                let answered = self.files.answer_asking(id, allow, now).map_err(|e| (500, e))?;
-                json(&serde_json::json!({ "answered": answered }))
-            }),
-            ("POST", "/v1/local/forget") => body::<serde_json::Value>(req.body).and_then(|v| {
-                let forgotten = self.files.forget_device(v["id"].as_str().unwrap_or_default()).map_err(|e| (500, e))?;
-                json(&serde_json::json!({ "forgotten": forgotten }))
-            }),
-            _ => refuse(404, "The companion does not know that request."),
-        })
+    /// Tell the dashboard how busy this PC is and whether there is a newer release.
+    pub fn with_dashboard(mut self, vitals: fn() -> Vitals, newer: fn() -> Result<Option<String>, String>) -> Self {
+        self.vitals = vitals;
+        self.newer = newer;
+        self
     }
 
     /// Let linked devices ask this companion to update itself.
@@ -803,7 +772,14 @@ impl Server {
             ("GET", "/v1/library") => self.library(),
             ("POST", "/v1/install") => self.install(req.body, now),
             ("GET", "/v1/downloads") => json(&(self.installs.downloads)()),
-            ("POST", "/v1/stream/prepare") => self.prepare(req.body, now),
+            ("POST", "/v1/stream/prepare") => {
+                let answer = self.prepare(req.body, now);
+                if let (Ok(_), Ok(prepare)) = (&answer, body::<Prepare>(req.body)) {
+                    self.asked_for(req.device.unwrap_or_default(), &prepare, now);
+                }
+                answer
+            }
+            ("POST", "/v1/report") => self.report(req.device.unwrap_or_default(), req.body, now),
             ("POST", "/v1/stream/pair") => self.pair(req.body, req.from),
             ("POST", "/v1/power/sleep") => self.sleep(now),
             ("POST", "/v1/stream/end") => self.end(now),
@@ -855,12 +831,15 @@ impl Server {
             ("POST", "/v1/enrol/finish") => Some(self.enrol_finish(req.body, now)),
             ("POST", "/v1/enrol/ask") => Some(self.enrol_ask(req.body, req.from, now)),
             ("POST", "/v1/enrol/reveal") => Some(self.enrol_reveal(req.body, now)),
-            _ => self.local(req, now),
+            _ => None,
         };
         let (answer, key) = match open {
             Some(answer) => (answer, None),
             None => match self.trusted(req, now) {
-                Ok(key) => (self.signed(req, now), Some(key)),
+                Ok(key) => {
+                    self.heard_from(req.device.unwrap_or_default(), req.from, now);
+                    (self.signed(req, now), Some(key))
+                }
                 Err(Some(key)) => (refuse(409, "The Ally and the desktop disagree about the time. Check the clock on both."), Some(key)),
                 Err(None) => (refuse(401, "This device is not linked to the desktop."), None),
             },
@@ -887,7 +866,7 @@ pub fn serve(server: std::sync::Arc<Server>, http: tiny_http::Server) {
                         request.headers().iter().find(|h| h.field.as_str().as_str().eq_ignore_ascii_case(name)).map(|h| h.value.as_str().to_string())
                     };
                     let (device, time, nonce, signature) = (header(sign::DEVICE), header(sign::TIME), header(sign::NONCE), header(sign::SIGN));
-                    let local = header(LOCAL);
+                    let (host, token) = (header("host"), header("x-carla-token"));
                     let method = request.method().as_str().to_ascii_uppercase();
                     let path = request.url().split('?').next().unwrap_or_default().to_string();
                     // Nothing the Ally sends is large, except a save file, and
@@ -903,7 +882,12 @@ pub fn serve(server: std::sync::Arc<Server>, http: tiny_http::Server) {
                     let mut bytes = Vec::new();
                     let read = std::io::Read::read_to_end(&mut std::io::Read::take(request.as_reader(), most), &mut bytes);
                     let from = request.remote_addr().map(|a| a.ip().to_string()).unwrap_or_default();
-                    let reply = if read.is_err() {
+                    // The dashboard: for this machine's own browser only.
+                    let here = request.remote_addr().is_some_and(|a| a.ip().is_loopback());
+                    let page = if here && read.is_ok() { server.local(&method, &path, host.as_deref(), token.as_deref(), &bytes, crate::files::now()) } else { None };
+                    let reply = if let Some(page) = page {
+                        page
+                    } else if read.is_err() {
                         Reply { status: 400, kind: "application/json", body: b"{\"error\":\"The request was not understood.\"}".to_vec(), sign: None }
                     } else {
                         server.handle(
@@ -916,7 +900,6 @@ pub fn serve(server: std::sync::Arc<Server>, http: tiny_http::Server) {
                                 sign: signature.as_deref(),
                                 body: &bytes,
                                 from: &from,
-                                local: local.as_deref(),
                             },
                             crate::files::now(),
                         )
@@ -928,6 +911,12 @@ pub fn serve(server: std::sync::Arc<Server>, http: tiny_http::Server) {
                         }
                     };
                     add("content-type", reply.kind);
+                    if reply.kind.starts_with("text/html") {
+                        // The page holds a token: it is not kept, and not shown inside another page.
+                        add("cache-control", "no-store");
+                        add("x-frame-options", "DENY");
+                        add("content-security-policy", "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; img-src data:; frame-ancestors 'none'");
+                    }
                     if let Some(s) = &reply.sign {
                         add(sign::SIGN, s);
                     }
@@ -970,6 +959,9 @@ mod tests {
             locked(&self.calls).push(format!("pair {pin} {name} {from}"));
             Ok(())
         }
+        fn paired(&self) -> Option<Vec<String>> {
+            Some(vec!["ally".to_string()])
+        }
     }
 
     /// What any test desktop's Steam was asked to install.
@@ -1007,14 +999,14 @@ mod tests {
     /// How often any test desktop was put to sleep.
     static SLEEPS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
-    struct Desk {
-        files: Files,
+    pub(super) struct Desk {
+        pub files: Files,
         calls: Arc<Mutex<Vec<String>>>,
-        port: u16,
+        pub port: u16,
     }
 
     /// A companion on this machine with two games, listening on a free port.
-    fn desk(name: &str, down: bool) -> Desk {
+    pub(super) fn desk(name: &str, down: bool) -> Desk {
         let dir = std::env::temp_dir().join(format!("carla-companion-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -1053,7 +1045,7 @@ mod tests {
                 SLEEPS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 Ok(())
             },
-        ).with_updater(|| Ok(Some("9.9.9".into()))).with_probe(udp.try_clone().unwrap()).with_graphics(vec!["AMD Radeon RX 9070 XT".into()]).with_admin_hold(Duration::from_millis(400)).with_installs(Installs {
+        ).with_updater(|| Ok(Some("9.9.9".into()))).with_probe(udp.try_clone().unwrap()).with_graphics(vec!["AMD Radeon RX 9070 XT".into()]).with_dashboard(Vitals::default, || Ok(Some("9.9.9".into()))).with_admin_hold(Duration::from_millis(400)).with_installs(Installs {
             offered: || Ok(vec![App { appid: "40".into(), title: "Not Here Yet".into(), installdir: "NotHere".into() }, App { appid: "50".into(), title: "Needs Steam's Window".into(), installdir: String::new() }]),
             start: |app| {
                 locked(&ASKED_FOR).push(app.appid.clone());
@@ -1206,7 +1198,6 @@ mod tests {
             sign: Some(&signature),
             body,
             from: "10.0.0.9",
-            local: None,
         };
         assert_eq!(server.handle(&request("/v1/stream/pair", body), now).status, 401, "signed for another path");
         assert_eq!(server.handle(&request("/v1/stream/prepare", br#"{"game_id":"steam:20"}"#), now).status, 401, "body changed");
@@ -1561,18 +1552,7 @@ mod tests {
         // What the Ally reports is what the desktop's dashboard shows.
         let pulse = Pulse { version: "0.17.0".into(), moonlight: true, paired: Some(true), playing: None, battery: Some(71), charging: Some(true), screen: Some(Mode::new(1920, 1080, 120)), health: Some(health.clone()) };
         link.pulse(&pulse).unwrap();
-        let get = |token: &str| {
-            let agent: ureq::Agent = ureq::Agent::config_builder().http_status_as_error(false).build().into();
-            let mut reply = agent.get(&format!("http://127.0.0.1:{}/v1/local/overview", desk.port)).header(LOCAL, token).call().unwrap();
-            (reply.status().as_u16(), reply.body_mut().read_to_string().unwrap())
-        };
-        assert_eq!(get("").0, 403);
-        assert_eq!(get(&"0".repeat(64)).0, 403);
-        let (status, text) = get(&desk.files.local_token().unwrap());
-        assert_eq!(status, 200, "{text}");
-        let overview: Overview = serde_json::from_str(&text).unwrap();
-        assert_eq!((overview.name.as_str(), overview.state, overview.streaming), ("HOME PC", State::Ready, false));
-        let ally = &overview.allies[0];
+        let ally = desk.files.allies(crate::files::now(), false).remove(0);
         assert_eq!((ally.name.as_str(), ally.connected, ally.address.as_deref()), ("Ally", true, Some("127.0.0.1")));
         assert_eq!(ally.health.as_ref(), Some(&health));
         assert_eq!(ally.pulse.as_ref().and_then(|p| p.battery), Some(71));

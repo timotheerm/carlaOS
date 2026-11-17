@@ -440,6 +440,20 @@ impl Files {
         Some(code.code)
     }
 
+    /// The code that is on show, without using it up.
+    pub fn code(&self, now: i64) -> Option<Code> {
+        self.read::<Code>("enrol.json").filter(|code| now < code.expires && code.tries < enrol::CODE_TRIES)
+    }
+
+    /// Keep what an Ally was last heard saying, to show after a restart.
+    pub fn set_ally_heard<T: Serialize>(&self, device: &str, heard: &T) {
+        let _ = self.write(&format!("ally-heard-{device}.json"), heard);
+    }
+
+    pub fn ally_heard<T: DeserializeOwned>(&self, device: &str) -> Option<T> {
+        self.read(&format!("ally-heard-{device}.json"))
+    }
+
     pub fn clear_code(&self) {
         self.remove("enrol.json");
         self.remove("enrol-ask.json");
@@ -478,17 +492,6 @@ impl Files {
     /// What was answered to a device that asked, if anything was yet.
     pub fn asking_answer(&self, enrol_id: &str) -> Option<bool> {
         self.read::<Answered>("enrol-answer.json").filter(|a| a.enrol_id == enrol_id).map(|a| a.allow)
-    }
-
-    /// The secret that programs of this Windows account show to use the
-    /// companion's local requests (the dashboard). Made on first use.
-    pub fn local_token(&self) -> Result<String, String> {
-        if let Some(token) = self.read::<String>("local-token.json").filter(|t| t.len() == 64) {
-            return Ok(token);
-        }
-        let token = link::random_hex(32);
-        self.write("local-token.json", &token)?;
-        Ok(token)
     }
 
     /// Note that a linked Ally was heard from.

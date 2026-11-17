@@ -16,7 +16,7 @@ use carla_core::link::check::{self, Facts, Fix, Outcome, Report};
 use carla_core::link::moonlight;
 use carla_core::link::health::{Health, Pulse};
 use carla_core::link::quality::{self, Choice, Depth, Setting};
-use carla_core::link::{wake, State as HostState, Status, Updating, PORT};
+use carla_core::link::{wake, AllyReport, State as HostState, Status, Updating, PORT};
 use carla_core::{secret, VERSION};
 use serde::Serialize;
 use tauri::{AppHandle, State};
@@ -276,6 +276,7 @@ fn refresh(library: &Library, host: &HostRow) -> HostView {
             out.version = Some(status.version.clone());
             out.playing = status.playing;
             out.problem = status.problem;
+            report_once(&link);
             if sync_due(&host.id) {
                 let _ = sync_games(library, &host, &link);
             }
@@ -854,6 +855,64 @@ fn wake_and_wait(host: &HostRow, stopped: &dyn Fn() -> bool) -> Result<(Link, St
     Err(format!("{} did not wake up. It may be switched off at the wall, or waking is not turned on for it.", host.name))
 }
 
+/// Counts the streams this Ally has started and ended, so that whoever
+/// reports on one knows when it is no longer the one going on.
+static STREAMS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The stream is over: nothing more is reported about it.
+pub(crate) fn stream_over() {
+    STREAMS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// How often the desktop is told about the connection during a stream.
+const REPORT_EVERY: Duration = Duration::from_secs(5);
+
+fn report_of(choice: Option<Choice>, picture: Option<moonlight::Picture>, ping: (u32, u32), away: bool, streaming: bool) -> AllyReport {
+    AllyReport {
+        version: VERSION.to_string(),
+        latency_ms: ping.0,
+        jitter_ms: ping.1,
+        kbps: choice.and_then(|c| c.measure).and_then(|m| m.kbps),
+        away,
+        streaming,
+        picture,
+        level: choice.map(|c| c.level.name().to_string()),
+        automatic: choice.is_some_and(|c| c.automatic),
+    }
+}
+
+/// Tell a desktop, for its dashboard, what the connection is like from here
+/// just now. Not waited for: a desktop from before dashboards says no.
+fn report_once(link: &Link) {
+    let link = link.clone();
+    std::thread::spawn(move || {
+        if let Some(ping) = link.ping() {
+            let _ = link.report(&report_of(None, None, ping, wake::is_tailscale(&link.address), false));
+        }
+    });
+}
+
+/// Keep the desktop's dashboard up to date for as long as this stream goes
+/// on: three empty questions and one short answer every few seconds, which
+/// is nothing beside the stream itself.
+fn report_stream(link: &Link, choice: Choice, picture: moonlight::Picture) {
+    let link = link.clone();
+    let stream = STREAMS.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+    std::thread::spawn(move || {
+        let away = wake::is_tailscale(&link.address);
+        let mut silent = 0;
+        while STREAMS.load(std::sync::atomic::Ordering::SeqCst) == stream && silent < 12 {
+            match link.ping().map(|ping| link.report(&report_of(Some(choice), Some(picture), ping, away, true))) {
+                Some(Ok(_)) => silent = 0,
+                // A desktop from before dashboards: it will not start listening.
+                Some(Err(Error::Host(_))) => return,
+                _ => silent += 1,
+            }
+            std::thread::sleep(REPORT_EVERY);
+        }
+    });
+}
+
 /// Decide the picture of the stream that is about to start, measuring the
 /// connection unless the administrator fixed the picture, and note it.
 fn picture_for(library: &Library, host: &HostRow, link: &Link) -> Choice {
@@ -891,7 +950,8 @@ pub(crate) fn start_stream(library: &Library, game_id: &str, place: &str, waking
     // A desktop that has just woken may need a moment before Sunshine is up.
     // The picture is made for this Ally's own screen, and the desktop is told
     // its size so it can switch its screen to match.
-    let picture = picture_for(library, &host, &link).picture_on(carla_core::display::current());
+    let choice = picture_for(library, &host, &link);
+    let picture = choice.picture_on(carla_core::display::current());
     let screen = carla_core::display::Mode::new(picture.width, picture.height, picture.fps);
     let mut tries = 0;
     loop {
@@ -907,5 +967,6 @@ pub(crate) fn start_stream(library: &Library, game_id: &str, place: &str, waking
     }
     ensure_paired(&exe, &link)?;
     let moonlight = moonlight::stream(&exe, &link.address, picture).map_err(|e| format!("Moonlight could not be started: {e}."))?;
+    report_stream(&link, choice, picture);
     Ok((moonlight, woke))
 }
