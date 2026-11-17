@@ -80,6 +80,12 @@ CREATE TABLE IF NOT EXISTS save_sync (
     problem      TEXT,
     PRIMARY KEY (game_id, host_id)
 );
+CREATE TABLE IF NOT EXISTS save_clean (
+    game_id    TEXT NOT NULL,
+    host_id    TEXT NOT NULL,
+    keep_clean INTEGER NOT NULL,
+    PRIMARY KEY (game_id, host_id)
+);
 CREATE TABLE IF NOT EXISTS settings (
     name  TEXT PRIMARY KEY,
     value BLOB NOT NULL
@@ -842,6 +848,26 @@ impl Store {
         Ok(())
     }
 
+    /// What a desktop last said about clearing its live saves of a game after
+    /// a stream. `None` when it never said. Kept across restarts, so a stream
+    /// can still be held back when the desktop cannot be asked.
+    pub fn keep_clean(&self, game_id: &str, host_id: &str) -> Result<Option<bool>> {
+        self.db
+            .query_row("SELECT keep_clean FROM save_clean WHERE game_id = ?1 AND host_id = ?2", params![game_id, host_id], |r| r.get(0))
+            .optional()
+            .map_err(err)
+    }
+
+    pub fn set_keep_clean(&mut self, game_id: &str, host_id: &str, keep_clean: bool) -> Result<()> {
+        self.db
+            .execute(
+                "INSERT INTO save_clean (game_id, host_id, keep_clean) VALUES (?1, ?2, ?3) ON CONFLICT (game_id, host_id) DO UPDATE SET keep_clean = ?3",
+                params![game_id, host_id, keep_clean],
+            )
+            .map_err(err)?;
+        Ok(())
+    }
+
     /// A desktop no longer keeps this game's saves in step.
     pub fn clear_synced(&mut self, game_id: &str, host_id: &str) -> Result<()> {
         self.db.execute("DELETE FROM save_sync WHERE game_id = ?1 AND host_id = ?2", params![game_id, host_id]).map_err(err)?;
@@ -1032,6 +1058,32 @@ mod tests {
     }
 
     #[test]
+    fn whether_a_desktop_cleans_a_game_survives_reopening_and_an_old_database_migrates() {
+        let dir = std::env::temp_dir().join(format!("carla-keepclean-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("library.db");
+        {
+            let mut store = Store::open(&path).unwrap();
+            assert_eq!(store.keep_clean("gog:1", "desk").unwrap(), None);
+            store.set_keep_clean("gog:1", "desk", true).unwrap();
+        }
+        assert_eq!(Store::open(&path).unwrap().keep_clean("gog:1", "desk").unwrap(), Some(true), "still known after a restart");
+
+        // A database from before the table existed opens, and knows nothing yet.
+        let old = dir.join("old.db");
+        {
+            let db = Connection::open(&old).unwrap();
+            db.execute_batch("CREATE TABLE save_sync (game_id TEXT NOT NULL, host_id TEXT NOT NULL, digest TEXT, at INTEGER NOT NULL, outcome TEXT NOT NULL, both_changed INTEGER NOT NULL DEFAULT 0, files INTEGER NOT NULL DEFAULT 0, problem TEXT, PRIMARY KEY (game_id, host_id));").unwrap();
+        }
+        let mut migrated = Store::open(&old).unwrap();
+        assert_eq!(migrated.keep_clean("gog:1", "desk").unwrap(), None);
+        migrated.set_keep_clean("gog:1", "desk", false).unwrap();
+        assert_eq!(migrated.keep_clean("gog:1", "desk").unwrap(), Some(false));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn a_games_save_place_is_kept_and_a_bad_one_reads_as_none() {
         use super::super::saveplace::SaveRoot;
         let mut store = Store::in_memory().unwrap();
@@ -1160,6 +1212,12 @@ mod tests {
         assert_eq!(store.synced(&id).unwrap(), [Synced { digest: Some("abc".into()), ..failed }], "a failure keeps what was agreed");
         store.clear_synced(&id, "desk").unwrap();
         assert!(store.synced(&id).unwrap().is_empty());
+        assert_eq!(store.keep_clean(&id, "desk").unwrap(), None, "never seen");
+        store.set_keep_clean(&id, "desk", true).unwrap();
+        assert_eq!(store.keep_clean(&id, "desk").unwrap(), Some(true));
+        store.set_keep_clean(&id, "desk", false).unwrap();
+        assert_eq!(store.keep_clean(&id, "desk").unwrap(), Some(false));
+        assert_eq!(store.keep_clean(&id, "other").unwrap(), None);
         assert_eq!(store.cached_achievements(&id).unwrap(), None);
         store.cache_achievements(&id, "[]", 5).unwrap();
         store.cache_achievements(&id, "[1]", 6).unwrap();

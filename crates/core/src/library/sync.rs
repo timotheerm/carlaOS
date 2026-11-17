@@ -347,11 +347,34 @@ pub struct Outcome {
 /// Compare this machine's saves with the other's and copy whichever way is
 /// right. `agreed` is what the last call returned for the same two machines.
 pub fn bring_in_step(here: &dyn Side, there: &dyn Side, agreed: Option<&Agreed>) -> Result<Outcome, String> {
+    bring_in_step_for(false, here, there, agreed)
+}
+
+/// As [`decide`], for a desktop that clears its saves after a stream
+/// (`keep_clean`). Such a desktop is empty, and an interrupted send leaves it
+/// holding only some of the Ally's files; that is not a change made there, so
+/// the Ally's saves must not be replaced by the part. When the Ally is
+/// unchanged since `agreed` and every file the desktop holds is one the Ally
+/// holds identically, the answer is [`Way::Send`] (top the desktop up). An
+/// extra or changed file there is a real change and follows [`decide`].
+pub fn decide_keeping_clean(here: &Manifest, there: &Manifest, agreed: Option<&Agreed>) -> Decision {
+    let part = !there.files.is_empty()
+        && there.files.len() < here.files.len()
+        && agreed.is_some_and(|a| a.here == here.digest())
+        && there.files.iter().all(|t| here.files.iter().any(|h| h.path == t.path && h.size == t.size && h.hash == t.hash));
+    if part {
+        return Decision { way: Way::Send, both_changed: false };
+    }
+    decide(here, there, agreed)
+}
+
+/// As [`bring_in_step`], with the rule of [`decide_keeping_clean`] when `keep_clean`.
+pub fn bring_in_step_for(keep_clean: bool, here: &dyn Side, there: &dyn Side, agreed: Option<&Agreed>) -> Result<Outcome, String> {
     let (h, t) = (here.manifest()?, there.manifest()?);
     if !t.sound() {
         return Err("The other machine described its saves in a way CarlaOS does not trust.".to_string());
     }
-    let decision = decide(&h, &t, agreed);
+    let decision = if keep_clean { decide_keeping_clean(&h, &t, agreed) } else { decide(&h, &t, agreed) };
     let (moved, kept) = match decision.way {
         Way::Same => (Moved::default(), &h),
         Way::Send => (mirror(here, &h, there, &t)?, &h),
@@ -361,9 +384,44 @@ pub fn bring_in_step(here: &dyn Side, there: &dyn Side, agreed: Option<&Agreed>)
     Ok(Outcome { way: decision.way, both_changed: decision.both_changed, moved, agreed: Agreed { here: digest.clone(), there: digest } })
 }
 
+/// What the player is told when a stream is held back.
+pub const NOT_ON_DESKTOP: &str = "The saves could not be put on the desktop yet. Try again in a moment.";
+
+/// Whether a stream may start. A desktop that clears its saves after a stream
+/// is empty at the next one, so a game that starts there without the Ally's
+/// saves would make new ones and later replace the real ones. When the desktop
+/// is set to do that and the Ally has saves, the stream waits until the
+/// desktop is known (just now) to hold exactly the Ally's files. `desktop` is
+/// `None` when it could not be asked. A first-time game (nothing on the Ally)
+/// and an ordinary desktop are never held back.
+pub fn may_stream(keep_clean: bool, ally: &Manifest, desktop: Option<&Manifest>) -> Result<(), String> {
+    if !keep_clean || ally.files.is_empty() || desktop.is_some_and(|d| d.digest() == ally.digest()) {
+        Ok(())
+    } else {
+        Err(NOT_ON_DESKTOP.to_string())
+    }
+}
+
+/// Whether a stream is held back when the desktop could not be asked at all
+/// (it did not answer, refused, timed out). `stored_keep_clean` is the last
+/// thing a desktop ever said about this game, kept in the Ally's database so
+/// it survives a restart (`false` when never seen). Only a desktop known to
+/// clear its saves, with saves on the Ally to put back, holds a stream up.
+pub fn gate_on_failure(stored_keep_clean: bool, ally_has_saves: bool) -> bool {
+    stored_keep_clean && ally_has_saves
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failure_holds_a_stream_up_only_for_a_known_cleaning_desktop_with_saves_to_put_back() {
+        assert!(gate_on_failure(true, true));
+        assert!(!gate_on_failure(false, true), "not a desktop that cleans, or never seen");
+        assert!(!gate_on_failure(true, false), "nothing on the Ally to put back");
+        assert!(!gate_on_failure(false, false));
+    }
 
     struct Pair {
         base: PathBuf,
@@ -497,6 +555,46 @@ mod tests {
         assert!(failed.is_err());
         assert_eq!(fs::read_to_string(p.ally.folder.join("old.sav")).unwrap(), "keep me");
         assert!(!p.ally.folder.join("new.sav").exists());
+        let _ = fs::remove_dir_all(&p.base);
+    }
+
+    #[test]
+    fn a_desktop_that_cleans_itself_is_topped_up_after_an_interrupted_send_not_fetched_from() {
+        let p = pair("part");
+        put(&p.ally, "a.sav", "one", 1_000);
+        put(&p.ally, "b.sav", "two", 1_000);
+        put(&p.ally, "c/c.sav", "three", 1_000);
+        let (.., agreed) = sync(&p.ally, &p.desk, None);
+        let ally_before = p.ally.manifest().unwrap();
+        // The send was interrupted after the first file: the desktop holds only part.
+        fs::remove_file(p.desk.folder.join("b.sav")).unwrap();
+        fs::remove_dir_all(p.desk.folder.join("c")).unwrap();
+        let (h, t) = (p.ally.manifest().unwrap(), p.desk.manifest().unwrap());
+
+        // Ordinary desktops behave as ever.
+        assert_eq!(decide(&h, &t, Some(&agreed)).way, Way::Fetch);
+        assert_eq!(decide_keeping_clean(&h, &t, None), decide(&h, &t, None), "never agreed: normal rules");
+        // A desktop that cleans itself is topped up; the Ally is untouched.
+        assert_eq!(decide_keeping_clean(&h, &t, Some(&agreed)), Decision { way: Way::Send, both_changed: false });
+        let done = bring_in_step_for(true, &p.ally, &p.desk, Some(&agreed)).unwrap();
+        assert_eq!((done.way, done.moved.files), (Way::Send, 2));
+        assert_eq!(p.ally.manifest().unwrap(), ally_before);
+        assert_eq!(p.desk.manifest().unwrap().digest(), ally_before.digest());
+        assert!(p.ally.backups.list().is_empty(), "the Ally needed no safe copy");
+
+        // A real change on the desktop (an extra or a changed file) follows the normal rules.
+        put(&p.desk, "extra.sav", "new", 2_000);
+        let t = p.desk.manifest().unwrap();
+        assert_eq!(decide_keeping_clean(&h, &t, Some(&done.agreed)).way, Way::Fetch);
+        fs::remove_file(p.desk.folder.join("extra.sav")).unwrap();
+        fs::remove_file(p.desk.folder.join("b.sav")).unwrap();
+        put(&p.desk, "a.sav", "changed", 2_000);
+        let t = p.desk.manifest().unwrap();
+        assert_eq!(decide_keeping_clean(&h, &t, Some(&done.agreed)).way, Way::Fetch);
+
+        // An Ally that changed meanwhile is not simply topped up to; an empty desktop is as before.
+        let empty = Manifest::default();
+        assert_eq!(decide_keeping_clean(&h, &empty, Some(&done.agreed)), decide(&h, &empty, Some(&done.agreed)));
         let _ = fs::remove_dir_all(&p.base);
     }
 

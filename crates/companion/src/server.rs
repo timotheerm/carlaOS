@@ -187,6 +187,24 @@ fn locked<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// Remove the listed files from a save folder, each only if it still holds
+/// exactly what was checked. One that changed since (written meanwhile, or
+/// gone) stays where it is and is counted in `skipped`. Only plain files
+/// inside the folder, never behind a link; the folder itself stays.
+fn remove_checked(side: &sync::Folder, files: &[sync::Entry], backup: &str) -> Result<link::Retired, String> {
+    let mut done = link::Retired { files: 0, bytes: 0, skipped: 0, backup: backup.to_string() };
+    for file in files {
+        if !side.read(&file.path).is_ok_and(|now| sync::fingerprint(&now) == file.hash) {
+            done.skipped += 1;
+            continue;
+        }
+        side.remove(&file.path).map_err(|e| format!("{e} Some saves may already be removed; the safe copy {backup} holds them all."))?;
+        done.files += 1;
+        done.bytes += file.size;
+    }
+    Ok(done)
+}
+
 fn picture_kind(path: &std::path::Path) -> &'static str {
     match path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref() {
         Some("png") => "image/png",
@@ -732,7 +750,7 @@ impl Server {
         };
         self.saves_free(now)?;
         let manifest = sync::manifest(&found.folder).map_err(|e| (503, e))?;
-        json(&Some(SavesFound { key: found.key.clone(), manifest, place: found.place.clone() }))
+        json(&Some(SavesFound { key: found.key.clone(), manifest, place: found.place.clone(), keep_clean: found.keep_clean }))
     }
 
     /// Note where this desktop's own folder for a game probably is, from
@@ -756,10 +774,18 @@ impl Server {
     fn saves_step(&self, rest: &str, bytes: &[u8], now: i64) -> Answer {
         let unknown = || (404, "The companion does not know that request.".to_string());
         let (key, what) = rest.split_once('/').ok_or_else(unknown)?;
-        let Some(SaveFolder { folder, .. }) = self.files.save_folders().into_iter().find(|f| f.key == key) else {
+        let Some(entry) = self.files.save_folders().into_iter().find(|f| f.key == key) else {
             return refuse(404, &format!("{} no longer keeps that game's saves in step.", self.config.name));
         };
+        // Every route that changes saves takes this one lock, so another
+        // Ally's write cannot land between a retirement's check and its removal.
+        static SAVES: Mutex<()> = Mutex::new(());
+        let _changing = (what != "read").then(|| locked(&SAVES));
+        if what == "retire" {
+            return self.retire(&entry, bytes, now);
+        }
         self.saves_free(now)?;
+        let folder = entry.folder;
         let side = sync::Folder { folder, backups: Backups::new(&self.files.save_copies(), key), now };
         let done = || json(&serde_json::json!({ "done": true }));
         match what {
@@ -785,6 +811,51 @@ impl Server {
             }
             _ => Err(unknown()),
         }
+    }
+
+    /// Remove this desktop's live saves of a game, but only when its
+    /// administrator asked for that (`saves clean KEY on`) and the Ally proves
+    /// it holds exactly the same files. A safe copy is taken and checked
+    /// first. Anything doubtful keeps everything where it is.
+    fn retire(&self, entry: &SaveFolder, bytes: &[u8], now: i64) -> Answer {
+        // Called with the saves lock held (see `saves_step`).
+        if !entry.keep_clean {
+            return refuse(403, &format!("{} is not set to keep that game's saves off the desktop.", self.config.name));
+        }
+        self.saves_free(now)?;
+        let ally: sync::Manifest = body(bytes)?;
+        if !ally.sound() {
+            return refuse(400, "The Ally described its saves in a way the desktop does not trust. Nothing was removed.");
+        }
+        if ally.files.is_empty() {
+            return refuse(409, "The Ally holds no saves of this game, so nothing was removed.");
+        }
+        let same = |a: &sync::Manifest, b: &sync::Manifest| {
+            a.files.len() == b.files.len() && a.files.iter().zip(&b.files).all(|(x, y)| x.path == y.path && x.size == y.size && x.hash == y.hash)
+        };
+        let live = || sync::manifest(&entry.folder).map_err(|e| (503, e));
+        let mine = live()?;
+        if !same(&mine, &ally) {
+            return refuse(409, "The saves on the desktop are not identical to the Ally's, so nothing was removed.");
+        }
+        let side = sync::Folder { folder: entry.folder.clone(), backups: Backups::new(&self.files.save_copies(), &entry.key), now };
+        let backup = match side.backups.take_retired(&entry.folder, now) {
+            Ok(Some(backup)) => backup,
+            Ok(None) => return refuse(503, "The saves could not be backed up, so nothing was removed."),
+            Err(e) => return refuse(503, &format!("{e} Nothing was removed.")),
+        };
+        // The safe copy must really hold what is about to go, and nothing
+        // may have changed meanwhile.
+        let copied = sync::manifest(&side.backups.path_of(&backup.id)).map_err(|e| (503, e))?;
+        if !same(&copied, &mine) {
+            return refuse(503, "The safe copy of the saves did not come out right, so nothing was removed.");
+        }
+        if !same(&live()?, &mine) {
+            return refuse(409, "The saves on the desktop changed meanwhile, so nothing was removed.");
+        }
+        self.saves_free(now)?;
+        let done = remove_checked(&side, &mine.files, &backup.id).map_err(|e| (409, e))?;
+        json(&done)
     }
 
     /// Whether a device with this id is linked. Decides how much of a request
@@ -918,6 +989,8 @@ pub fn serve(server: std::sync::Arc<Server>, http: tiny_http::Server) {
                     let save = path.starts_with("/v1/saves/") && path.ends_with("/write");
                     let most = match (linked, save, path.as_str()) {
                         (true, true, _) => sync::LARGEST_FILE + 4096,
+                        // The Ally's description of its saves: a few hundred KB at most.
+                        (true, _, p) if p.starts_with("/v1/saves/") && p.ends_with("/retire") => 1024 * 1024,
                         // The result of a request to the Ally, such as its list of games.
                         (true, _, "/v1/admin/done") => 2 * 1024 * 1024,
                         _ => 64 * 1024,
@@ -1549,6 +1622,265 @@ mod tests {
         let done = bring_in_step(&ally, &remote, None).unwrap();
         assert_eq!(done.way, Way::Send);
         assert_eq!(std::fs::read(wanted.join("slot1.sav")).unwrap(), b"ally newest");
+    }
+
+    /// A desktop with a flagged game whose save folder the Ally holds an identical copy of.
+    struct Retiring {
+        desk: Desk,
+        link: Link,
+        key: String,
+        there: PathBuf,
+        here: PathBuf,
+        ally: carla_core::library::sync::Folder,
+    }
+
+    fn retiring(tag: &str, flagged: bool) -> Retiring {
+        use carla_core::library::sync::{bring_in_step, Folder};
+        let desk = desk(tag, false);
+        let link = linked(&desk);
+        let there = desk.files.dir().join("desk-saves").join("Third Game");
+        let here = desk.files.dir().join("ally").join("saves");
+        std::fs::create_dir_all(there.join("profile")).unwrap();
+        std::fs::write(there.join("slot1.sav"), b"slot one").unwrap();
+        std::fs::write(there.join("profile").join("p.dat"), b"profile").unwrap();
+        let key = desk.files.set_save_folder(Some("gog:30"), "Third Game", &there).unwrap().key;
+        if flagged {
+            assert_eq!(desk.files.set_keep_clean(&key, true).unwrap().as_deref(), Some("Third Game"));
+        }
+        let ally = Folder { folder: here.clone(), backups: Backups::new(&desk.files.dir().join("ally").join("copies"), "gog:30"), now: now_for_tests() };
+        std::fs::create_dir_all(&here).unwrap();
+        let remote = link.saves("gog:30", "Third Game").unwrap().unwrap();
+        bring_in_step(&ally, &remote, None).unwrap();
+        Retiring { desk, link, key, there, here, ally }
+    }
+
+    impl Retiring {
+        fn offer(&self) -> Result<client::RetireAnswer, Error> {
+            let mine = carla_core::library::sync::manifest(&self.here).unwrap();
+            self.link.saves("gog:30", "Third Game").unwrap().unwrap().retire(&mine)
+        }
+
+        fn desktop_untouched(&self) {
+            assert_eq!(std::fs::read(self.there.join("slot1.sav")).unwrap(), b"slot one");
+            assert_eq!(std::fs::read(self.there.join("profile").join("p.dat")).unwrap(), b"profile");
+            assert!(Backups::new(&self.desk.files.save_copies(), &self.key).list().is_empty(), "no safe copy was needed");
+        }
+    }
+
+    fn kept(answer: Result<client::RetireAnswer, Error>) -> String {
+        match answer {
+            Ok(client::RetireAnswer::Kept(why)) => why,
+            other => panic!("expected the desktop to keep its saves, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_desktop_clears_its_saves_only_when_flagged_and_the_ally_proves_an_identical_copy() {
+        let r = retiring("retire-refuse", false);
+
+        // Not flagged: refused, whatever the proof.
+        assert_eq!(r.offer(), Ok(client::RetireAnswer::NotFlagged));
+        r.desktop_untouched();
+        r.desk.files.set_keep_clean(&r.key, true).unwrap();
+
+        // One byte differs, an extra file, a missing file.
+        std::fs::write(r.there.join("slot1.sav"), b"slot onE").unwrap();
+        assert!(kept(r.offer()).contains("not identical"));
+        std::fs::write(r.there.join("slot1.sav"), b"slot one").unwrap();
+        std::fs::write(r.there.join("extra.sav"), b"x").unwrap();
+        assert!(kept(r.offer()).contains("not identical"));
+        std::fs::remove_file(r.there.join("extra.sav")).unwrap();
+        std::fs::remove_file(r.there.join("profile").join("p.dat")).unwrap();
+        assert!(kept(r.offer()).contains("not identical"));
+        std::fs::write(r.there.join("profile").join("p.dat"), b"profile").unwrap();
+        r.desktop_untouched();
+
+        // An Ally with nothing proves nothing; a lie about paths is not believed.
+        let answer = r.link.saves("gog:30", "").unwrap().unwrap();
+        assert!(kept(answer.retire(&carla_core::library::sync::Manifest::default())).contains("no saves"));
+        let lying = carla_core::library::sync::Manifest {
+            files: vec![carla_core::library::sync::Entry { path: "../secret.txt".into(), size: 1, modified: 1, hash: carla_core::library::sync::fingerprint(b"x") }],
+        };
+        std::fs::write(r.there.parent().unwrap().join("secret.txt"), b"private").unwrap();
+        assert!(answer.retire(&lying).is_err());
+        assert_eq!(std::fs::read(r.there.parent().unwrap().join("secret.txt")).unwrap(), b"private");
+        r.desktop_untouched();
+
+        // A game that runs is left alone.
+        let open = r.link.saves("gog:30", "").unwrap().unwrap();
+        r.desk.files.set_playing(Some(&crate::files::Playing { game_id: "gog:30".into(), title: "Third Game".into(), at: now_for_tests() }));
+        let mine = carla_core::library::sync::manifest(&r.here).unwrap();
+        assert!(kept(open.retire(&mine)).contains("still running"));
+        r.desk.files.set_playing(None);
+        r.desktop_untouched();
+
+        // A signed stranger gets nothing; an unlinked key is refused outright.
+        let stranger = Link { key: vec![7; 32], ..r.link.clone() };
+        assert_eq!(stranger.saves("gog:30", "").err(), Some(Error::Refused));
+
+        // The safe copy cannot be made: nothing is removed.
+        std::fs::write(r.desk.files.save_copies(), b"in the way").unwrap();
+        assert!(matches!(r.offer(), Err(Error::Host(text)) if text.contains("Nothing was removed")));
+        std::fs::remove_file(r.desk.files.save_copies()).unwrap();
+        r.desktop_untouched();
+
+        // An old desktop (or one that forgot the game) answers 404: not supported.
+        let remote = r.link.saves("gog:30", "").unwrap().unwrap();
+        r.desk.files.clear_save_folder(&r.key).unwrap();
+        assert_eq!(remote.retire(&carla_core::library::sync::manifest(&r.here).unwrap()), Ok(client::RetireAnswer::Unsupported));
+        r.desktop_untouched();
+    }
+
+    #[test]
+    fn a_retired_desktop_keeps_its_folder_a_restorable_copy_and_nothing_outside() {
+        let r = retiring("retire-done", true);
+        let outside = r.there.parent().unwrap().join("secret.txt");
+        std::fs::write(&outside, b"private").unwrap();
+        let before = carla_core::library::sync::manifest(&r.there).unwrap();
+
+        let done = match r.offer() {
+            Ok(client::RetireAnswer::Done(done)) => done,
+            other => panic!("expected the desktop to clear itself, got {other:?}"),
+        };
+        assert_eq!((done.files, done.bytes, done.skipped), (2, before.bytes(), 0));
+        assert!(done.backup.contains("-retired"));
+        assert!(r.there.is_dir(), "the folder itself stays");
+        assert!(carla_core::library::sync::manifest(&r.there).unwrap().files.is_empty());
+        assert_eq!(std::fs::read(&outside).unwrap(), b"private");
+        assert_eq!(std::fs::read(r.here.join("slot1.sav")).unwrap(), b"slot one", "the Ally is untouched");
+
+        // The safe copy is listed and `saves restore` brings everything back.
+        let copies = Backups::new(&r.desk.files.save_copies(), &r.key);
+        assert_eq!(copies.list().len(), 1);
+        assert_eq!(copies.list()[0].id, done.backup);
+        copies.restore(&r.there, &done.backup, now_for_tests() + 10).unwrap();
+        assert_eq!(carla_core::library::sync::manifest(&r.there).unwrap().digest(), before.digest());
+
+        // Retiring again, with nothing left to match against an unchanged Ally, still needs the proof.
+        std::fs::write(r.there.join("slot1.sav"), b"changed").unwrap();
+        assert!(kept(r.offer()).contains("not identical"));
+
+        // Links inside the folder are neither listed nor followed (needs privileges on Windows).
+        #[cfg(unix)]
+        {
+            std::fs::write(r.there.join("slot1.sav"), b"slot one").unwrap();
+            std::os::unix::fs::symlink(outside.parent().unwrap(), r.there.join("escape")).unwrap();
+            assert!(matches!(r.offer(), Ok(client::RetireAnswer::Done(_))));
+            assert_eq!(std::fs::read(&outside).unwrap(), b"private");
+        }
+        // The same with a junction, which needs no privileges on Windows.
+        #[cfg(windows)]
+        {
+            std::fs::write(r.there.join("slot1.sav"), b"slot one").unwrap();
+            let made = std::process::Command::new("cmd").args(["/C", "mklink", "/J"]).arg(r.there.join("escape")).arg(outside.parent().unwrap()).output().unwrap();
+            assert!(made.status.success(), "mklink /J failed: {}", String::from_utf8_lossy(&made.stdout));
+            let answer = r.offer();
+            assert!(matches!(answer, Ok(client::RetireAnswer::Done(ref d)) if d.files == 2 && d.skipped == 0), "{answer:?}");
+            assert_eq!(std::fs::read(&outside).unwrap(), b"private", "nothing behind the junction was touched");
+            assert!(carla_core::library::sync::manifest(&r.there).unwrap().files.is_empty());
+        }
+    }
+
+    #[test]
+    fn the_whole_loop_leaves_the_desktop_clean_and_loses_nothing() {
+        use carla_core::library::sync::{bring_in_step, manifest, Way};
+        let r = retiring("retire-loop", true);
+        let first = bring_in_step(&r.ally, &r.link.saves("gog:30", "").unwrap().unwrap(), None).unwrap();
+        assert_eq!(first.way, Way::Same);
+
+        // The player streams the game from the desktop and saves there.
+        std::fs::write(r.there.join("slot1.sav"), b"played on the desktop").unwrap();
+        std::fs::write(r.there.join("slot2.sav"), b"a new slot").unwrap();
+
+        // After the stream: the Ally fetches, then offers its proof.
+        let fetched = bring_in_step(&r.ally, &r.link.saves("gog:30", "").unwrap().unwrap(), Some(&first.agreed)).unwrap();
+        assert_eq!(fetched.way, Way::Fetch);
+        let answer = r.offer();
+        assert!(matches!(answer, Ok(client::RetireAnswer::Done(ref d)) if d.files == 3), "{answer:?}");
+        assert!(manifest(&r.there).unwrap().files.is_empty(), "the desktop is clean");
+        assert_eq!(std::fs::read(r.here.join("slot1.sav")).unwrap(), b"played on the desktop");
+        assert_eq!(Backups::new(&r.desk.files.save_copies(), &r.key).list().len(), 1, "what the desktop held is kept");
+
+        // The next stream: the empty desktop never wipes the Ally, it receives.
+        let next = bring_in_step(&r.ally, &r.link.saves("gog:30", "").unwrap().unwrap(), Some(&fetched.agreed)).unwrap();
+        assert_eq!(next.way, Way::Send);
+        assert_eq!(std::fs::read(r.there.join("slot1.sav")).unwrap(), b"played on the desktop");
+        assert_eq!(std::fs::read(r.there.join("slot2.sav")).unwrap(), b"a new slot");
+        assert_eq!(manifest(&r.there).unwrap().digest(), manifest(&r.here).unwrap().digest());
+    }
+
+    #[test]
+    fn a_stream_from_a_keep_clean_desktop_waits_until_the_allys_saves_are_on_it() {
+        use carla_core::library::sync::{bring_in_step, manifest, may_stream, Manifest, Side as _, Way, NOT_ON_DESKTOP};
+        let r = retiring("retire-gate", true);
+        let ally = manifest(&r.here).unwrap();
+        assert!(matches!(r.offer(), Ok(client::RetireAnswer::Done(_))));
+        assert!(manifest(&r.there).unwrap().files.is_empty());
+
+        // The desktop says it keeps itself clean; its folder is empty now.
+        let remote = r.link.saves("gog:30", "").unwrap().unwrap();
+        assert!(remote.keep_clean);
+        // The sync before the stream failed (nothing moved): the stream waits.
+        assert_eq!(may_stream(remote.keep_clean, &ally, Some(&remote.manifest().unwrap())), Err(NOT_ON_DESKTOP.to_string()));
+        // The desktop could not even be asked.
+        assert_eq!(may_stream(true, &ally, None), Err(NOT_ON_DESKTOP.to_string()));
+        // Half of it arrived: still waiting. The Ally's saves are untouched.
+        remote.write("slot1.sav", b"slot one", 1).unwrap();
+        let half = r.link.saves("gog:30", "").unwrap().unwrap();
+        assert!(may_stream(half.keep_clean, &ally, Some(&half.manifest().unwrap())).is_err());
+        assert_eq!(manifest(&r.here).unwrap().digest(), ally.digest());
+
+        // Once the send is complete and read back, it may start.
+        let sent = bring_in_step(&r.ally, &half, None).unwrap();
+        assert_eq!(sent.way, Way::Send);
+        let verified = r.link.saves("gog:30", "").unwrap().unwrap();
+        assert_eq!(may_stream(verified.keep_clean, &ally, Some(&verified.manifest().unwrap())), Ok(()));
+
+        // A game that is not flagged, or has no save on the Ally yet, is never held back.
+        assert_eq!(may_stream(false, &ally, None), Ok(()));
+        assert_eq!(may_stream(true, &Manifest::default(), None), Ok(()));
+        let plain = retiring("retire-gate-plain", false);
+        std::fs::remove_file(plain.there.join("slot1.sav")).unwrap();
+        let theirs = plain.link.saves("gog:30", "").unwrap().unwrap();
+        assert!(!theirs.keep_clean);
+        assert_eq!(may_stream(theirs.keep_clean, &manifest(&plain.here).unwrap(), Some(&theirs.manifest().unwrap())), Ok(()));
+        // An older desktop's answer has no such field.
+        let old: link::SavesFound = serde_json::from_str(r#"{"key":"k","manifest":{"files":[]}}"#).unwrap();
+        assert!(!old.keep_clean);
+    }
+
+    #[test]
+    fn a_file_that_changed_after_the_check_is_skipped_and_counted_and_nothing_else_changes() {
+        let r = retiring("retire-skip", true);
+        let checked = carla_core::library::sync::manifest(&r.there).unwrap();
+        // The check saw slot1.sav as "slot one"; it is written again before the removal.
+        std::fs::write(r.there.join("slot1.sav"), b"written just now").unwrap();
+        let side = carla_core::library::sync::Folder { folder: r.there.clone(), backups: Backups::new(&r.desk.files.save_copies(), &r.key), now: now_for_tests() };
+        let done = remove_checked(&side, &checked.files, "b").unwrap();
+        assert_eq!((done.files, done.skipped, done.bytes), (1, 1, 7));
+        assert_eq!(std::fs::read(r.there.join("slot1.sav")).unwrap(), b"written just now");
+        assert!(!r.there.join("profile").exists(), "the other file went, and its emptied folder with it");
+        assert!(r.there.is_dir());
+        assert_eq!(std::fs::read(r.here.join("slot1.sav")).unwrap(), b"slot one", "the Ally is untouched");
+        // A file that is gone is skipped too.
+        let gone = remove_checked(&side, &checked.files, "b").unwrap();
+        assert_eq!((gone.files, gone.skipped), (0, 1 + 1));
+    }
+
+    #[test]
+    fn saves_written_before_keep_clean_existed_load_as_not_kept_clean() {
+        let dir = std::env::temp_dir().join(format!("carla-clean-old-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let files = Files::new(dir.clone());
+        std::fs::write(dir.join("saves.json"), r#"[{"key":"k","game_id":"gog:1","title":"Old","folder":"C:/Saves/Old"}]"#).unwrap();
+        assert!(!files.save_folders()[0].keep_clean);
+        assert_eq!(files.set_keep_clean("k", true).unwrap().as_deref(), Some("Old"));
+        assert!(files.save_folders()[0].keep_clean);
+        assert_eq!(files.set_keep_clean("nope", true).unwrap(), None);
+        files.set_keep_clean("k", false).unwrap();
+        assert!(!files.save_folders()[0].keep_clean);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -13,6 +13,11 @@ use serde::Serialize;
 
 /// Backups kept per game. Older ones are deleted.
 pub const KEEP: usize = 5;
+/// Backups kept per game of those taken just before a desktop cleared its
+/// live saves, counted apart from the ordinary ones.
+pub const KEEP_RETIRED: usize = 15;
+/// Marks such a backup's folder name; the part before it is still its time.
+const RETIRED: &str = "-retired";
 /// Save folders larger than this are not copied: that is not a save folder,
 /// or it holds something (recordings, caches) that would fill the disk.
 pub const LARGEST: u64 = 512 * 1024 * 1024;
@@ -150,6 +155,12 @@ impl Backups {
         list
     }
 
+    /// Where one backup is kept, whether or not it exists. `id` is only ever
+    /// a name [`list`](Self::list) or [`take`](Self::take) returned.
+    pub fn path_of(&self, id: &str) -> PathBuf {
+        self.dir.join(id)
+    }
+
     pub fn overview(&self, folder: &Path) -> Option<Overview> {
         let m = measure(folder)?;
         Some(Overview { folder: folder.to_string_lossy().into_owned(), files: m.files, bytes: m.bytes, modified: m.modified, backups: self.list() })
@@ -163,6 +174,17 @@ impl Backups {
 
     /// As [`take`](Self::take), but never deletes the backup named `keep`.
     fn take_keeping(&self, folder: &Path, now: i64, only_if_changed: bool, keep: Option<&str>) -> Result<Option<Backup>, String> {
+        self.take_as(folder, now, only_if_changed, keep, false)
+    }
+
+    /// The copy taken just before a desktop clears its live saves. It may be
+    /// the only other copy, so these are kept longer ([`KEEP_RETIRED`]) and
+    /// ordinary copies never push them out.
+    pub fn take_retired(&self, folder: &Path, now: i64) -> Result<Option<Backup>, String> {
+        self.take_as(folder, now, false, None, true)
+    }
+
+    fn take_as(&self, folder: &Path, now: i64, only_if_changed: bool, keep: Option<&str>, retired: bool) -> Result<Option<Backup>, String> {
         let Some(m) = measure(folder) else {
             return Err("The save folder is too large to back up.".to_string());
         };
@@ -174,11 +196,12 @@ impl Backups {
             return Ok(None);
         }
         // Two backups in the same second get different names.
-        let mut id = format!("{now:012}");
+        let base = if retired { format!("{now:012}{RETIRED}") } else { format!("{now:012}") };
+        let mut id = base.clone();
         let mut n = 1;
         while self.dir.join(&id).exists() {
             n += 1;
-            id = format!("{now:012}-{n}");
+            id = format!("{base}-{n}");
         }
         let target = self.dir.join(&id);
         // Copy beside and rename, so a half-made backup is never listed.
@@ -189,7 +212,9 @@ impl Backups {
             let _ = fs::remove_dir_all(&partial);
             return Err(problem("The saves could not be backed up", e));
         }
-        for old in self.list().into_iter().skip(KEEP).filter(|old| Some(old.id.as_str()) != keep) {
+        let (kept_retired, kept_plain): (Vec<Backup>, Vec<Backup>) = self.list().into_iter().partition(|b| b.id.contains(RETIRED));
+        let old = kept_plain.into_iter().skip(KEEP).chain(kept_retired.into_iter().skip(KEEP_RETIRED));
+        for old in old.filter(|old| Some(old.id.as_str()) != keep) {
             let _ = fs::remove_dir_all(self.dir.join(old.id));
         }
         Ok(Some(Backup { id, at: now, files: m.files, bytes: m.bytes }))
@@ -285,6 +310,27 @@ mod tests {
         fs::write(saves.join("a"), "2").unwrap();
         backups.restore(&saves, &oldest, 8_000_000_000).unwrap();
         assert_eq!(read(&saves, "a").as_deref(), Some("1"));
+    }
+
+    #[test]
+    fn the_copy_before_a_desktop_clears_itself_outlives_ordinary_ones() {
+        let root = scratch("retired");
+        let saves = root.join("saves");
+        fs::write(saves.join("a"), "1").unwrap();
+        let backups = Backups::new(&root.join("backups"), "g");
+        let retired = backups.take_retired(&saves, 9_000_000_000).unwrap().unwrap();
+        assert!(retired.id.ends_with("-retired") && retired.at == 9_000_000_000);
+        for n in 0..(KEEP as i64 * 3) {
+            backups.take(&saves, 9_000_000_001 + n, false).unwrap();
+        }
+        let list = backups.list();
+        assert_eq!(list.len(), KEEP + 1);
+        assert!(list.iter().any(|b| b.id == retired.id), "ordinary copies never push it out");
+        for n in 0..(KEEP_RETIRED as i64 + 2) {
+            backups.take_retired(&saves, 9_100_000_000 + n).unwrap();
+        }
+        assert_eq!(backups.list().iter().filter(|b| b.id.contains("-retired")).count(), KEEP_RETIRED);
+        backups.restore(&saves, &backups.list().last().unwrap().id, 9_200_000_000).unwrap();
     }
 
     #[test]

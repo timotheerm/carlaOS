@@ -160,6 +160,12 @@ pub struct SaveFolder {
     /// desktop can suggest its own folder. Absent in files from before.
     #[serde(default)]
     pub place: Option<SavePlace>,
+    /// Opt-in, set only by `carla-companion saves clean KEY on` at this
+    /// desktop and never over the protocol: after a stream, once an Ally
+    /// proves it holds an identical copy, the live saves here are removed
+    /// (after a safe copy). Naming the folder again turns it off.
+    #[serde(default)]
+    pub keep_clean: bool,
 }
 
 /// A folder a desktop thinks a game keeps its saves in, from where the
@@ -487,7 +493,7 @@ impl Files {
         // Reading it through also shows whether it is small enough.
         carla_core::library::sync::manifest(folder)?;
         let key = carla_core::library::manual_key(&game_id.map(str::to_string).unwrap_or_else(|| format!("title:{title}")));
-        let entry = SaveFolder { key, game_id: game_id.map(str::to_string), title: title.to_string(), folder: folder.to_path_buf(), place: saveplace::portable(folder, &self.place_env(), game_folder) };
+        let entry = SaveFolder { key, game_id: game_id.map(str::to_string), title: title.to_string(), folder: folder.to_path_buf(), place: saveplace::portable(folder, &self.place_env(), game_folder), keep_clean: false };
         let mut folders = self.save_folders();
         folders.retain(|f| f.key != entry.key);
         folders.push(entry.clone());
@@ -561,6 +567,17 @@ impl Files {
             self.write("saves.json", &folders)?;
         }
         Ok(found)
+    }
+
+    /// Turn "keep the desktop clean" on or off for one game. Returns its
+    /// title when it was there. Only the command line calls this.
+    pub fn set_keep_clean(&self, key: &str, on: bool) -> Result<Option<String>, String> {
+        let mut folders = self.save_folders();
+        let Some(found) = folders.iter_mut().find(|f| f.key == key) else { return Ok(None) };
+        found.keep_clean = on;
+        let title = found.title.clone();
+        self.write("saves.json", &folders)?;
+        Ok(Some(title))
     }
 
     /// Where the safe copies of saves are kept.

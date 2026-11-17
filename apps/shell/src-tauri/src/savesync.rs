@@ -69,9 +69,56 @@ fn later(text: &str) -> bool {
     text.contains("still running")
 }
 
+/// The sync just verified that both sides hold the same saves (`agreed` is
+/// their shared digest). Describe this Ally's own folder afresh and offer it
+/// to the desktop that was just streamed from, which removes its live saves
+/// only when it was told to and its files match exactly. A desktop that keeps
+/// them is not an error, and nothing is ever retried. Returns a line for the
+/// game's page, or nothing when there is nothing to say.
+fn clear_desktop(library: &Library, game_id: &str, host: &HostRow, folder: &PathBuf, remote: &carla_core::link::client::RemoteSaves<'_>, agreed: &str) -> Option<String> {
+    use carla_core::link::client::RetireAnswer;
+    // A game started here meanwhile: not a moment to judge anything.
+    if locked(&library.0.active).is_some() {
+        return None;
+    }
+    let mine = sync::manifest(folder).ok().filter(|m| !m.files.is_empty() && m.digest() == agreed)?;
+    // What happened goes to the crash trail; only a real failure is shown
+    // on the game's page (a success there would look like an error).
+    match remote.retire(&mine) {
+        Ok(RetireAnswer::Done(done)) => {
+            remember(library, &host.id, game_id, true);
+            crate::crash::note(&format!("saves of {game_id} cleared from desktop {}: {} files, {} left in place, safe copy {}", host.id, done.files, done.skipped, done.backup));
+            None
+        }
+        // The usual case: the administrator never asked for it.
+        Ok(RetireAnswer::NotFlagged | RetireAnswer::Unsupported) => None,
+        Ok(RetireAnswer::Kept(why)) => {
+            crate::crash::note(&format!("saves of {game_id} kept on desktop {}: {why}", host.id));
+            None
+        }
+        Err(e) => Some(format!("Kept on the desktop: {e}")),
+    }
+}
+
+/// Keep what a desktop last said about clearing this game's live saves, in
+/// the database: it must survive a restart, so that a stream can still be held
+/// back when the desktop cannot be asked.
+fn remember(library: &Library, host: &str, game_id: &str, cleans: bool) {
+    let _ = library.store().set_keep_clean(game_id, host, cleans);
+}
+
+/// What the desktop last said (`false` when it never did).
+fn cleans(library: &Library, host: &str, game_id: &str) -> bool {
+    library.store().keep_clean(game_id, host).ok().flatten().unwrap_or(false)
+}
+
 /// Bring this game's saves in step with one desktop that answered. Says
 /// whether it is worth trying again soon.
-fn with(library: &Library, game_id: &str, title: &str, folder: &PathBuf, host: &HostRow, link: &Link) -> bool {
+///
+/// With `after_stream`, once the saves are verified to be in step the desktop
+/// is also offered proof so it can clear its own copy, if its administrator
+/// asked it to (see `clear_desktop`).
+fn with(library: &Library, game_id: &str, title: &str, folder: &PathBuf, host: &HostRow, link: &Link, after_stream: bool) -> bool {
     let record = |row: Synced| {
         let _ = library.store().set_synced(game_id, &row);
     };
@@ -86,11 +133,13 @@ fn with(library: &Library, game_id: &str, title: &str, folder: &PathBuf, host: &
             if let Some(place) = &remote.place {
                 let _ = library.store().learn_save_place(game_id, &host.id, place);
             }
+            remember(library, &host.id, game_id, remote.keep_clean);
             remote
         }
         Ok(None) => {
             // Its administrator has not named a folder there, or took it back.
             let _ = library.store().clear_synced(game_id, &host.id);
+            remember(library, &host.id, game_id, false);
             return false;
         }
         Err(Error::Unreachable) => return true,
@@ -103,22 +152,24 @@ fn with(library: &Library, game_id: &str, title: &str, folder: &PathBuf, host: &
     let agreed = library.store().synced(game_id).ok().and_then(|rows| rows.into_iter().find(|r| r.host_id == host.id)).and_then(|r| r.digest);
     let agreed = agreed.map(|digest| Agreed { here: digest.clone(), there: digest });
     let here = Folder { folder: folder.clone(), backups: Backups::new(&library.0.data_dir.join("saves"), game_id), now: now() };
-    match sync::bring_in_step(&here, &remote, agreed.as_ref()) {
+    match sync::bring_in_step_for(remote.keep_clean, &here, &remote, agreed.as_ref()) {
         Ok(done) => {
             let outcome = match done.way {
                 Way::Same => "same",
                 Way::Send => "sent",
                 Way::Fetch => "fetched",
             };
-            record(Synced {
+            let row = Synced {
                 host_id: host.id.clone(),
-                digest: Some(done.agreed.here),
+                digest: Some(done.agreed.here.clone()),
                 at: now(),
                 outcome: outcome.into(),
                 both_changed: done.both_changed,
                 files: (done.moved.files + done.moved.removed) as u32,
                 problem: None,
-            });
+            };
+            let note = if after_stream { clear_desktop(library, game_id, host, folder, &remote, &done.agreed.here) } else { None };
+            record(Synced { problem: note, ..row });
             false
         }
         Err(text) if later(&text) => true,
@@ -146,16 +197,53 @@ pub(crate) fn all(library: &Library, game_id: &str, launching: bool) {
         .map(|host| std::thread::spawn(move || crate::hosts::reach(&host).ok().map(|(link, ..)| (host, link))))
         .collect();
     for (host, link) in reached.into_iter().filter_map(|t| t.join().ok().flatten()) {
-        with(library, game_id, &title, &folder, &host, &link);
+        with(library, game_id, &title, &folder, &host, &link, false);
     }
 }
 
 /// With the desktop a stream is about to start from, so it has what was
 /// played on the Ally since.
-pub(crate) fn before_stream(library: &Library, game_id: &str, host: &HostRow, link: &Link) {
-    let Some((folder, title)) = folder(library, game_id) else { return };
+///
+/// Says no when the desktop clears its saves after streams, the Ally has
+/// saves, and they could not be shown to be on the desktop now: the stream
+/// would start from nothing and its new saves would replace the real ones.
+pub(crate) fn before_stream(library: &Library, game_id: &str, host: &HostRow, link: &Link) -> Result<(), String> {
+    let Some((folder, title)) = folder(library, game_id) else { return Ok(()) };
     let _one_at_a_time = locked(&BUSY);
-    with(library, game_id, &title, &folder, host, link);
+    with(library, game_id, &title, &folder, host, link, false);
+    // Asked again afterwards: what the desktop holds now, not before the copy.
+    let known_place = library.store().save_place(game_id).ok().flatten();
+    let (cleans_now, theirs) = match link.saves_placed(game_id, &title, known_place.as_ref()) {
+        Ok(Some(now)) => {
+            remember(library, &host.id, game_id, now.keep_clean);
+            (now.keep_clean, sync::Side::manifest(&now).ok())
+        }
+        Ok(None) => {
+            remember(library, &host.id, game_id, false);
+            return Ok(());
+        }
+        // Could not ask (off, refused, timed out): go by what it last said,
+        // which is kept in the database and so survives a restart.
+        Err(_) => {
+            let ally_has_saves = sync::manifest(&folder).map(|m| !m.files.is_empty()).unwrap_or(true);
+            if !sync::gate_on_failure(cleans(library, &host.id, game_id), ally_has_saves) {
+                return Ok(());
+            }
+            (true, None)
+        }
+    };
+    if !cleans_now {
+        return Ok(());
+    }
+    let verdict = match sync::manifest(&folder) {
+        Ok(ours) => sync::may_stream(true, &ours, theirs.as_ref()),
+        // Cannot even read the Ally's folder: nothing is known to be on the desktop.
+        Err(_) => Err(sync::NOT_ON_DESKTOP.to_string()),
+    };
+    if verdict.is_err() {
+        crate::crash::note(&format!("stream from {} held back: saves of {game_id} are not verified on the desktop that clears its saves", host.id));
+    }
+    verdict
 }
 
 /// After a stream: fetch what was played on the desktop. The game may take a
@@ -171,7 +259,7 @@ pub(crate) fn after_stream(library: &Library, game_id: &str, place: &str) {
             return;
         }
         let again = match crate::hosts::reach(&host) {
-            Ok((link, ..)) => with(library, game_id, &title, &folder, &host, &link),
+            Ok((link, ..)) => with(library, game_id, &title, &folder, &host, &link, true),
             Err(_) => false,
         };
         if !again {
