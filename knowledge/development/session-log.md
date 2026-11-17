@@ -9,6 +9,11 @@ updated: 2026-11-17
 Newest first. Append an entry at the end of each meaningful session
 (format: [session entry template](../templates/session-entry.md)). Keep entries short.
 
+## 2026-11-17: Independent review and connection work
+
+- An independent static review of `main` (b437d1b) found the after-stream retry bug and the release-planner race (both fixed), plus open points KI-017..019. Its local run: 347 tests pass; no real device was available.
+- Added the activity log (Ally), host log and `carla-companion log` console, and deadlines against a lost connection.
+
 ## 2026-11-17 — Non-store games and crash reports
 
 - Merged PRs #37–#46 (CI green; each publishes a beta): launcher fix v0.22.1, crash and freeze reports v0.23.0/v0.24.0, save finder v0.25.0, guided add-a-game v0.26.0, describe v0.27.0, save places v0.28.0, keep-desktop-clean v0.29.0 (build pending when written). #40 and #45 no-release.

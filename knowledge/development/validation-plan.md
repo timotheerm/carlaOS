@@ -86,6 +86,15 @@ Added by merged PRs #37–#46 (beta builds, no hardware run yet). Nothing here i
 - [ ] `saves suggestions` / `saves accept` on a second desktop.
 - [ ] `saves clean KEY on --yes` end to end with a real game, then restore from `saves copies`.
 
+## Order of the real-device run (from the independent review)
+
+1. Pair and launch one game on the home network; confirm the stream ends and CarlaOS returns.
+2. Stream start/stop, desktop-size restoration, virtual display present/missing, 16:10 resolution, a longer session.
+3. Quality choice and bitrate on Wi-Fi and Tailscale; wake only on the same network.
+4. Two Windows machines: save sync before and after a stream, recovery after interruption, keep-clean on/off, backup restore.
+5. Install, upgrade and uninstall on the Ally.
+Record date, machine models, GPU/driver, Sunshine and Moonlight versions, network path, resolution/fps/bitrate and the logs (Settings, Activity log; `carla-companion log`).
+
 ## Recording results
 
 Tell Claude the outcome per line (pass/fail, device, date, notes). It will update
