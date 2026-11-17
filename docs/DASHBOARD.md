@@ -23,7 +23,7 @@ ready. It is for whoever sits at the desktop; nothing on it needs explaining.
 | Connection to the Ally | The delay in milliseconds, there and back, with a word for it (Excellent to Slow), a chart of the last minutes, how steady it is, the speed, and whether it is the home network or Tailscale. When it is not good, one line on what helps. |
 | Stream | The game, the picture (size, pictures a second, megabits), how that was chosen, how long, to which Ally, and which screen is shown. "Close the game" closes it. |
 | Linked Allies | Each one: streaming, connected or not, where it is, its CarlaOS version, whether Moonlight is paired. "Link an Ally" shows a code; "Forget" stops accepting one. |
-| This PC | Sunshine, the home network, Tailscale, waking from sleep, the stream's screen, Moonlight pairing, processor and memory. |
+| This PC | Sunshine, the home network, Tailscale, waking from sleep, the stream's screen, Moonlight pairing, processor and memory. When a screen of its own for each stream is switched on but its driver is missing, the check "Picture for the Ally" offers "Install the screen driver" (Windows asks you to allow it; it runs on a background thread, the page shows "Installing... allow it when Windows asks", and the check turns green when the driver is there). That is the only way the host installs it: never by itself. |
 | Games | How many the Ally can stream from here and from where, what Steam is installing, room left, and "Look for games again". |
 | Updates | A banner when a newer release exists, with "Update now". |
 
