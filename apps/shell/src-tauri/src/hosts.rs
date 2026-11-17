@@ -902,7 +902,7 @@ pub(crate) fn start_stream(library: &Library, game_id: &str, place: &str, waking
     seen(library, &host, &link, &status);
     // What was played on the Ally since goes to the desktop first.
     if !resuming {
-        crate::savesync::before_stream(library, game_id, &host, &link);
+        crate::savesync::before_stream(library, game_id, &host, &link)?;
     }
     // A desktop that has just woken may need a moment before Sunshine is up.
     // The picture is made for this Ally's own screen, and the desktop is told

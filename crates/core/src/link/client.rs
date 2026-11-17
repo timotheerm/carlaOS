@@ -11,7 +11,7 @@ use super::probe::{self, Burst, BurstAsk, BurstPlan, Echo};
 use super::quality::Line;
 use super::{EnrolAsk, EnrolReveal, FitAsk, ScreenFit};
 use crate::library::saveplace::SavePlace;
-use super::{random_hex, sign, EnrolDone, EnrolFinish, EnrolOffer, EnrolStart, Hello, Install, Installing, Pair, Prepare, Problem, RemoteGame, RemoteLibrary, SaveFile, SavesFind, SavesFound, Status, Updating};
+use super::{random_hex, sign, EnrolDone, EnrolFinish, EnrolOffer, EnrolStart, Hello, Install, Installing, Pair, Prepare, Problem, RemoteGame, RemoteLibrary, Retired, SaveFile, SavesFind, SavesFound, Status, Updating};
 use crate::library::downloads::Download;
 use crate::library::sync::{self, Manifest};
 use crate::API_VERSION;
@@ -190,6 +190,14 @@ pub struct Link {
 
 impl Link {
     fn ask(&self, method: &str, path: &str, body: &[u8], timeout: Duration) -> Result<Vec<u8>> {
+        match self.ask_status(method, path, body, timeout)? {
+            (200, bytes) => Ok(bytes),
+            (_, bytes) => Err(problem(&bytes)),
+        }
+    }
+
+    /// As `ask`, but a genuine (signed) refusal comes back with its status.
+    fn ask_status(&self, method: &str, path: &str, body: &[u8], timeout: Duration) -> Result<(u16, Vec<u8>)> {
         let (time, nonce) = (now(), random_hex(16));
         let agent = agent(timeout);
         let target = url(&self.address, self.port, path);
@@ -223,11 +231,7 @@ impl Link {
         if !signed.is_some_and(|s| sign::reply_ok(&self.key, &nonce, status, &bytes, &s)) {
             return Err(Error::Untrusted);
         }
-        if status == 200 {
-            Ok(bytes)
-        } else {
-            Err(problem(&bytes))
-        }
+        Ok((status, bytes))
     }
 
     fn post<T: DeserializeOwned>(&self, path: &str, body: &impl Serialize, timeout: Duration) -> Result<T> {
@@ -384,7 +388,7 @@ impl Link {
     pub fn saves_placed(&self, game_id: &str, title: &str, place: Option<&SavePlace>) -> Result<Option<RemoteSaves<'_>>> {
         let wanted = SavesFind { game_id: game_id.to_string(), title: title.to_string(), place: place.cloned() };
         let found: Option<SavesFound> = self.post("/v1/saves/find", &wanted, SLOW)?;
-        Ok(found.map(|found| RemoteSaves { link: self, key: found.key, manifest: found.manifest, place: found.place }))
+        Ok(found.map(|found| RemoteSaves { link: self, key: found.key, manifest: found.manifest, place: found.place, keep_clean: found.keep_clean }))
     }
 }
 
@@ -409,6 +413,8 @@ pub struct RemoteSaves<'a> {
     manifest: Manifest,
     /// Where the desktop's folder is, in words that hold on any machine.
     pub place: Option<SavePlace>,
+    /// The desktop clears its live saves of this game after a stream.
+    pub keep_clean: bool,
 }
 
 impl RemoteSaves<'_> {
@@ -418,6 +424,40 @@ impl RemoteSaves<'_> {
 
     fn file(path: &str, modified: i64) -> Vec<u8> {
         serde_json::to_vec(&SaveFile { path: path.to_string(), modified }).expect("serialisable")
+    }
+}
+
+/// How a desktop answered an offer to clear its copy of a game's saves.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RetireAnswer {
+    /// It took a safe copy and removed its live saves.
+    Done(Retired),
+    /// Its administrator did not ask for this game to be kept clean.
+    NotFlagged,
+    /// It checked and kept everything, for the reason given in its words.
+    Kept(String),
+    /// An older desktop that does not know the request.
+    Unsupported,
+}
+
+impl RemoteSaves<'_> {
+    /// Offer the desktop proof that this Ally holds an identical copy of the
+    /// game's saves: `mine` is this Ally's description of its own folder. The
+    /// desktop removes its live saves only when it is told to keep that game
+    /// clean and its own files match `mine` exactly. Never retried by callers.
+    pub fn retire(&self, mine: &Manifest) -> Result<RetireAnswer> {
+        let path = format!("/v1/saves/{}/retire", self.key);
+        let (status, bytes) = self.link.ask_status("POST", &path, &serde_json::to_vec(mine).expect("serialisable"), SLOW)?;
+        match status {
+            200 => Ok(RetireAnswer::Done(parse(&bytes)?)),
+            403 => Ok(RetireAnswer::NotFlagged),
+            404 => Ok(RetireAnswer::Unsupported),
+            409 => match problem(&bytes) {
+                Error::Host(text) => Ok(RetireAnswer::Kept(text)),
+                other => Err(other),
+            },
+            _ => Err(problem(&bytes)),
+        }
     }
 }
 

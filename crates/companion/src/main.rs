@@ -86,6 +86,9 @@ const HELP: &str = "CarlaOS desktop companion
                              forget a suggestion
   carla-companion saves clear KEY
                              stop keeping a game's saves in step
+  carla-companion saves clean KEY on --yes | off
+                             one Ally only: after a stream, remove this desktop's live saves once the Ally
+                             provably holds an identical copy (a safe copy is kept first)
   carla-companion saves copies KEY
                              list the safe copies made before saves were replaced
   carla-companion saves restore KEY COPY
@@ -654,7 +657,8 @@ fn saves(files: &Files, args: &[String]) -> Result<i32, String> {
             }
             for f in &folders {
                 let gone = if f.folder.is_dir() { "" } else { "  (folder not found)" };
-                println!("{}  {}  {}{gone}", f.key, f.title, f.folder.display());
+                let clean = if f.keep_clean { "  (kept clean after a stream)" } else { "" };
+                println!("{}  {}  {}{gone}{clean}", f.key, f.title, f.folder.display());
             }
             Ok(0)
         }
@@ -719,6 +723,27 @@ fn saves(files: &Files, args: &[String]) -> Result<i32, String> {
             }
             None => Err("No game has that key (see carla-companion saves).".to_string()),
         },
+        Some("clean") => {
+            let (key, on, yes) = parse_clean(args)?;
+            let f = entry(Some(&key.to_string()))?;
+            if on {
+                println!("After a stream of {}, once the Ally's files match this desktop's exactly, the live saves in {} are DELETED.", f.title, f.folder.display());
+                println!("WARNING: this is for one Ally only. Do not play this game directly on this desktop: it would start with no saves.");
+                println!("After that, this desktop's safe copies (carla-companion saves copies {}) are the only other copy of the saves besides the Ally's.", f.key);
+                if !yes {
+                    println!("Nothing was changed. To turn it on, run again with --yes:");
+                    println!("  carla-companion saves clean {} on --yes", f.key);
+                    return Ok(1);
+                }
+            }
+            files.set_keep_clean(&f.key, on)?;
+            if on {
+                println!("Turned on. The next stream puts the saves back from the Ally before the game starts.");
+            } else {
+                println!("Saves of {} are left on this desktop after a stream.", f.title);
+            }
+            Ok(0)
+        }
         Some("copies") => {
             let f = entry(args.get(1))?;
             let copies = Backups::new(&files.save_copies(), &f.key).list();
@@ -744,6 +769,18 @@ fn saves(files: &Files, args: &[String]) -> Result<i32, String> {
             println!("{HELP}");
             Ok(0)
         }
+    }
+}
+
+/// `saves clean KEY on|off`: the key and whether to turn it on. Anything
+/// else is refused, so a typo never turns deletion on.
+fn parse_clean(args: &[String]) -> Result<(&str, bool, bool), String> {
+    let usage = "Say the game and on or off: carla-companion saves clean KEY on --yes | off (see carla-companion saves).";
+    match (args.get(1), args.get(2).map(String::as_str), args.get(3).map(String::as_str), args.len()) {
+        (Some(key), Some("on"), None, 3) => Ok((key, true, false)),
+        (Some(key), Some("on"), Some("--yes"), 4) => Ok((key, true, true)),
+        (Some(key), Some("off"), None, 3) => Ok((key, false, false)),
+        _ => Err(usage.to_string()),
     }
 }
 
@@ -1219,6 +1256,16 @@ mod tests {
         assert!(parse_add(&words(&["add", "Quest", "x.exe", "--bogus", "1"])).is_err());
         assert_eq!(parse_add(&words(&["add", "Quest", "x.exe", "--describe", "A quest."])).unwrap().describe.as_deref(), Some("A quest."));
         assert_eq!(plain.describe, None);
+    }
+
+    #[test]
+    fn saves_clean_needs_a_key_and_exactly_on_or_off() {
+        assert_eq!(parse_clean(&words(&["clean", "k1", "on"])), Ok(("k1", true, false)), "without --yes it only warns");
+        assert_eq!(parse_clean(&words(&["clean", "k1", "on", "--yes"])), Ok(("k1", true, true)));
+        assert_eq!(parse_clean(&words(&["clean", "k1", "off"])), Ok(("k1", false, false)));
+        for bad in [&["clean"][..], &["clean", "k1"], &["clean", "k1", "ON"], &["clean", "k1", "yes"], &["clean", "k1", "on", "extra"], &["clean", "k1", "off", "--yes"]] {
+            assert!(parse_clean(&words(bad)).is_err(), "{bad:?} must be refused");
+        }
     }
 
     #[test]

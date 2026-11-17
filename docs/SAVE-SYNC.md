@@ -133,6 +133,99 @@ apply: the Ally's newer save goes to the desktop before a stream, and the
 desktop's new save comes back afterwards. A desktop that already has a folder
 for the game ignores any place it is sent.
 
+## Keeping a desktop clean
+
+Optional, and off unless you turn it on. For a game you only ever want to
+play from the Ally, the desktop can empty its own live save folder after a
+stream, so no second copy lingers there. The next stream puts the saves back
+from the Ally before the game starts.
+
+**Opt-in, at the desktop only:**
+
+```
+carla-companion saves clean KEY on --yes
+carla-companion saves clean KEY off
+```
+
+**Read this before turning it on.** It is for one Ally only. Do not play this
+game directly on the desktop: it would start with no saves, and a later sync
+could take those new saves for the real ones. With it on, the desktop's safe
+copies and the Ally's folder are the only copies of the saves. Without
+`--yes`, `saves clean KEY on` prints this warning, changes nothing and exits
+with a non-zero status.
+
+The flag lives in the desktop's own `saves.json`. It cannot be set from the
+Ally or over the protocol, and `saves set` / `saves accept` always start with
+it off, so naming a different folder never inherits it. `carla-companion saves`
+marks the games that have it.
+
+**Exactly when it happens.** Only after a stream, from the Ally, and only when
+every step before it went right: the sync that follows the stream ended with
+both machines holding the same saves, and the Ally's folder is not empty. It
+is never done after a failed or partial sync, for a game played on the Ally,
+for a cloud game or while a game runs on either machine. It is tried once and
+never retried: if the desktop declines, its files stay.
+
+**What is checked.** The Ally describes its own folder afresh (every file,
+size and SHA-256) and sends that to the desktop. This is a check, not a
+cryptographic proof: the description must match the desktop's live files
+exactly, and any linked device could have obtained that description from the
+desktop's own answers. The desktop removes anything only if all of this
+holds, otherwise it answers and keeps everything:
+
+1. the game is flagged here (otherwise refused);
+2. no game is running on the desktop;
+3. the Ally's description is plausible, with at least one file;
+4. the desktop's own files, read again right now, match it exactly: the same
+   paths, sizes and fingerprints, no extra and no missing file;
+5. a full safe copy was made and read back to match;
+6. nothing changed while the copy was made.
+
+Then it removes exactly the files that were listed, each checked once more
+just before (a file that changed since is left in place and counted), inside
+the save folder and not behind a link. The folder itself stays. All changes
+to a game's saves on the desktop wait for each other, so another Ally's
+write cannot land in between. What happened goes to the Ally's crash trail;
+the game's page shows only a real failure.
+
+**A stream waits for the saves.** Because the desktop is empty after a clean,
+the next stream is held back until the Ally has put its saves on the desktop
+and read them back there (the Ally says "The saves could not be put on the
+desktop yet. Try again in a moment."). Otherwise the game would start from
+nothing and its new saves would later replace the real ones. A game with no
+save on the Ally yet, or a desktop that is not set to keep clean, is never
+held back. If a send is interrupted and the desktop holds only some of the
+Ally's files, the Ally's saves are never replaced by that part: the desktop is
+topped up instead (only for a desktop set to keep clean, and only when the
+desktop has no extra or changed file).
+
+The Ally remembers, in its database, what each desktop last said about
+cleaning a game. So if the desktop cannot be asked at all (it is off, the
+network dropped, it answered with an error), the stream is held back too, as
+long as the Ally has saves for the game, and this also holds after the Ally
+was restarted. A desktop the Ally has never heard from about the game is not
+held back.
+
+**The accepted limit.** This is for one Ally only. Do not play the game
+directly on that desktop. `saves clean KEY on` therefore needs `--yes`. Another
+Ally, or direct play, can still start from an empty or older desktop; the
+desktop's safe copies are then the only way back.
+
+**Restoring.** The copy taken before a clean is kept longer than the ordinary
+ones (the last 15, counted apart from the last 5 ordinary copies). It may be
+the only other copy: if the Ally loses its saves, restore from the desktop:
+
+```
+carla-companion saves copies KEY
+carla-companion saves restore KEY COPY
+```
+
+**What is never done.** Nothing outside the named save folder is touched.
+Nothing is removed on the Ally. Nothing is removed on a desktop whose
+administrator did not turn it on, or when the two copies differ by one byte.
+Files that are not part of the description (links, names the Ally could not
+hold) are left alone. A game started directly on the desktop in between finds
+no saves there until the next stream or the next sync from the Ally.
 
 ## Not covered yet
 

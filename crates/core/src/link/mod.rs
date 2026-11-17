@@ -240,6 +240,10 @@ pub struct SavesFound {
     /// The folder's place, when it is below a well-known one.
     #[serde(default)]
     pub place: Option<crate::library::saveplace::SavePlace>,
+    /// The desktop's administrator asked for this game's live saves to be
+    /// cleared after a stream. Absent from older desktops, which never do.
+    #[serde(default)]
+    pub keep_clean: bool,
 }
 
 /// Names one file of a save folder. Also the first line of a file being
@@ -250,6 +254,20 @@ pub struct SaveFile {
     /// Unix seconds it was saved, when writing.
     #[serde(default)]
     pub modified: i64,
+}
+
+/// What a desktop removed from its own save folder after an Ally proved it
+/// holds an identical copy (`POST /v1/saves/{key}/retire`, whose body is the
+/// Ally's `Manifest` of its own folder).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Retired {
+    pub files: u64,
+    pub bytes: u64,
+    /// Files that changed after the check and were therefore left in place.
+    #[serde(default)]
+    pub skipped: u64,
+    /// The safe copy the desktop took first.
+    pub backup: String,
 }
 
 /// Body of every reply that is not a success.
