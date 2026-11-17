@@ -115,6 +115,16 @@ impl Update {
     }
 }
 
+/// The longest description kept for a game, in characters.
+pub const DESCRIPTION_MAX: usize = 1000;
+
+/// A description as it is kept: line breaks become spaces, other control
+/// characters go, spaces are trimmed, and it is cut at `DESCRIPTION_MAX`.
+pub fn clean_description(text: &str) -> String {
+    let spaced: String = text.chars().map(|c| if c.is_whitespace() { ' ' } else { c }).filter(|c| !c.is_control()).collect();
+    spaced.trim().chars().take(DESCRIPTION_MAX).collect::<String>().trim_end().to_string()
+}
+
 /// One installed game as a scanner found it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Scanned {
@@ -135,6 +145,8 @@ pub struct Scanned {
     pub emulated: bool,
     /// The store has an update to finish before the game starts.
     pub update: Option<Update>,
+    /// What a desktop says the game is, for a game added there by hand.
+    pub description: String,
 }
 
 /// A game its store could install on one machine: in the account's library
@@ -292,4 +304,16 @@ pub struct HostRow {
     pub addresses: Vec<String>,
     /// Hardware addresses of its network adapters, for waking it.
     pub macs: Vec<String>,
+}
+
+#[cfg(test)]
+mod description_tests {
+    use super::*;
+
+    #[test]
+    fn a_description_is_one_clean_line_of_limited_length() {
+        assert_eq!(clean_description("  A\r\nquiet\tgame\u{7}\u{0}. "), "A  quiet game.");
+        assert_eq!(clean_description("\u{7}  "), "");
+        assert_eq!(clean_description(&"\u{e9}".repeat(3000)).chars().count(), DESCRIPTION_MAX);
+    }
 }

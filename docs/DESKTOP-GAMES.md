@@ -70,6 +70,43 @@ rename its folder. Folders that Steam, Epic or GOG Galaxy manage, and games they
 already list, are not offered. The dashboard's list expires after 10 minutes, and
 a program that changed after it was found is refused: look again.
 
+## Description and info
+
+A game added by hand can carry a short description, which the Ally shows on the
+game's page. Its cover is sent as before, and its milestones are computed on
+the Ally from the play time it records, like for every game.
+
+```
+carla-companion describe KEY "A short text about the game."
+carla-companion describe KEY ""                  (clears it)
+carla-companion describe KEY --lookup            (prints what was found)
+carla-companion describe KEY --lookup --apply    (and keeps it)
+carla-companion add "NAME" "C:\path\game.exe" --describe "A short text."
+```
+
+`KEY` is the first column of `carla-companion games`, which also marks the
+games that have a description. The text is one line of at most 1000
+characters; line breaks and other control characters are dropped.
+
+- **What is sent.** Writing a description sends nothing anywhere. `--lookup`
+  makes the same outbound requests the Ally makes when you look a game up
+  there: the game's title, and nothing else, to Steam's store search and to
+  Wikipedia. It prints the name and text it found and changes nothing unless
+  `--apply` is given. `--apply` also refuses when the name found is not the
+  game's title (ignoring case, punctuation and "the"): the result is then
+  only a guess, and `describe KEY "TEXT"` is how to use it anyway. With no network, or when neither site knows the title,
+  it says so and changes nothing; you can still write a text yourself.
+- **On the Ally.** The text arrives with the desktop's game list. It fills the
+  description when the Ally has none, or when the one it has came from a
+  desktop, so a new text there follows. Clearing the text on the desktop does
+  not clear it on the Ally, and with two desktops that have the same program
+  the last non-empty text wins. A description you typed on the Ally is never
+  replaced. Desktops and Allies from before this change
+  still work together: the field is simply missing, and nothing is shown.
+- **Achievements.** Games that no store lists have no achievement data
+  anywhere to read, so none are shown for them. The Ally's own CarlaOS
+  milestones (first launch, hours played and so on) work as for any game.
+
 ## From the Ally: Settings, Desktops, then a desktop
 
 Behind the administrator PIN, each linked desktop has:

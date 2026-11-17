@@ -153,6 +153,9 @@ impl Store {
             ("games", "save_place", "TEXT"),
             // The desktop that told us that place: only it may change it.
             ("games", "save_place_host", "TEXT"),
+            // "host" when the description came from a desktop, empty when the
+            // administrator wrote it on the Ally: only the first is replaced.
+            ("games", "description_from", "TEXT NOT NULL DEFAULT ''"),
         ];
         for (table, column, kind) in added {
             let has: bool = db
@@ -175,9 +178,12 @@ impl Store {
         for s in found {
             let id = format!("{source}:{}", s.source_id);
             tx.execute(
-                "INSERT INTO games (id, title, platform, added, cover, hero, kind) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                "INSERT INTO games (id, title, platform, added, cover, hero, kind, description, description_from)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, CASE WHEN ?8 = '' THEN '' ELSE 'host' END)
                  ON CONFLICT (id) DO UPDATE SET title = ?2, platform = ?3, cover = COALESCE(?5, cover), hero = COALESCE(?6, hero),
-                    added = CASE WHEN added = 0 THEN ?4 ELSE added END",
+                    added = CASE WHEN added = 0 THEN ?4 ELSE added END,
+                    description = CASE WHEN ?8 <> '' AND (description = '' OR description_from = 'host') THEN ?8 ELSE description END,
+                    description_from = CASE WHEN ?8 <> '' AND (description = '' OR description_from = 'host') THEN 'host' ELSE description_from END",
                 params![
                     id,
                     s.title,
@@ -186,6 +192,7 @@ impl Store {
                     s.cover.as_deref().map(text),
                     s.hero.as_deref().map(text),
                     if s.emulated { Kind::Emulated } else { Kind::Game }.as_str(),
+                    super::clean_description(&s.description),
                 ],
             )
             .map_err(err)?;
@@ -314,7 +321,8 @@ impl Store {
         tx.execute(
             "INSERT INTO games (id, title, kind, platform, added, cover, description, origin) VALUES (?1, ?2, ?3, 'Standalone', ?4, ?5, ?6, ?7)
              ON CONFLICT (id) DO UPDATE SET title = ?2, kind = ?3, cover = COALESCE(?5, cover),
-                description = CASE WHEN ?6 = '' THEN description ELSE ?6 END, origin = ?7",
+                description = CASE WHEN ?6 = '' THEN description ELSE ?6 END,
+                description_from = CASE WHEN ?6 = '' THEN description_from ELSE '' END, origin = ?7",
             params![id, title, game.kind.as_str(), now, game.cover.as_deref().map(text), game.description.trim(), game.origin.trim()],
         )
         .map_err(err)?;
@@ -1083,6 +1091,36 @@ mod tests {
         // The next look through the store has the last word.
         store.sync(LOCAL, "steam", &[scanned("1", "Alpha")], 200).unwrap();
         assert!(store.list().unwrap()[0].updates.is_empty());
+    }
+
+    #[test]
+    fn a_database_from_before_description_from_is_migrated_and_keeps_working() {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch(SCHEMA).unwrap();
+        db.execute("INSERT INTO games (id, title, platform, added, description) VALUES ('manual:old', 'Old', 'Standalone', 1, 'Typed here.')", []).unwrap();
+        assert!(db.prepare("SELECT description_from FROM games").is_err(), "the old schema has no such column");
+        let mut store = Store::prepare(db).unwrap();
+        let from: String = store.db.query_row("SELECT description_from FROM games WHERE id = 'manual:old'", [], |r| r.get(0)).unwrap();
+        assert_eq!(from, "", "an existing text counts as typed here");
+        // A desktop's text does not replace it; a game without one takes it.
+        let found = |id: &str, text: &str| Scanned { source_id: id.into(), title: id.into(), description: text.into(), ..Scanned::default() };
+        store.sync("desk", "manual", &[found("old", "From desk."), found("new", "From desk.")], 5).unwrap();
+        let texts: Vec<(String, String)> = store.list().unwrap().into_iter().map(|g| (g.title, g.description)).collect();
+        assert!(texts.contains(&("old".to_string(), "Typed here.".to_string())) && texts.contains(&("new".to_string(), "From desk.".to_string())), "{texts:?}");
+    }
+
+    #[test]
+    fn an_empty_description_from_one_desktop_does_not_wipe_another_desktops() {
+        let mut store = Store::in_memory().unwrap();
+        let found = |text: &str| Scanned { source_id: "k".into(), title: "Game".into(), description: text.into(), ..Scanned::default() };
+        store.sync("one", "manual", &[found("From one.")], 1).unwrap();
+        store.sync("two", "manual", &[found("")], 2).unwrap();
+        assert_eq!(store.list().unwrap()[0].description, "From one.");
+        // Clearing it on the desktop does not clear it here; the last text wins.
+        store.sync("one", "manual", &[found("")], 3).unwrap();
+        assert_eq!(store.list().unwrap()[0].description, "From one.");
+        store.sync("two", "manual", &[found("From two.")], 4).unwrap();
+        assert_eq!(store.list().unwrap()[0].description, "From two.");
     }
 
     #[test]

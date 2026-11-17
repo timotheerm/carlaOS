@@ -7,6 +7,7 @@
 //! Double-click it to set it up or to get a code for linking an Ally.
 
 mod ally;
+mod describe;
 mod files;
 mod launcher;
 mod screen;
@@ -49,10 +50,15 @@ const HELP: &str = "CarlaOS desktop companion
   carla-companion devices    list the linked devices
   carla-companion forget ID  stop accepting a linked device
   carla-companion games      list the games added by hand
+  carla-companion describe KEY TEXT
+                             write what the Ally's game page says about a game
+                             added by hand (empty TEXT clears it). With --lookup
+                             instead of TEXT, ask Steam and Wikipedia (only the
+                             title is sent) and print what they say; --apply keeps it
   carla-companion find [FOLDER...]
                              look for games to add (in the usual game folders, or
                              in FOLDER) and print a ready-to-paste add line for each
-  carla-companion add NAME PROGRAM [--args OPTIONS] [--cover PICTURE] [--watch EXE]
+  carla-companion add NAME PROGRAM [--args OPTIONS] [--cover PICTURE] [--watch EXE] [--describe TEXT]
                              add a game that Steam does not list; put quotes
                              around a name or path that has spaces. PROGRAM
                              may be a shortcut, or a .bat or .cmd file. --watch
@@ -1040,7 +1046,8 @@ fn run(args: &[String]) -> Result<i32, String> {
             for e in extras {
                 let gone = if e.exe.is_file() { "" } else { "  (program not found, hidden from the Ally)" };
                 let watching = e.watch.as_deref().map(|w| format!("  (watching {w})")).unwrap_or_default();
-                println!("{}  {}  {}{watching}{gone}", e.key, e.title, e.exe.display());
+                let described = if e.description.as_deref().is_some_and(|d| !d.is_empty()) { "  (described)" } else { "" };
+                println!("{}  {}  {}{watching}{described}{gone}", e.key, e.title, e.exe.display());
             }
             Ok(0)
         }
@@ -1065,9 +1072,13 @@ fn run(args: &[String]) -> Result<i32, String> {
         Some("add") => {
             let add = parse_add(args)?;
             let added = files.add_extra(&add.title, &add.exe, &add.args, add.cover.as_deref(), add.watch.as_deref())?;
+            if let Some(text) = &add.describe {
+                files.describe_extra(&added.key, text)?;
+            }
             println!("{} was added. It appears on the Ally within five minutes, or at once after \"Look for games again\" there.", added.title);
             Ok(0)
         }
+        Some("describe") => describe::run(&files, args),
         Some("drop") => {
             let key = args.get(1).ok_or("Say which game: carla-companion drop KEY (see carla-companion games).")?;
             match files.drop_extra(key)? {
@@ -1143,19 +1154,21 @@ struct AddArgs {
     args: String,
     cover: Option<PathBuf>,
     watch: Option<String>,
+    describe: Option<String>,
 }
 
-/// Read `add NAME PROGRAM [--args OPTIONS] [--cover PICTURE] [--watch EXE]`.
+/// Read `add NAME PROGRAM [--args OPTIONS] [--cover PICTURE] [--watch EXE] [--describe TEXT]`.
 fn parse_add(args: &[String]) -> Result<AddArgs, String> {
-    let usage = "Say the name and the program: carla-companion add \"NAME\" \"C:\\path\\game.exe\" [--args \"...\"] [--cover \"C:\\path\\picture.jpg\"] [--watch \"Game-Win64-Shipping.exe\"]";
+    let usage = "Say the name and the program: carla-companion add \"NAME\" \"C:\\path\\game.exe\" [--args \"...\"] [--cover \"C:\\path\\picture.jpg\"] [--watch \"Game-Win64-Shipping.exe\"] [--describe \"...\"]";
     let (title, exe) = (args.get(1).ok_or(usage)?, args.get(2).ok_or(usage)?);
-    let mut add = AddArgs { title: title.clone(), exe: PathBuf::from(exe), args: String::new(), cover: None, watch: None };
+    let mut add = AddArgs { title: title.clone(), exe: PathBuf::from(exe), args: String::new(), cover: None, watch: None, describe: None };
     let mut rest = args[3..].iter();
     while let Some(flag) = rest.next() {
         let value = rest.next().ok_or(usage)?;
         match flag.as_str() {
             "--args" => add.args = value.clone(),
             "--cover" => add.cover = Some(PathBuf::from(value)),
+            "--describe" => add.describe = Some(value.clone()),
             "--watch" => add.watch = Some(carla_core::library::launch::watch_name(value).ok_or("--watch needs a program name such as Game-Win64-Shipping.exe.")?),
             _ => return Err(usage.to_string()),
         }
@@ -1204,6 +1217,8 @@ mod tests {
         assert!(parse_add(&words(&["add", "Quest", "x.exe", "--watch"])).is_err());
         assert!(parse_add(&words(&["add", "Quest", "x.exe", "--watch", "  "])).is_err());
         assert!(parse_add(&words(&["add", "Quest", "x.exe", "--bogus", "1"])).is_err());
+        assert_eq!(parse_add(&words(&["add", "Quest", "x.exe", "--describe", "A quest."])).unwrap().describe.as_deref(), Some("A quest."));
+        assert_eq!(plain.describe, None);
     }
 
     #[test]

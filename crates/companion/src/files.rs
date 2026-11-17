@@ -139,6 +139,10 @@ pub struct Extra {
     /// while any program of that name runs.
     #[serde(default)]
     pub watch: Option<String>,
+    /// What the game is, shown on the Ally's game page. At most
+    /// `carla_core::library::DESCRIPTION_MAX` characters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 /// Where one game keeps its saves on this desktop, said by the administrator
@@ -383,13 +387,16 @@ impl Files {
         let seen = carla_core::library::ports::inspect(exe)?;
         let args = if args.trim().is_empty() { seen.args.as_str() } else { args };
         let exe = seen.exe.as_path();
+        let key = carla_core::library::manual_key(&exe.to_string_lossy());
         let extra = Extra {
-            key: carla_core::library::manual_key(&exe.to_string_lossy()),
+            key: key.clone(),
             title: title.to_string(),
             exe: exe.to_path_buf(),
             args: args.trim().to_string(),
             cover: cover.map(Path::to_path_buf),
             watch,
+            // Adding the same program again keeps what was written about it.
+            description: self.extras().into_iter().find(|e| e.key == key).and_then(|e| e.description),
         };
         let mut extras = self.extras();
         extras.retain(|e| e.key != extra.key);
@@ -397,6 +404,18 @@ impl Files {
         extras.sort_by_key(|e| e.title.to_lowercase());
         self.write("games.json", &extras)?;
         Ok(extra)
+    }
+
+    /// Set what a game added by hand is described as; empty text clears it.
+    /// Returns the game's title and the description as kept.
+    pub fn describe_extra(&self, key: &str, text: &str) -> Result<(String, String), String> {
+        let mut extras: Vec<Extra> = self.read("games.json").unwrap_or_default();
+        let extra = extras.iter_mut().find(|e| e.key == key).ok_or("No game added by hand has that key (see carla-companion games).")?;
+        let kept = carla_core::library::clean_description(text);
+        extra.description = Some(kept.clone()).filter(|d| !d.is_empty());
+        let title = extra.title.clone();
+        self.write("games.json", &extras)?;
+        Ok((title, kept))
     }
 
     /// Take a game off the list. Returns its title when it was there.
@@ -859,6 +878,29 @@ mod tests {
             assert!(files.add_extra("Game", &exe, "", None, Some(bad)).is_err(), "{bad:?}");
         }
         assert_eq!(files.extras()[0].watch, None, "a refused name changes nothing");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_description_is_kept_cleared_and_read_from_an_older_list() {
+        let dir = std::env::temp_dir().join(format!("carla-files-describe-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let files = Files::new(dir.clone());
+        let exe = dir.join("Start.exe");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(&exe, b"program").unwrap();
+        let added = files.add_extra("Game", &exe, "", None, None).unwrap();
+        assert_eq!(added.description, None);
+        assert!(files.describe_extra("nope", "x").is_err());
+        assert_eq!(files.describe_extra(&added.key, "  A game.\n").unwrap(), ("Game".to_string(), "A game.".to_string()));
+        assert_eq!(files.extras()[0].description.as_deref(), Some("A game."));
+        assert_eq!(files.add_extra("Game 2", &exe, "", None, None).unwrap().description.as_deref(), Some("A game."), "adding again keeps it");
+        files.describe_extra(&added.key, "").unwrap();
+        assert_eq!(files.extras()[0].description, None);
+        assert!(!fs::read_to_string(dir.join("games.json")).unwrap().contains("description"));
+        // A list written before descriptions existed still loads.
+        fs::write(dir.join("games.json"), format!(r#"[{{"key":"{}","title":"Game","exe":{:?}}}]"#, added.key, exe.to_string_lossy())).unwrap();
+        assert_eq!(files.extras()[0].description, None);
         let _ = fs::remove_dir_all(&dir);
     }
 }

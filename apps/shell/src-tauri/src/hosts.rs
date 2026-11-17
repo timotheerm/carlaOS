@@ -182,7 +182,7 @@ pub(crate) fn sync_games(library: &Library, host: &HostRow, link: &Link) -> Resu
             }
             // A console's name comes from the desktop; only an emulated game has one.
             let platform = if g.emulated { g.platform.chars().take(40).collect() } else { String::new() };
-            Scanned { source_id: g.source_id.clone(), title: g.title.clone(), cover, platform, emulated: g.emulated, update: g.update, ..Scanned::default() }
+            Scanned { source_id: g.source_id.clone(), title: g.title.clone(), cover, platform, emulated: g.emulated, update: g.update, description: if source == "manual" { g.description.clone() } else { String::new() }, ..Scanned::default() }
         })
         .collect()
     };
