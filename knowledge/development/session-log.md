@@ -9,6 +9,12 @@ updated: 2026-11-17
 Newest first. Append an entry at the end of each meaningful session
 (format: [session entry template](../templates/session-entry.md)). Keep entries short.
 
+## 2026-11-17 — Non-store games and crash reports
+
+- Merged PRs #37–#46 (CI green; each publishes a beta): launcher fix v0.22.1, crash and freeze reports v0.23.0/v0.24.0, save finder v0.25.0, guided add-a-game v0.26.0, describe v0.27.0, save places v0.28.0, keep-desktop-clean v0.29.0 (build pending when written). #40 and #45 no-release.
+- Local tests: core 255, companion 80 passing. Nothing hardware-verified.
+- Added [ADR-009](../decisions/ADR-009-save-places-and-opt-in-cleanup.md), KI-010 to KI-015, KI-009 resolved, validation plan section "New since v0.22".
+
 ## 2026-11-17 — Agent token tuning and dynamic orchestration
 
 - Trimmed agents/skills, selective vault loading; replaced fixed role routing with a per-task orchestration procedure in CLAUDE.md (ADR-007). Config only, uncommitted on top of 101874a.

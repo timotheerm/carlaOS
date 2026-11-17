@@ -19,3 +19,4 @@ Files are `ADR-NNN-short-title.md`, written from [[../templates/decision-record]
 | [[ADR-006-beta-release-per-merge]] | Every merge to `main` publishes a beta (retroactive) | accepted |
 | [[ADR-007-dynamic-orchestration]] | Dynamic agent orchestration, per-call model choice | accepted |
 | [[ADR-008-autonomous-integration]] | Standing authorisation for autonomous integration | accepted |
+| [[ADR-009-save-places-and-opt-in-cleanup]] | Save places and opt-in cleanup | accepted |
