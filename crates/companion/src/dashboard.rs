@@ -186,6 +186,48 @@ struct Forget {
     id: String,
 }
 
+/// How long a look for games can be added from.
+const FOUND_AGE: Duration = Duration::from_secs(600);
+
+/// The id of one program the last look found. Nothing else is accepted.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Pick {
+    id: String,
+}
+
+/// What a file was like when it was found: its size and time, and for a
+/// shortcut also the program it leads to.
+type Stamp = Vec<(PathBuf, u64, Option<std::time::SystemTime>)>;
+
+fn stamp(path: &std::path::Path) -> Option<Stamp> {
+    let one = |p: &std::path::Path| std::fs::metadata(p).ok().map(|m| (p.to_path_buf(), m.len(), m.modified().ok()));
+    let mut all = vec![one(path)?];
+    if carla_core::library::shortcut::is_shortcut(path) {
+        all.push(one(&carla_core::library::shortcut::read(path).ok()?.target)?);
+    }
+    Some(all)
+}
+
+/// One program the last look found, as the server remembers it.
+pub(super) struct Offered {
+    id: String,
+    found: Candidate,
+    stamp: Stamp,
+}
+
+/// A program that may be a game, as the page shows it.
+#[derive(Debug, Serialize)]
+struct Offer {
+    id: String,
+    title: String,
+    exe: String,
+    folder: String,
+    kind: carla_core::library::find::FoundKind,
+    note: String,
+    watch: Option<String>,
+}
+
 fn ok() -> Answer {
     json(&serde_json::json!({ "done": true }))
 }
@@ -196,6 +238,16 @@ fn own_name(host: Option<&str>) -> bool {
     let Some(host) = host else { return false };
     let name = host.rsplit_once(':').map_or(host, |(name, port)| if port.bytes().all(|b| b.is_ascii_digit()) { name } else { host });
     name == "127.0.0.1" || name.eq_ignore_ascii_case("localhost")
+}
+
+/// A title as `Files::add_extra` accepts it: at most 80 bytes, cut at a letter's edge.
+fn fit_title(title: &str) -> String {
+    let mut end = title.trim().len().min(80);
+    let title = title.trim();
+    while !title.is_char_boundary(end) {
+        end -= 1;
+    }
+    title[..end].trim_end().to_string()
 }
 
 /// A name the Ally chose, shortened and cleaned for the page.
@@ -423,6 +475,66 @@ impl Server {
         }
     }
 
+    /// Look for programs that may be games and keep what is found, so that
+    /// one of them can be added by its number.
+    fn find_games(&self) -> Answer {
+        use carla_core::library::discover::lower;
+        // One look at a time: it holds one of the few workers that answer
+        // the Ally, and it holds no lock the Ally's requests need.
+        struct Done<'a>(&'a std::sync::atomic::AtomicBool);
+        impl Drop for Done<'_> {
+            fn drop(&mut self) {
+                self.0.store(false, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+        if self.finding.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            return refuse(409, "A look for games is already running. Wait for it to finish.");
+        }
+        let _done = Done(&self.finding);
+        let added: Vec<String> = self.files.extras().iter().map(|e| lower(&e.exe)).collect();
+        // Games a store lists are not added by hand: whatever lies in their folders.
+        let known = locked(&self.games).as_ref().map(|(_, list)| list.clone());
+        let stores = known.unwrap_or_else(|| self.games(false));
+        let stored: Vec<String> = stores.iter().filter(|(_, g)| !g.install_path.as_os_str().is_empty()).map(|(_, g)| format!("{}\\", lower(&g.install_path).trim_end_matches('\\'))).collect();
+        let list: Vec<Offered> = (self.finder)()
+            .into_iter()
+            .filter(|c| !added.contains(&lower(&c.exe)) && !stored.iter().any(|dir| lower(&c.exe).starts_with(dir.as_str())))
+            // A name that could not be watched safely is dropped; the game is still offered.
+            .map(|c| Candidate { watch_hint: c.watch_hint.as_deref().and_then(carla_core::library::launch::valid_watch), title: fit_title(&c.title), ..c })
+            .filter(|c| !c.title.is_empty())
+            .filter_map(|c| Some(Offered { id: carla_core::library::manual_key(&c.exe.to_string_lossy()), stamp: stamp(&c.exe)?, found: c }))
+            .collect();
+        let offered: Vec<Offer> = list
+            .iter()
+            .map(|o| {
+                let c = &o.found;
+                Offer { id: o.id.clone(), title: c.title.clone(), exe: c.exe.to_string_lossy().into_owned(), folder: c.folder.to_string_lossy().into_owned(), kind: c.kind, note: c.note.clone(), watch: c.watch_hint.clone() }
+            })
+            .collect();
+        *locked(&self.candidates) = Some((Instant::now(), list));
+        json(&offered)
+    }
+
+    /// Add what the last look found, by its number. Only that: a program
+    /// or options named by the page are not accepted.
+    fn add_found(&self, bytes: &[u8]) -> Answer {
+        let pick: Pick = body(bytes)?;
+        let found = locked(&self.candidates);
+        let Some((_, list)) = found.as_ref().filter(|(at, _)| at.elapsed() < FOUND_AGE) else {
+            return refuse(409, "Look for games first: that list is too old.");
+        };
+        let Some(offered) = list.iter().find(|o| o.id == pick.id) else {
+            return refuse(404, "That game was not in the list.");
+        };
+        let c = &offered.found;
+        // The program must still be the one that was found.
+        if stamp(&c.exe).as_ref() != Some(&offered.stamp) {
+            return refuse(409, "That program has changed since it was found. Look for games again.");
+        }
+        let added = self.files.add_extra(&c.title, &c.exe, "", None, c.watch_hint.as_deref()).map_err(|e| (500, e))?;
+        json(&serde_json::json!({ "title": added.title }))
+    }
+
     fn forget(&self, bytes: &[u8]) -> Answer {
         let forget: Forget = body(bytes)?;
         if !self.files.forget_device(&forget.id).map_err(|e| (500, e))? {
@@ -461,6 +573,8 @@ impl Server {
                     self.games(true);
                     ok()
                 }
+                ("POST", "/local/find") => self.find_games(),
+                ("POST", "/local/add") => self.add_found(bytes),
                 ("POST", "/local/update") => self.update(now),
                 ("POST", "/local/end") => self.end(now),
                 _ => refuse(404, "The dashboard does not know that request."),
@@ -543,6 +657,59 @@ mod tests {
     }
 
     #[test]
+    fn a_game_is_added_from_the_page_only_by_the_number_of_something_the_scan_found() {
+        let desk = desk("dash-add", false);
+        let own = format!("127.0.0.1:{}", desk.port);
+        let token = token(desk.port);
+        let wrong = "0123456789abcdef0123456789abcdef";
+        let exe = desk.files.dir().join("Quest.exe");
+        std::fs::write(&exe, b"program").unwrap();
+        let add = |host: &str, token: Option<&str>, body: &str| ask("POST", desk.port, "/local/add", host, token, body);
+
+        // Before any scan there is nothing to pick from.
+        assert_eq!(add(&own, Some(&token), r#"{"id":"0000000000000000"}"#).0, 409);
+        // Both routes: another site's Host, no token and a guessed one are refused.
+        for path in ["/local/find", "/local/add"] {
+            assert_eq!(ask("POST", desk.port, path, "evil.example", Some(&token), r#"{"id":0}"#).0, 403, "{path} under a foreign name");
+            assert_eq!(ask("POST", desk.port, path, &own, None, r#"{"id":0}"#).0, 403, "{path} without the token");
+            assert_eq!(ask("POST", desk.port, path, &own, Some(wrong), r#"{"id":0}"#).0, 403, "{path} with a guessed token");
+            assert_eq!(get(desk.port, path, &own, Some(&token)).0, 404, "{path} is only for POST");
+        }
+        assert_eq!(ask("POST", desk.port, "/local/find", &own, Some(&token), "").0, 200);
+        assert!(desk.files.extras().is_empty(), "nothing is added by refused or by scanning requests");
+
+        let (status, found) = ask("POST", desk.port, "/local/find", &own, Some(&token), "");
+        assert_eq!(status, 200);
+        let found: serde_json::Value = serde_json::from_str(&found).unwrap();
+        let id = carla_core::library::manual_key(&exe.to_string_lossy());
+        assert_eq!((found[0]["id"].as_str(), found[0]["title"].as_str(), found[0]["watch"].as_str()), (Some(id.as_str()), Some("Pixel Quest"), Some("Quest-Win64-Shipping.exe")));
+        let pick = format!(r#"{{"id":"{id}"}}"#);
+
+        // An id the scan did not give, and anything a page might add of its own.
+        assert_eq!(add(&own, Some(&token), r#"{"id":"0000000000000000"}"#).0, 404);
+        assert_eq!(add(&own, Some(&token), &exe.to_string_lossy().replace('\\', "/").replace('"', "")).0, 400);
+        assert_eq!(add(&own, Some(&token), r#"{"id":7}"#).0, 400);
+        assert_eq!(add(&own, Some(&token), r#"{"id":-1}"#).0, 400);
+        assert_eq!(add(&own, Some(&token), r#"{"exe":"C:\\Windows\\System32\\calc.exe"}"#).0, 400);
+        assert_eq!(add(&own, Some(&token), &format!(r#"{{"id":"{id}","exe":"C:\\Windows\\System32\\calc.exe","args":"x"}}"#)).0, 400);
+        assert!(desk.files.extras().is_empty());
+
+        // A program that changed after it was found is not added on the strength of the old look.
+        std::fs::write(&exe, b"a different, longer program").unwrap();
+        assert_eq!(add(&own, Some(&token), &pick).0, 409);
+        assert!(desk.files.extras().is_empty());
+        assert_eq!(ask("POST", desk.port, "/local/find", &own, Some(&token), "").0, 200);
+
+        // The id it gave adds exactly what the scan found.
+        assert_eq!(add(&own, Some(&token), &pick).0, 200);
+        let extras = desk.files.extras();
+        assert_eq!((extras.len(), extras[0].exe.clone(), extras[0].args.as_str(), extras[0].watch.as_deref()), (1, exe, "", Some("Quest-Win64-Shipping.exe")));
+        // Once added it is no longer offered.
+        let (_, again) = ask("POST", desk.port, "/local/find", &own, Some(&token), "");
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&again).unwrap(), serde_json::json!([]));
+    }
+
+    #[test]
     fn the_dashboard_follows_an_ally_from_linking_to_streaming() {
         let desk = desk("dash-flow", false);
         let own = format!("127.0.0.1:{}", desk.port);
@@ -614,6 +781,16 @@ mod tests {
         assert_eq!(serde_json::from_str::<serde_json::Value>(&newer).unwrap()["newer"], "9.9.9");
         let (status, updating) = ask("POST", down.port, "/local/update", &own, Some(&token), "");
         assert_eq!((status, serde_json::from_str::<serde_json::Value>(&updating).unwrap()["updating"].as_bool()), (200, Some(true)));
+    }
+
+    #[test]
+    fn a_long_title_is_cut_to_what_adding_accepts() {
+        assert_eq!(fit_title("  Short  "), "Short");
+        let long = "\u{30b2}".repeat(40); // 3 bytes each
+        let cut = fit_title(&long);
+        assert!(cut.len() <= 80 && !cut.is_empty() && long.starts_with(&cut));
+        assert_eq!(fit_title(&"a".repeat(200)).len(), 80);
+        assert_eq!(fit_title("   "), "");
     }
 
     #[test]

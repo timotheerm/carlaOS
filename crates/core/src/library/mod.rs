@@ -30,6 +30,7 @@ pub mod cloud;
 pub mod ports;
 pub mod pe;
 pub mod discover;
+pub mod find;
 pub mod autoart;
 pub mod shortcut;
 

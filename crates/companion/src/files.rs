@@ -131,6 +131,11 @@ pub struct Extra {
     pub args: String,
     #[serde(default)]
     pub cover: Option<PathBuf>,
+    /// The program name of the real game (`Game-Win64-Shipping.exe`), for a
+    /// launcher that hands over to it and exits. The game counts as running
+    /// while any program of that name runs.
+    #[serde(default)]
+    pub watch: Option<String>,
 }
 
 /// Where one game keeps its saves on this desktop, said by the administrator
@@ -159,6 +164,9 @@ pub struct Pending {
     pub exe: Option<PathBuf>,
     #[serde(default)]
     pub args: String,
+    /// See [`Extra::watch`].
+    #[serde(default)]
+    pub watch: Option<String>,
     /// The picture the Ally said it would ask for.
     #[serde(default)]
     pub screen: Option<Mode>,
@@ -301,7 +309,7 @@ impl Files {
     }
 
     /// Add a program as a game. Adding the same program again updates it.
-    pub fn add_extra(&self, title: &str, exe: &Path, args: &str, cover: Option<&Path>) -> Result<Extra, String> {
+    pub fn add_extra(&self, title: &str, exe: &Path, args: &str, cover: Option<&Path>, watch: Option<&str>) -> Result<Extra, String> {
         let title = title.trim();
         if title.is_empty() || title.len() > 80 {
             return Err("The game needs a name of at most 80 letters.".to_string());
@@ -312,6 +320,14 @@ impl Files {
         if let Some(cover) = cover.filter(|c| !c.is_file()) {
             return Err(format!("{} is not a picture on this desktop.", cover.display()));
         }
+        // The game counts as running while this program does, and "End game"
+        // closes it: only a plain game program name qualifies.
+        let watch = match watch {
+            None => None,
+            Some(name) => Some(carla_core::library::launch::valid_watch(name).ok_or_else(|| {
+                format!("{name:?} cannot be watched: give the game's own program, such as Game-Win64-Shipping.exe (an .exe file name only, not one of Windows' or a store's).")
+            })?),
+        };
         // Windows cannot start a shortcut as a program, so a shortcut is
         // followed to the program behind it, with the options it passes.
         let seen = carla_core::library::ports::inspect(exe)?;
@@ -323,6 +339,7 @@ impl Files {
             exe: exe.to_path_buf(),
             args: args.trim().to_string(),
             cover: cover.map(Path::to_path_buf),
+            watch,
         };
         let mut extras = self.extras();
         extras.retain(|e| e.key != extra.key);
@@ -692,5 +709,45 @@ impl Files {
     pub fn playing(&self, now: i64) -> Option<Playing> {
         let playing: Playing = self.read("playing.json")?;
         (now - playing.at <= PLAYING_BEAT * 2).then_some(playing)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_games_list_from_before_watching_existed_still_loads() {
+        let dir = std::env::temp_dir().join(format!("carla-files-watch-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("games.json"), r#"[{"key":"abc","title":"Old Game","exe":"C:/Games/old.exe","args":"-x"}]"#).unwrap();
+        let files = Files::new(dir.clone());
+        let extras = files.extras();
+        assert_eq!((extras.len(), extras[0].watch.clone(), extras[0].args.as_str()), (1, None, "-x"));
+        // A pending game written by an older companion has none either.
+        fs::write(dir.join("pending.json"), r#"{"game_id":"manual:abc","title":"Old Game","source":"manual","source_id":"abc","install_path":"C:/Games","at":1}"#).unwrap();
+        let pending: Pending = files.read("pending.json").unwrap();
+        assert_eq!(pending.watch, None);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_watched_name_is_kept_as_a_bare_file_name() {
+        let dir = std::env::temp_dir().join(format!("carla-files-watch2-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let files = Files::new(dir.clone());
+        let exe = dir.join("Start.exe");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(&exe, b"program").unwrap();
+        let added = files.add_extra("Game", &exe, "", None, Some("Game-Win64-Shipping.exe")).unwrap();
+        assert_eq!(added.watch.as_deref(), Some("Game-Win64-Shipping.exe"));
+        assert_eq!(files.add_extra("Game", &exe, "", None, None).unwrap().watch, None);
+        // Names that would make the game run for ever, or close something that is not it.
+        for bad in ["explorer.exe", "svchost.exe", "steam.exe", "a.exe", "game", "D:/Games/X/Game.exe", "  ", "\"Game.exe\"", "ga$me.exe"] {
+            assert!(files.add_extra("Game", &exe, "", None, Some(bad)).is_err(), "{bad:?}");
+        }
+        assert_eq!(files.extras()[0].watch, None, "a refused name changes nothing");
+        let _ = fs::remove_dir_all(&dir);
     }
 }

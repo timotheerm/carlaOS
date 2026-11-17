@@ -22,6 +22,54 @@ whose program has been moved or deleted is hidden until it is back.
 CarlaOS starts the program you point it at, as it is. It does not download
 games and does not get around copy protection.
 
+### Finding the program: `find` and the dashboard
+
+You do not have to hunt for the right program. At the desktop:
+
+    carla-companion find                       (the usual game folders)
+    carla-companion find "D:\Games\My Game"    (one game's folder, or a folder of games)
+
+It lists the likely programs, best first, each with a line to paste. The real
+game's program is preferred over a launcher: an Unreal game's
+`*-Win64-Shipping.exe`, a Unity game's player next to its `*_Data` folder. Uninstallers,
+redistributables and crash handlers are left out. A `.bat`, `.cmd` or shortcut
+can be added too. Nothing is started while looking, and nothing is sent anywhere.
+
+The dashboard (`carla-companion dashboard`, on this PC only) has the same under
+"Add a game": **Look for games on this PC**, then **Add** next to one. The page
+can only add something the companion itself just found; it never names a
+program or options of its own.
+
+### Launchers that hand over to another program
+
+Some games start through a small launcher that exits once the real game runs,
+often from another folder. CarlaOS counts a game as running while any program
+inside the added program's folder runs, so such a game would look finished at
+once, or never started. Say which program is the real game:
+
+    carla-companion add "Tin Knight" "D:\Games\Tin Knight\TinKnight.exe" --watch "TinKnight-Win64-Shipping.exe"
+
+The game then counts as running while any program with that file name runs
+(case does not matter, the folder does not), and "End game" closes it too. `find`
+fills in `--watch` when it can tell. `games` shows it. Adding the real game's
+program directly, when it starts fine on its own, needs no `--watch`.
+
+Rules for the watched name, because the game runs for as long as such a program
+does and "End game" closes it:
+
+- an `.exe` file name only (no folder), of letters, digits, spaces and `. _ ( ) + -`;
+- not a program in the Windows folders, and not Windows', a store's or a
+  browser's own (explorer, svchost, steam, chrome and the like): these are refused;
+- **End game closes every program with that name**, including other copies you
+  started yourself; programs under the Windows folders are never closed.
+
+`find` only prints a line to paste when the title and path hold no quote,
+backtick, `$`, `%`, `;`, `&`, `|`, `<`, `>` or `^`, because a terminal could read
+those as commands. Otherwise it says so: add that game from the dashboard, or
+rename its folder. Folders that Steam, Epic or GOG Galaxy manage, and games they
+already list, are not offered. The dashboard's list expires after 10 minutes, and
+a program that changed after it was found is refused: look again.
+
 ## From the Ally: Settings, Desktops, then a desktop
 
 Behind the administrator PIN, each linked desktop has:

@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 
 use carla_core::library::achievements::Achievement;
 use carla_core::library::emulation;
+use carla_core::library::find::{self, Candidate};
 use carla_core::library::Scanned;
 use carla_core::link::enrol::{self, Exchange, Shared, Side};
 use carla_core::link::health::{Asking, Pulse};
@@ -140,6 +141,14 @@ pub struct Server {
     pings: Mutex<HashMap<String, dashboard::Pings>>,
     asked: Mutex<Option<dashboard::Asked>>,
     clients: Mutex<Option<(Instant, Option<Vec<String>>)>>,
+    /// Looks for programs that may be games, for the dashboard's "Add a game".
+    finder: Box<dyn Fn() -> Vec<Candidate> + Send + Sync>,
+    /// What the last such look found. The page adds one of these by its
+    /// id and nothing else: it never names a path or options itself.
+    candidates: Mutex<Option<(Instant, Vec<dashboard::Offered>)>>,
+    /// A look for games is running. At most one at a time, so that clicking
+    /// the button again cannot occupy the workers that answer the Ally.
+    finding: std::sync::atomic::AtomicBool,
 }
 
 /// An installed game and the store it is from ("steam", "epic", "gog").
@@ -231,7 +240,17 @@ impl Server {
             pings: Mutex::default(),
             asked: Mutex::default(),
             clients: Mutex::default(),
+            finder: Box::new(|| find::find(&find::default_roots(), &[])),
+            candidates: Mutex::default(),
+            finding: Default::default(),
         }
+    }
+
+    /// Look for games to add somewhere else than the usual folders.
+    #[cfg(test)]
+    pub fn with_finder(mut self, finder: Box<dyn Fn() -> Vec<Candidate> + Send + Sync>) -> Self {
+        self.finder = finder;
+        self
     }
 
     /// Say which graphics chips this desktop has.
@@ -627,6 +646,7 @@ impl Server {
                 install_path: extra.exe.parent().map(PathBuf::from).unwrap_or_default(),
                 exe: Some(extra.exe),
                 args: extra.args,
+                watch: extra.watch,
                 screen: prepare.screen,
                 at: now,
             },
@@ -638,6 +658,7 @@ impl Server {
                 install_path: game.install_path,
                 exe: game.exe,
                 args: game.args,
+                watch: None,
                 screen: prepare.screen,
                 at: now,
             },
@@ -1009,6 +1030,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("cover.jpg"), b"picture bytes").unwrap();
         let files = Files::new(dir.clone());
+        let found_dir = dir.clone();
         let config = Config::new("HOME PC");
         let calls = Arc::new(Mutex::new(Vec::new()));
         let sunshine = FakeSunshine { down, calls: calls.clone() };
@@ -1042,7 +1064,15 @@ mod tests {
                 SLEEPS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 Ok(())
             },
-        ).with_updater(|| Ok(Some("9.9.9".into()))).with_probe(udp.try_clone().unwrap()).with_graphics(vec!["AMD Radeon RX 9070 XT".into()]).with_dashboard(Vitals::default, || Ok(Some("9.9.9".into()))).with_admin_hold(Duration::from_millis(400)).with_installs(Installs {
+        ).with_updater(|| Ok(Some("9.9.9".into()))).with_probe(udp.try_clone().unwrap()).with_graphics(vec!["AMD Radeon RX 9070 XT".into()]).with_dashboard(Vitals::default, || Ok(Some("9.9.9".into()))).with_finder(Box::new(move || vec![Candidate {
+            title: "Pixel Quest".into(),
+            exe: found_dir.join("Quest.exe"),
+            folder: found_dir.clone(),
+            kind: find::FoundKind::Launcher,
+            score: 30,
+            note: "A launcher".into(),
+            watch_hint: Some("Quest-Win64-Shipping.exe".into()),
+        }])).with_admin_hold(Duration::from_millis(400)).with_installs(Installs {
             offered: || Ok(vec![App { appid: "40".into(), title: "Not Here Yet".into(), installdir: "NotHere".into() }, App { appid: "50".into(), title: "Needs Steam's Window".into(), installdir: String::new() }]),
             start: |app| {
                 locked(&ASKED_FOR).push(app.appid.clone());
@@ -1231,11 +1261,11 @@ mod tests {
         let exe = desk.files.dir().join("Lanterns.exe");
         std::fs::write(&exe, b"program").unwrap();
         let cover = desk.files.dir().join("cover.jpg");
-        assert!(desk.files.add_extra("Paper Lanterns", std::path::Path::new("relative.exe"), "", None).is_err());
-        assert!(desk.files.add_extra("  ", &exe, "", None).is_err());
-        let added = desk.files.add_extra("Paper Lanterns", &exe, "-fullscreen", Some(&cover)).unwrap();
+        assert!(desk.files.add_extra("Paper Lanterns", std::path::Path::new("relative.exe"), "", None, None).is_err());
+        assert!(desk.files.add_extra("  ", &exe, "", None, None).is_err());
+        let added = desk.files.add_extra("Paper Lanterns", &exe, "-fullscreen", Some(&cover), Some("Lanterns-Win64-Shipping.exe")).unwrap();
         // Adding the same program again renames it instead of listing it twice.
-        desk.files.add_extra("Paper Lanterns Deluxe", &exe, "-fullscreen", Some(&cover)).unwrap();
+        desk.files.add_extra("Paper Lanterns Deluxe", &exe, "-fullscreen", Some(&cover), Some("Lanterns-Win64-Shipping.exe")).unwrap();
         let id = format!("manual:{}", added.key);
 
         let games = link.games().unwrap();
@@ -1247,6 +1277,7 @@ mod tests {
         let pending = desk.files.take_pending(now_for_tests()).unwrap();
         assert_eq!((pending.source.as_str(), pending.exe.as_deref(), pending.args.as_str()), ("manual", Some(exe.as_path()), "-fullscreen"));
         assert_eq!(pending.install_path, desk.files.dir());
+        assert_eq!(pending.watch.as_deref(), Some("Lanterns-Win64-Shipping.exe"));
 
         // A program that has gone is no longer offered.
         std::fs::remove_file(&exe).unwrap();

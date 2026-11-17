@@ -296,17 +296,98 @@ impl Processes {
     }
 }
 
+/// A program name to watch, reduced to its bare file name. `None` when it
+/// names nothing.
+pub fn watch_name(name: &str) -> Option<String> {
+    let bare = name.trim().trim_matches('"').rsplit(['/', '\\']).next().unwrap_or_default().trim();
+    (!bare.is_empty()).then(|| bare.to_string())
+}
+
+/// Programs that are never watched or closed by name: Windows' own, and the
+/// stores' and browsers', which are not "the game".
+const NEVER: [&str; 25] = [
+    "explorer", "svchost", "csrss", "winlogon", "lsass", "services", "wininit", "dwm", "taskmgr", "cmd", "powershell", "pwsh", "conhost", "steam", "steamwebhelper", "epicgameslauncher", "galaxyclient", "origin",
+    "eadesktop", "ubisoftconnect", "upc", "battle.net", "msedge", "chrome", "firefox",
+];
+
+fn windows_dirs() -> Vec<PathBuf> {
+    ["SystemRoot", "windir"].iter().filter_map(std::env::var_os).map(PathBuf::from).collect()
+}
+
+/// A program name that may be watched, and closed with the game: an `.exe`
+/// file name only, of plain characters, that is not one of Windows' own or a
+/// store's or browser's. Anything else is refused, because the game "runs"
+/// for as long as such a program does and "End game" closes it.
+pub fn valid_watch(name: &str) -> Option<String> {
+    let bare = watch_name(name)?;
+    let lower = bare.to_lowercase();
+    let stem = lower.strip_suffix(".exe")?;
+    let plain = bare.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, ' ' | '.' | '_' | '(' | ')' | '+' | '-'));
+    let own = windows_dirs().iter().any(|dir| dir.join(&bare).exists() || dir.join("System32").join(&bare).exists());
+    // CarlaOS itself, its streaming parts, and whatever program is running this code.
+    let ours = stem.starts_with("carla") || ["sunshine", "sunshinesvc", "moonlight"].contains(&stem) || std::env::current_exe().ok().and_then(|p| p.file_name().map(|f| f.to_string_lossy().eq_ignore_ascii_case(&bare))).unwrap_or(false);
+    (bare == name && bare.len() >= 7 && plain && !NEVER.contains(&stem) && !own && !ours).then_some(bare)
+}
+
+/// Whether a running program's file is somewhere that is never closed here.
+fn protected(exe: &Path) -> bool {
+    let path = normal(exe);
+    path.contains("/windowsapps/") || windows_dirs().iter().any(|dir| path.starts_with(&format!("{}/", normal(dir).trim_end_matches('/'))))
+}
+
+/// Whether a running program is the one called `wanted`: the file name only,
+/// and without regard to case.
+fn is_image(exe: Option<&Path>, name: &std::ffi::OsStr, wanted: &str) -> bool {
+    exe.and_then(Path::file_name).is_some_and(|f| f.to_string_lossy().eq_ignore_ascii_case(wanted)) || name.to_string_lossy().eq_ignore_ascii_case(wanted)
+}
+
+impl Processes {
+    /// Is any program called `name` running? A game that starts through a
+    /// launcher in another folder is found this way.
+    pub fn any_named(&mut self, name: &str) -> bool {
+        let Some(system) = self.system.as_mut() else { return false };
+        system.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing().with_exe(UpdateKind::OnlyIfNotSet));
+        system.processes().values().any(|p| is_image(p.exe(), p.name(), name))
+    }
+
+    /// End every program called `name`. Says how many.
+    /// Only a name that passes [`valid_watch`] is ever acted on, and never a
+    /// program that lives in Windows' own folders.
+    pub fn end_named(&mut self, name: &str) -> usize {
+        if valid_watch(name).is_none() || !self.any_named(name) {
+            return 0;
+        }
+        let Some(system) = self.system.as_ref() else { return 0 };
+        system.processes().values().filter(|p| is_image(p.exe(), p.name(), name)).filter(|p| p.pid().as_u32() != std::process::id())
+            // A program whose file cannot be seen (access denied) is not ours to close.
+            .filter(|p| p.exe().is_some_and(|exe| !protected(exe)))
+            .filter(|p| p.kill())
+            .count()
+    }
+}
+
 /// One running game: the tracker plus what it watches.
 pub struct Watch {
     dir: PathBuf,
     child: Option<Child>,
+    /// A program name that also counts as the game running.
+    named: Option<String>,
     tracker: Tracker,
     processes: Processes,
 }
 
 impl Watch {
     pub fn new(install: &Install, child: Option<Child>) -> Self {
-        Self { dir: install.install_path.clone(), child, tracker: Tracker::new(Instant::now()), processes: Processes::default() }
+        Self { dir: install.install_path.clone(), child, named: None, tracker: Tracker::new(Instant::now()), processes: Processes::default() }
+    }
+
+    /// Also count the game as running while a program of this name runs,
+    /// wherever its file is: for a launcher that hands over to a game that
+    /// lives in another folder. Both the wait for the game to appear and the
+    /// wait for it to end follow it.
+    pub fn watching(mut self, name: Option<&str>) -> Self {
+        self.named = name.and_then(valid_watch);
+        self
     }
 
     /// Watch a game that is already running: one that CarlaOS did not start
@@ -325,6 +406,9 @@ impl Watch {
             let _ = child.wait();
         }
         self.processes.end_inside(&self.dir);
+        if let Some(name) = &self.named {
+            self.processes.end_named(name);
+        }
     }
 
     /// See [`Tracker::still_preparing`].
@@ -346,7 +430,7 @@ impl Watch {
             }
             None => false,
         };
-        let running = child_alive || self.processes.any_inside(&self.dir);
+        let running = child_alive || self.processes.any_inside(&self.dir) || self.named.as_deref().is_some_and(|n| self.processes.any_named(n));
         self.tracker.observe(running, Instant::now())
     }
 }
@@ -393,6 +477,94 @@ mod tests {
             .status()
             .unwrap();
         assert_eq!(status.code(), Some(FIXED), "{FIXED} = fixed, 3 = not reproduced, 1 = still failing, 0 = the child ran no test");
+    }
+
+    #[test]
+    fn a_game_also_runs_while_a_program_of_its_name_runs_wherever_it_is() {
+        assert_eq!(watch_name(" \"C:\\Games\\X\\Game-Win64-Shipping.exe\" ").as_deref(), Some("Game-Win64-Shipping.exe"));
+        assert_eq!(watch_name("/opt/x/game.bin").as_deref(), Some("game.bin"));
+        assert_eq!(watch_name("  "), None);
+        let name = std::env::current_exe().unwrap().file_name().unwrap().to_string_lossy().into_owned();
+        // Case does not matter, the folder is not part of the name.
+        let mut processes = Processes::default();
+        assert!(processes.any_named(&name.to_uppercase()));
+        assert!(!processes.any_named("definitely-not-running.exe"));
+        let install = Install {
+            game_id: "manual:x".into(),
+            title: "Game".into(),
+            source: "manual".into(),
+            source_id: "x".into(),
+            install_path: PathBuf::from("/nonexistent-carla-dir"),
+            exe: None,
+            args: String::new(),
+        };
+        // Not started yet, and no program of its folder: only the name shows it is there.
+        assert_eq!(Watch::new(&install, None).poll(), Phase::Starting);
+        // This program's own name is never accepted as a game to watch.
+        assert_eq!(Watch::new(&install, None).watching(Some(&name.to_uppercase())).poll(), Phase::Starting);
+        assert_eq!(Watch::new(&install, None).watching(Some("definitely-not-running.exe")).poll(), Phase::Starting);
+        // Once it has gone, the game has finished.
+        let mut gone = Watch::adopted(&install).watching(Some("definitely-not-running.exe"));
+        assert_eq!(gone.poll(), Phase::Running);
+        assert_eq!(gone.poll(), Phase::Finished);
+    }
+
+    #[test]
+    fn only_a_plain_game_program_name_may_be_watched_or_closed() {
+        for ok in ["Game-Win64-Shipping.exe", "Quest.EXE", "My Game (x64).exe", "a_b+c.exe"] {
+            assert_eq!(valid_watch(ok).as_deref(), Some(ok), "{ok}");
+        }
+        for bad in [
+            "explorer.exe", "EXPLORER.EXE", "svchost.exe", "steam.exe", "chrome.exe", "powershell.exe", "cmd.exe", "a", "a.exe", ".exe", "game", "game.bat", "C:/x/game.exe", "..\\game.exe", "\"game.exe\"", "ga;me.exe", "ga$me.exe", "ga%me.exe",
+            "ga`me.exe", "game.exe ", "ga\nme.exe", "",
+        ] {
+            assert_eq!(valid_watch(bad), None, "{bad:?}");
+        }
+        // Whatever sits in Windows' own folders, even under a name that is not on the list.
+        if let Some(root) = std::env::var_os("SystemRoot") {
+            let root = PathBuf::from(root);
+            if let Some(found) = std::fs::read_dir(root.join("System32")).into_iter().flatten().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).find(|n| n.to_lowercase().ends_with(".exe") && n.len() >= 5) {
+                assert_eq!(valid_watch(&found), None, "{found} is Windows'");
+            }
+        }
+        // A game cannot be made to watch such a program.
+        let install = Install { game_id: "manual:x".into(), title: "G".into(), source: "manual".into(), source_id: "x".into(), install_path: PathBuf::from("/nonexistent-carla-dir"), exe: None, args: String::new() };
+        let mut watch = Watch::adopted(&install).watching(Some("explorer.exe"));
+        assert!(watch.named.is_none());
+        assert_eq!(watch.poll(), Phase::Running);
+        assert_eq!(watch.poll(), Phase::Finished);
+        // CarlaOS, its streaming parts, and the program running this very test.
+        let me = std::env::current_exe().unwrap().file_name().unwrap().to_string_lossy().into_owned();
+        for bad in ["carla-companion.exe", "Carla-Companion.EXE", "carlaos.exe", "carla.exe", "Sunshine.exe", "sunshinesvc.exe", "moonlight.exe", "Moonlight.EXE", me.as_str(), &me.to_uppercase()] {
+            assert_eq!(valid_watch(bad), None, "{bad}");
+        }
+        assert_eq!(Processes::default().end_named(&me), 0, "never the current process");
+        assert!(Processes::default().any_named(&me));
+        assert_eq!(Processes::default().end_named("explorer.exe"), 0);
+        assert_eq!(Processes::default().end_named("svchost.exe"), 0);
+    }
+
+    /// Closing by name closes the programs of that name and no other.
+    #[cfg(windows)]
+    #[test]
+    fn closing_by_name_ends_only_the_named_program() {
+        let system32 = PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32").join("ping.exe");
+        let dir = std::env::temp_dir();
+        let (mine, other) = (dir.join(format!("pingtest-{}.exe", std::process::id())), dir.join(format!("pingtest-other-{}.exe", std::process::id())));
+        std::fs::copy(&system32, &mine).unwrap();
+        std::fs::copy(&system32, &other).unwrap();
+        let run = |exe: &Path| Command::new(exe).args(["-n", "60", "127.0.0.1"]).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+        let (mut a, mut b) = (run(&mine), run(&other));
+        std::thread::sleep(Duration::from_millis(500));
+        let name = mine.file_name().unwrap().to_string_lossy().into_owned();
+        assert_eq!(Processes::default().end_named(&name), 1);
+        let status = a.wait().unwrap();
+        assert!(!status.success(), "it was ended");
+        assert!(b.try_wait().unwrap().is_none(), "the other program is untouched");
+        let _ = b.kill();
+        let _ = b.wait();
+        let _ = std::fs::remove_file(&mine);
+        let _ = std::fs::remove_file(&other);
     }
 
     #[test]

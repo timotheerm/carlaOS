@@ -220,6 +220,11 @@ footer { margin-top: 1.5rem; color: var(--text-quiet); font-size: 0.85rem; text-
       <h2 id="h-games"><span>Games the Ally can stream from here</span><span class="grow"></span><button class="btn small quiet" id="games-button" type="button">Look for games again</button></h2>
       <div id="games"></div>
     </section>
+    <section class="card span-12" aria-labelledby="h-add">
+      <h2 id="h-add"><span>Add a game</span><span class="grow"></span><button class="btn small" id="find-button" type="button">Look for games on this PC</button></h2>
+      <p id="find-help" style="color: var(--text-quiet); margin-bottom: 0.9rem;">For a game that Steam, Epic and GOG do not list: a native port, an unofficial Windows game, an emulator's launcher. Nothing is started while looking.</p>
+      <ul class="rows" id="found"></ul>
+    </section>
   </div>
   <footer id="footer"></footer>
 </main>
@@ -490,6 +495,14 @@ async function refresh() {
 
 $("link-button").addEventListener("click", (e) => act(e.currentTarget, "POST", "/local/code"));
 $("games-button").addEventListener("click", (e) => act(e.currentTarget, "POST", "/local/games", null, () => toast("The list of games is up to date.")));
+/* Add a game: the page only ever sends the number of something the scan found. */
+function offered(list) {
+  $("found").replaceChildren(...list.map((g) => h("li", null,
+    h("div", { class: "body" }, h("b", null, g.title), h("p", null, g.exe), h("p", null, g.note + (g.watch ? ` (watching ${g.watch})` : ""))),
+    h("button", { class: "btn small", type: "button", onclick: (e) => act(e.currentTarget, "POST", "/local/add", { id: g.id }, (a) => { toast(`${a.title} was added. It appears on the Ally within five minutes.`); e.currentTarget.closest("li").remove(); }) }, "Add"))));
+  if (!list.length) $("found").replaceChildren(h("li", null, "Nothing new was found. Add a program by hand with: carla-companion add NAME PROGRAM"));
+}
+$("find-button").addEventListener("click", (e) => act(e.currentTarget, "POST", "/local/find", null, offered));
 document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
 refresh();
 // Every two seconds while someone is looking; nothing while nobody is.
