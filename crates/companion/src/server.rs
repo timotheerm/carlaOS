@@ -2722,16 +2722,24 @@ mod tests {
 
     // The log, and a server that stays answerable.
 
-    /// Wait for a line to reach the log: it is written just after the answer is sent.
+    /// Wait for a line to reach the log: a request's line is written by a thread of
+    /// its own, after the answer is sent.
     fn logged(files: &Files, needle: &str) -> String {
-        for _ in 0..100 {
+        logged_all(files, &[needle])
+    }
+
+    /// Wait until every one of these is in the log. Wait for all that is asserted
+    /// on afterwards: lines of different requests, or of the writer thread and of
+    /// the worker, do not arrive in any order the test can rely on.
+    fn logged_all(files: &Files, needles: &[&str]) -> String {
+        for _ in 0..200 {
             let text = files.host_log().text();
-            if text.contains(needle) {
+            if needles.iter().all(|n| text.contains(n)) {
                 return text;
             }
             std::thread::sleep(Duration::from_millis(30));
         }
-        panic!("{needle:?} never reached the log:\n{}", files.host_log().text());
+        panic!("{needles:?} never all reached the log:\n{}", files.host_log().text());
     }
 
     /// A server that is not listening, for calling its parts directly.
@@ -2749,14 +2757,14 @@ mod tests {
         let desk = desk("log-requests", false);
         let link = linked(&desk);
         link.status().unwrap();
-        let text = logged(&desk.files, "GET /v1/status -> 200");
         let me = label(&link.device_id);
+        let text = logged_all(&desk.files, &["GET /v1/status -> 200 in ", &format!("({me})"), &format!("A device was linked: {me}.")]);
         assert!(text.contains(&format!("GET /v1/status -> 200 in ")) && text.contains(&format!("({me})")), "{text}");
         assert!(text.contains(&format!("A device was linked: {me}.")), "{text}");
 
         // A route that names a game or a save folder is written as its shape.
         link.cover("steam:10").unwrap();
-        assert!(logged(&desk.files, "/v1/cover/:game").contains("GET /v1/cover/:game -> 200"));
+        assert!(logged(&desk.files, "GET /v1/cover/:game -> 200").contains("GET /v1/cover/:game -> 200"));
         assert!(!desk.files.host_log().text().contains("steam:10"));
         link.saves("steam:10", "First Game").unwrap();
         logged(&desk.files, "POST /v1/saves/find -> 200");
@@ -2765,18 +2773,18 @@ mod tests {
         link.prepare("steam:10").unwrap();
         logged(&desk.files, "Prepare: First Game (steam:10) is ready to start when Moonlight connects");
         link.pair("4821", "Ally").unwrap();
-        assert!(logged(&desk.files, "Pairing with Moonlight worked.").contains("Pairing with Moonlight began"));
+        logged_all(&desk.files, &["Pairing with Moonlight worked.", "Pairing with Moonlight began", "POST /v1/stream/pair -> 200"]);
         assert!(!desk.files.host_log().text().contains("4821"));
 
         // A refusal says why, and who it was: a stranger with a made-up id, or a device whose signature fails.
         let wrong = Link { key: vec![7; 32], ..link.clone() };
         assert_eq!(wrong.status().err(), Some(Error::Refused));
-        let text = logged(&desk.files, "does not match");
+        let text = logged_all(&desk.files, &["does not match", "-> 401", "This device is not linked to the desktop."]);
         assert!(text.contains(&format!("device {me} is linked, but the request's signature does not match")), "{text}");
         assert!(text.contains("-> 401") && text.contains("This device is not linked to the desktop."), "{text}");
         let stranger = Link { device_id: "ffeeddccbbaa9988".into(), ..link.clone() };
         assert_eq!(stranger.status().err(), Some(Error::Refused));
-        let text = logged(&desk.files, "device ffeedd is not linked here");
+        let text = logged_all(&desk.files, &["device ffeedd is not linked here", "(stranger)"]);
         assert!(text.contains("(stranger)"), "{text}");
 
         // Nothing secret is ever in it.
