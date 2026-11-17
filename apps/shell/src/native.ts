@@ -76,3 +76,19 @@ export const crash = {
     if (inTauri) await invoke("crash_open_folder");
   },
 };
+
+// The activity log kept by the Rust side: the connection log and the crash trail by time.
+// The browser preview has a few made-up lines.
+export const activity = {
+  async tail(count: number): Promise<string[]> {
+    if (!inTauri) return ["2026-11-17 12:04:09.123 UTC link local GET /v1/status answered 200 in 2000 ms", "2026-11-17 12:04:21.456 UTC desktop home: reachable -> unreachable (was reachable for 12333 ms)"];
+    return invoke<string[]>("log_tail", { count });
+  },
+  async text(): Promise<string> {
+    if (!inTauri) return (await activity.tail(200)).join("\n") + "\n";
+    return invoke<string>("log_text");
+  },
+  async openFolder(): Promise<void> {
+    if (inTauri) await invoke("log_open_folder");
+  },
+};

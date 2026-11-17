@@ -262,6 +262,7 @@ export function Settings({
   onUpdates,
   onStartup,
   onCrash,
+  onLog,
   onStorage,
   onDownloads,
   downloading,
@@ -281,6 +282,7 @@ export function Settings({
   onUpdates: () => void;
   onStartup: () => void;
   onCrash: () => void;
+  onLog: () => void;
   onStorage: () => void;
   onDownloads: () => void;
   downloading: number;
@@ -349,6 +351,10 @@ export function Settings({
       <button className="setting" data-focus data-fid="set:crash" onClick={onCrash}>
         <span>Crash reports</span>
         <span className="setting__value">Send a copy to whoever looks after CarlaOS</span>
+      </button>
+      <button className="setting" data-focus data-fid="set:log" onClick={onLog}>
+        <span>Activity log</span>
+        <span className="setting__value">What the connection to the desktops was doing</span>
       </button>
       <button className="setting" data-focus data-fid="set:exit" onClick={onExit}>
         <span>Exit to Windows</span>

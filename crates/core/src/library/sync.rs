@@ -411,9 +411,80 @@ pub fn gate_on_failure(stored_keep_clean: bool, ally_has_saves: bool) -> bool {
     stored_keep_clean && ally_has_saves
 }
 
+/// Waits before each try of the fetch after a stream, in seconds: the game
+/// needs a while to close there, and the desktop may still be waking.
+pub const AFTER_STREAM_WAITS: [u64; 4] = [3, 15, 30, 60];
+
+/// How one try of a sync after a stream went, for deciding about the next.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Attempt {
+    /// The saves are in step, or there was nothing to do.
+    InStep,
+    /// The desktop answered but the game is still open there: later.
+    TryAgain,
+    /// The desktop did not answer (off, waking, reconnecting): later.
+    Unreachable,
+    /// A game started on this Ally: its own start took care of the saves.
+    GameHere,
+    /// Not linked, refused, revoked, game not there: trying again changes nothing.
+    Fatal,
+}
+
+/// The wait before the next try, or `None` to stop. `attempt` counts the tries
+/// made so far (1 after the first); `waits` is the schedule of waits before
+/// each try, so the tries are as many as it has entries.
+pub fn retry_after(outcome: Attempt, attempt: usize, waits: &[u64]) -> Option<Duration> {
+    match outcome {
+        Attempt::InStep | Attempt::GameHere | Attempt::Fatal => None,
+        Attempt::TryAgain | Attempt::Unreachable => waits.get(attempt).map(|s| Duration::from_secs(*s)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Runs the schedule as the caller does, without sleeping: returns the waits taken.
+    fn run(outcomes: &[Attempt]) -> Vec<u64> {
+        let waits = AFTER_STREAM_WAITS;
+        let mut taken = vec![waits[0]];
+        let mut tries = 0;
+        loop {
+            let outcome = outcomes.get(tries).copied().unwrap_or(Attempt::Unreachable);
+            tries += 1;
+            match retry_after(outcome, tries, &waits) {
+                Some(wait) => taken.push(wait.as_secs()),
+                None => return taken,
+            }
+        }
+    }
+
+    #[test]
+    fn a_desktop_that_answers_after_a_failed_try_gets_a_later_try() {
+        assert_eq!(run(&[Attempt::Unreachable, Attempt::InStep]), vec![3, 15]);
+        assert_eq!(run(&[Attempt::Unreachable, Attempt::TryAgain, Attempt::InStep]), vec![3, 15, 30]);
+    }
+
+    #[test]
+    fn a_desktop_that_never_answers_uses_every_scheduled_try_and_stops() {
+        assert_eq!(run(&[]), vec![3, 15, 30, 60]);
+        assert_eq!(retry_after(Attempt::Unreachable, 4, &AFTER_STREAM_WAITS), None);
+    }
+
+    #[test]
+    fn a_game_here_or_a_permanent_failure_stops_at_once() {
+        assert_eq!(run(&[Attempt::GameHere]), vec![3]);
+        assert_eq!(run(&[Attempt::Fatal]), vec![3]);
+        assert_eq!(run(&[Attempt::Unreachable, Attempt::Fatal]), vec![3, 15]);
+        assert_eq!(run(&[Attempt::InStep]), vec![3]);
+    }
+
+    #[test]
+    fn the_schedule_length_is_respected() {
+        assert_eq!(retry_after(Attempt::TryAgain, 1, &[5, 6]), Some(Duration::from_secs(6)));
+        assert_eq!(retry_after(Attempt::TryAgain, 2, &[5, 6]), None);
+        assert_eq!(retry_after(Attempt::TryAgain, 0, &[]), None);
+    }
 
     #[test]
     fn a_failure_holds_a_stream_up_only_for_a_known_cleaning_desktop_with_saves_to_put_back() {

@@ -230,14 +230,14 @@ pub fn watch(app: AppHandle, library: Library) {
 }
 
 /// Whether a desktop may administer this Ally.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn hosts_admin(library: State<'_, Library>, id: String) -> Result<bool, String> {
     library.store().host_admin(&id)
 }
 
 /// Allow a desktop to administer this Ally, or take that back. Taking it
 /// back holds from the desktop's next question, within about twenty seconds.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn hosts_set_admin(app: AppHandle, admin: State<'_, Admin>, library: State<'_, Library>, id: String, allowed: bool) -> Result<(), String> {
     admin.require()?;
     library.store().set_host_admin(&id, allowed)?;

@@ -685,6 +685,19 @@ button {
   background: color-mix(in srgb, var(--warn) 26%, var(--surface));
 }
 
+/* The activity log: newest lines at the bottom, small and plain. */
+.activitylog {
+  margin: 0;
+  padding: 1rem 1.4rem;
+  max-height: 46vh;
+  overflow: auto;
+  border-radius: var(--radius-card);
+  background: var(--surface);
+  font: 0.72rem/1.45 ui-monospace, Consolas, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .working {
   margin: 3rem 0;
   font-size: var(--text-title);

@@ -180,6 +180,11 @@ impl Crash {
         lines[lines.len().saturating_sub(count)..].to_vec()
     }
 
+    /// The newest notes of the trail, oldest first, for the activity log.
+    pub fn trail(&self, count: usize) -> Vec<String> {
+        self.notes(count)
+    }
+
     /// Call once at start. Returns the name of a report when the last run did
     /// not end normally, then marks this run as running.
     pub fn begin(&self) -> Option<String> {
@@ -406,8 +411,59 @@ fn still_running(marker: &Running) -> bool {
     start_time(marker.pid).is_some_and(|now| marker.start == 0 || now == marker.start)
 }
 
-/// Hide what a report should not carry out of the device: IPv4 addresses and
-/// the Windows account name in a path. Best effort, applied to every report.
+/// How much of the start of `word` is an IPv6 address (with a `%zone`, if any).
+fn ipv6_len(word: &str) -> Option<usize> {
+    let (address, zone) = match word.find('%') {
+        Some(at) => (&word[..at], word.len() - at),
+        None => (word, 0),
+    };
+    // A full stop or a colon that ends a sentence is not part of the address.
+    let mut candidate = address.trim_end_matches('.');
+    if candidate.ends_with(':') && !candidate.ends_with("::") {
+        candidate = &candidate[..candidate.len() - 1];
+    }
+    let whole = candidate.len() == address.len();
+    let sure = candidate.matches(':').count() >= 2 && candidate.chars().any(|c| c.is_ascii_hexdigit()) && candidate.parse::<std::net::Ipv6Addr>().is_ok();
+    sure.then(|| candidate.len() + if whole { zone } else { 0 })
+}
+
+/// IPv6 addresses (`fe80::1%12`, `2001:db8::1`, `::1`) become `x:x:x:x`. Words
+/// such as `power::rest` or a time of day are not addresses and stay.
+fn hide_ipv6(text: &str) -> String {
+    let in_word = |c: char| c.is_ascii_alphanumeric() || matches!(c, ':' | '.' | '%' | '_');
+    let mut out = String::with_capacity(text.len());
+    let end_word = |start: usize, upto: usize, out: &mut String| {
+        let word = &text[start..upto];
+        match ipv6_len(word) {
+            Some(len) => {
+                out.push_str("x:x:x:x");
+                out.push_str(&word[len..]);
+            }
+            None => out.push_str(word),
+        }
+    };
+    let mut word_start = None;
+    for (at, c) in text.char_indices() {
+        match (in_word(c), word_start) {
+            (true, None) => word_start = Some(at),
+            (false, Some(start)) => {
+                end_word(start, at, &mut out);
+                word_start = None;
+                out.push(c);
+            }
+            (false, None) => out.push(c),
+            (true, Some(_)) => {}
+        }
+    }
+    if let Some(start) = word_start {
+        end_word(start, text.len(), &mut out);
+    }
+    out
+}
+
+/// Hide what a report should not carry out of the device: IPv4 and IPv6
+/// addresses and the Windows account name in a path. Best effort, applied to
+/// every report.
 pub fn scrub(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut run = String::new();
@@ -426,6 +482,7 @@ pub fn scrub(text: &str) -> String {
         }
     }
     flush(&mut run, &mut out);
+    let out = hide_ipv6(&out);
     // `C:\Users\Name\...` and `C:/Users/Name/...` keep everything but the name.
     let lower = out.to_ascii_lowercase();
     let mut result = String::with_capacity(out.len());
@@ -552,6 +609,19 @@ mod tests {
             assert!(text.contains(part), "missing {part}");
         }
         assert_eq!(c.begin(), None, "a reported panic is not reported again as an unexpected exit");
+    }
+
+    #[test]
+    fn ipv6_addresses_are_hidden_and_ordinary_words_are_not() {
+        assert_eq!(scrub("link-local fe80::1%12 failed"), "link-local x:x:x:x failed");
+        assert_eq!(scrub("at 2001:db8::1, then ::1."), "at x:x:x:x, then x:x:x:x.");
+        assert_eq!(scrub("[fe80::a:b:c:d]:47600"), "[x:x:x:x]:47600");
+        assert_eq!(scrub("2001:0db8:85a3:0000:0000:8a2e:0370:7334"), "x:x:x:x");
+        assert_eq!(scrub("2001:db8::1: refused"), "x:x:x:x: refused");
+        // Not addresses.
+        assert_eq!(scrub("2026-11-17 12:04:09.123 UTC power::rest done"), "2026-11-17 12:04:09.123 UTC power::rest done");
+        assert_eq!(scrub("carla_core::applog::Log and :: and a:b"), "carla_core::applog::Log and :: and a:b");
+        assert_eq!(scrub("mac aa:bb:cc:dd:ee:ff"), "mac aa:bb:cc:dd:ee:ff");
     }
 
     #[test]

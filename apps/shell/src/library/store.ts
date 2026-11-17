@@ -7,7 +7,7 @@ import { listen } from "@tauri-apps/api/event";
 import { games as sampleGames, hosts as sampleHosts } from "../data/sample";
 import { sampleArt, sampleDetails, sampleMatches } from "../data/sample";
 import type { ArtChoice, ArtSearch, CheckFix, CheckReport, Console, ConsoleHint, Details, Discovered, Download, Inspected, Storage, FoundHost, Game, Health, Host, HostPicture, HostState, Kind, Match, NewGame, SaveSync, Saves, Session, Waiting, Power, PowerView } from "../data/types";
-import { inTauri } from "../native";
+import { crash, inTauri } from "../native";
 import { when } from "../ui/parts";
 
 type State = { games: Game[]; hosts: Host[]; session: Session | null; scanning: boolean; downloads: Download[] };
@@ -200,14 +200,59 @@ async function reload() {
 
 let started = false;
 let askingHosts = false;
+// Whether the last look at the desktops timed out, so that it is written down once, not every time.
+let hostsTimedOut = false;
+
+/** Thrown by `within` when the answer did not come in time. */
+class TimedOut extends Error {}
+
+/**
+ * Wait for `promise` for at most `ms`. A native call that never answers must not leave a
+ * "busy" flag set for ever, so callers that keep one wrap their call in this.
+ */
+export function within<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new TimedOut("did not answer in time")), ms);
+  });
+  return Promise.race([promise, late]).finally(() => clearTimeout(timer));
+}
+
+// The Rust side gives up on slow desktops after 10 s; this is for when it does not answer at all.
+const HOSTS_TIMEOUT = 15_000;
+
+/** The desktops as they are shown when nothing has answered: unreachable, with what was known. */
+function unreachable(hosts: Host[]): Host[] {
+  const seen = when(Math.floor(Date.now() / 1000));
+  return hosts.map((h): Host => ({
+    ...h,
+    state: "unreachable",
+    route: null,
+    latencyMs: null,
+    playing: null,
+    problem: "did not answer in time",
+    lastSeen: h.lastSeen === "now" ? seen : h.lastSeen,
+  }));
+}
 
 /** Ask every desktop how it is. Their games can change with the answer. */
 async function refreshHosts() {
   if (!inTauri || askingHosts) return;
   askingHosts = true;
   try {
-    set({ hosts: (await invoke<HostView[]>("hosts_refresh")).map(fromHost) });
-    await reload();
+    try {
+      set({ hosts: (await within(invoke<HostView[]>("hosts_refresh"), HOSTS_TIMEOUT)).map(fromHost) });
+      hostsTimedOut = false;
+    } catch (e) {
+      if (e instanceof TimedOut) {
+        // The games stay; the desktops are not "connected" any more just because nothing said otherwise.
+        set({ hosts: unreachable(state.hosts) });
+        if (!hostsTimedOut) void crash.note(`looking at the desktops did not answer in ${HOSTS_TIMEOUT / 1000} s; they are shown as unreachable`);
+        hostsTimedOut = true;
+      }
+      throw e;
+    }
+    await within(reload(), HOSTS_TIMEOUT);
   } finally {
     askingHosts = false;
   }
@@ -534,7 +579,8 @@ export const library = {
     if (!inTauri) return;
     set({ scanning: true });
     try {
-      set({ games: (await invoke<GameView[]>("library_scan")).map(fromView) });
+      // So long a look through the disks is not coming back: the spinner must not stay for ever.
+      set({ games: (await within(invoke<GameView[]>("library_scan"), 120_000)).map(fromView) });
     } finally {
       set({ scanning: false });
     }

@@ -95,12 +95,12 @@ pub(crate) fn run(app: &AppHandle, library: &Library) {
 }
 
 /// Whether pictures are looked for by themselves.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn art_auto(library: State<'_, Library>) -> bool {
     enabled(&library)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn art_set_auto(app: AppHandle, admin: State<'_, Admin>, library: State<'_, Library>, on: bool) -> Result<bool, String> {
     admin.require()?;
     library.store().set_setting(SETTING, if on { None } else { Some(b"0") })?;
@@ -111,7 +111,7 @@ pub fn art_set_auto(app: AppHandle, admin: State<'_, Admin>, library: State<'_, 
 }
 
 /// Look every game without a picture up again now, whatever was found before.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn art_auto_again(app: AppHandle, admin: State<'_, Admin>, library: State<'_, Library>) -> Result<(), String> {
     admin.require()?;
     library.store().forget_art_tried()?;

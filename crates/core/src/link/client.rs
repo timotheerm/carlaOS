@@ -23,6 +23,47 @@ const SLOW: Duration = Duration::from_secs(40);
 const PROBE: Duration = Duration::from_secs(4);
 /// One save file is the largest thing a desktop sends.
 const LARGEST_REPLY: u64 = sync::LARGEST_FILE + 1024 * 1024;
+/// A cover picture is small; one that is slower than this is not worth the
+/// wait, and a desktop that is gone must not hold the rest up.
+const COVER: Duration = Duration::from_secs(6);
+
+/// What the observer is told about one request to a linked desktop. Never the
+/// address, the body or the headers: only what is needed to see that the
+/// connection is slow or broken.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Call<'a> {
+    pub method: &'a str,
+    /// The path without a query, and without the handle of a save folder.
+    pub path: &'a str,
+    /// The desktop's answer, when there was one.
+    pub status: Option<u16>,
+    /// What went wrong when there was no answer: "unreachable", "refused",
+    /// "untrusted" or "host".
+    pub error: Option<&'static str>,
+    pub elapsed_ms: u64,
+    /// "local" on the home network, "remote" through Tailscale.
+    pub route: &'static str,
+}
+
+static OBSERVER: std::sync::RwLock<Option<fn(&Call)>> = std::sync::RwLock::new(None);
+
+/// Have `observer` told about every request made to a linked desktop. For
+/// writing a log: it runs on the thread that asked, so it must be quick.
+pub fn set_observer(observer: fn(&Call)) {
+    *OBSERVER.write().unwrap_or_else(|e| e.into_inner()) = Some(observer);
+}
+
+/// A path as it may be written down: no query, and the key that names a save
+/// folder on the desktop (`/v1/saves/<key>/read`) left out.
+fn loggable(path: &str) -> String {
+    let path = path.split(['?', '#']).next().unwrap_or_default();
+    let mut parts: Vec<&str> = path.split('/').collect();
+    // ["", "v1", "saves", key, what]
+    if parts.len() >= 4 && parts[1] == "v1" && parts[2] == "saves" {
+        parts[3] = "*";
+    }
+    parts.join("/")
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Error {
@@ -197,7 +238,27 @@ impl Link {
     }
 
     /// As `ask`, but a genuine (signed) refusal comes back with its status.
+    /// Reported to the observer, if there is one, once it is over.
     fn ask_status(&self, method: &str, path: &str, body: &[u8], timeout: Duration) -> Result<(u16, Vec<u8>)> {
+        let asked = std::time::Instant::now();
+        let result = self.ask_once(method, path, body, timeout);
+        let observer = *OBSERVER.read().unwrap_or_else(|e| e.into_inner());
+        if let Some(observer) = observer {
+            let (status, error) = match &result {
+                Ok((status, _)) => (Some(*status), None),
+                Err(Error::Unreachable) => (None, Some("unreachable")),
+                Err(Error::Refused) => (None, Some("refused")),
+                Err(Error::Untrusted) => (None, Some("untrusted")),
+                Err(Error::Host(_)) => (None, Some("host")),
+            };
+            let path = loggable(path);
+            let route = if super::wake::is_tailscale(&self.address) { "remote" } else { "local" };
+            observer(&Call { method, path: &path, status, error, elapsed_ms: asked.elapsed().as_millis() as u64, route });
+        }
+        result
+    }
+
+    fn ask_once(&self, method: &str, path: &str, body: &[u8], timeout: Duration) -> Result<(u16, Vec<u8>)> {
         let (time, nonce) = (now(), random_hex(16));
         let agent = agent(timeout);
         let target = url(&self.address, self.port, path);
@@ -264,7 +325,7 @@ impl Link {
 
     /// The cover picture of one game, as the file's bytes.
     pub fn cover(&self, game_id: &str) -> Result<Vec<u8>> {
-        self.ask("GET", &format!("/v1/cover/{game_id}"), b"", SLOW)
+        self.ask("GET", &format!("/v1/cover/{game_id}"), b"", COVER)
     }
 
     /// What the player has earned in a game on that desktop. Empty when the
@@ -484,5 +545,117 @@ impl sync::Side for RemoteSaves<'_> {
 
     fn protect(&self) -> std::result::Result<(), String> {
         self.ask("protect", b"{}").map(|_| ())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::Mutex;
+
+    type Seen = (String, String, Option<u16>, Option<&'static str>, u64, &'static str);
+    static CALLS: Mutex<Vec<Seen>> = Mutex::new(Vec::new());
+
+    fn remember(call: &Call) {
+        CALLS.lock().unwrap_or_else(|e| e.into_inner()).push((call.method.to_string(), call.path.to_string(), call.status, call.error, call.elapsed_ms, call.route));
+    }
+
+    /// What the observer was told about requests to `path`. Tests share the
+    /// observer, so each uses a path of its own.
+    fn told(path: &str) -> Vec<Seen> {
+        CALLS.lock().unwrap_or_else(|e| e.into_inner()).iter().filter(|c| c.1 == path).cloned().collect()
+    }
+
+    fn link(port: u16) -> Link {
+        Link { address: "127.0.0.1".to_string(), port, device_id: "dev".to_string(), key: b"key of the test".to_vec() }
+    }
+
+    /// A desktop that answers one request: after `wait`, with `status`, signed
+    /// with the key unless `signed` is false.
+    fn desktop(wait: Duration, status: u16, signed: bool) -> u16 {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut got = Vec::new();
+            let mut byte = [0u8; 1];
+            while !got.ends_with(b"\r\n\r\n") {
+                if stream.read(&mut byte).unwrap_or(0) == 0 {
+                    return;
+                }
+                got.push(byte[0]);
+            }
+            let head = String::from_utf8_lossy(&got).to_lowercase();
+            let header = |name: &str| head.lines().find_map(|l| l.strip_prefix(name)).map(|v| v.trim().to_string()).unwrap_or_default();
+            let mut body = vec![0u8; header("content-length:").parse().unwrap_or(0)];
+            let _ = stream.read_exact(&mut body);
+            std::thread::sleep(wait);
+            let reply = b"{}";
+            let sign = if signed { format!("x-carla-sign: {}\r\n", sign::reply(b"key of the test", &header("x-carla-nonce:"), status, reply)) } else { String::new() };
+            let _ = write!(stream, "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\n{sign}connection: close\r\n\r\n", reply.len());
+            let _ = stream.write_all(reply);
+        });
+        port
+    }
+
+    #[test]
+    fn a_connection_that_is_refused_is_reported_as_unreachable_without_an_answer() {
+        set_observer(remember);
+        let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let asked = std::time::Instant::now();
+        assert!(matches!(link(port).achievements("observer-refused-connection"), Err(Error::Unreachable)));
+        let calls = told("/v1/achievements/observer-refused-connection");
+        assert_eq!(calls.len(), 1, "{calls:?}");
+        let (method, _, status, error, ms, route) = calls[0].clone();
+        assert_eq!((method.as_str(), status, error, route), ("GET", None, Some("unreachable"), "local"));
+        assert!(ms <= asked.elapsed().as_millis() as u64);
+    }
+
+    #[test]
+    fn a_signed_answer_is_reported_with_its_status_and_how_long_it_took() {
+        set_observer(remember);
+        let port = desktop(Duration::from_millis(120), 200, true);
+        link(port).reveal().expect("the desktop answered");
+        let calls = told("/v1/stream/reveal");
+        assert_eq!(calls.len(), 1, "{calls:?}");
+        let (method, _, status, error, ms, route) = calls[0].clone();
+        assert_eq!((method.as_str(), status, error, route), ("POST", Some(200), None, "local"));
+        assert!((100..3000).contains(&ms), "{ms} ms");
+    }
+
+    #[test]
+    fn a_desktop_that_does_not_know_this_ally_is_reported_as_refused() {
+        set_observer(remember);
+        let port = desktop(Duration::ZERO, 401, false);
+        assert!(matches!(link(port).pending_update("observer-refused-ally"), Err(Error::Refused)));
+        let calls = told("/v1/games/update/observer-refused-ally");
+        assert_eq!(calls.len(), 1, "{calls:?}");
+        assert_eq!((calls[0].2, calls[0].3), (None, Some("refused")));
+    }
+
+    #[test]
+    fn an_answer_that_is_not_signed_is_reported_as_untrusted() {
+        set_observer(remember);
+        let port = desktop(Duration::ZERO, 200, false);
+        assert!(matches!(link(port).downloads(), Err(Error::Untrusted)));
+        let calls = told("/v1/downloads");
+        assert!(calls.iter().any(|c| c.3 == Some("untrusted")), "{calls:?}");
+    }
+
+    #[test]
+    fn the_path_is_written_without_a_query_or_the_key_of_a_save_folder() {
+        assert_eq!(loggable("/v1/status"), "/v1/status");
+        assert_eq!(loggable("/v1/cover/steam:10?token=secret"), "/v1/cover/steam:10");
+        assert_eq!(loggable("/v1/saves/0123abcd/read"), "/v1/saves/*/read");
+        assert_eq!(loggable("/v1/games/update/epic:abc"), "/v1/games/update/epic:abc");
+    }
+
+    #[test]
+    fn what_the_observer_is_given_has_no_address_or_body() {
+        let call = Call { method: "POST", path: "/v1/stream/reveal", status: Some(200), error: None, elapsed_ms: 3, route: "remote" };
+        let text = format!("{call:?}");
+        assert!(!text.contains("100.") && !text.contains("127."), "{text}");
     }
 }

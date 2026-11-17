@@ -201,20 +201,20 @@ pub fn art_pick(app: AppHandle, admin: State<'_, Admin>, library: State<'_, Libr
     Ok(true)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn art_clear(admin: State<'_, Admin>, library: State<'_, Library>, game_id: String) -> Result<(), String> {
     admin.require()?;
     clear(&library, &game_id)
 }
 
 /// Whether a SteamGridDB key is kept. The key itself never leaves the Rust side.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn art_key(admin: State<'_, Admin>, library: State<'_, Library>) -> Result<bool, String> {
     admin.require()?;
     Ok(key(&library).is_some())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn art_set_key(admin: State<'_, Admin>, library: State<'_, Library>, key: String) -> Result<bool, String> {
     admin.require()?;
     set_key(&library, &key)
