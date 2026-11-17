@@ -57,6 +57,10 @@ if (Get-ItemProperty -Path $runKey -Name $runName -ErrorAction SilentlyContinue)
 
 # 2. Updating a desktop that was set up from somewhere else moves its start-up
 #    entry to the installed copy.
+# A clean Windows runner may not have this optional per-user key yet.
+if (-not (Test-Path $runKey)) {
+    New-Item -Path $runKey -Force | Out-Null
+}
 Set-ItemProperty -Path $runKey -Name $runName -Value 'conhost.exe --headless "C:\elsewhere\carla-companion.exe" serve'
 Invoke-Quietly (Join-Path $Dir "CarlaOS-Desktop-Host-$Version-setup.exe") '/S'
 $startup = (Get-ItemProperty -Path $runKey -Name $runName).$runName
