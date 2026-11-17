@@ -445,15 +445,6 @@ impl Files {
         self.read::<Code>("enrol.json").filter(|code| now < code.expires && code.tries < enrol::CODE_TRIES)
     }
 
-    /// Keep what an Ally was last heard saying, to show after a restart.
-    pub fn set_ally_heard<T: Serialize>(&self, device: &str, heard: &T) {
-        let _ = self.write(&format!("ally-heard-{device}.json"), heard);
-    }
-
-    pub fn ally_heard<T: DeserializeOwned>(&self, device: &str) -> Option<T> {
-        self.read(&format!("ally-heard-{device}.json"))
-    }
-
     pub fn clear_code(&self) {
         self.remove("enrol.json");
         self.remove("enrol-ask.json");

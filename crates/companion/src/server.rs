@@ -137,7 +137,7 @@ pub struct Server {
     /// Lets the dashboard's page, and nothing else, ask for more than the page.
     token: String,
     /// What each linked Ally was last heard saying.
-    heard: Mutex<HashMap<String, dashboard::Heard>>,
+    pings: Mutex<HashMap<String, dashboard::Pings>>,
     asked: Mutex<Option<dashboard::Asked>>,
     clients: Mutex<Option<(Instant, Option<Vec<String>>)>>,
 }
@@ -228,7 +228,7 @@ impl Server {
             newer: || Ok(None),
             newest: Mutex::default(),
             token: link::random_hex(16),
-            heard: Mutex::default(),
+            pings: Mutex::default(),
             asked: Mutex::default(),
             clients: Mutex::default(),
         }
@@ -285,6 +285,7 @@ impl Server {
 
     fn pulse(&self, device: &str, bytes: &[u8], now: i64) -> Answer {
         let pulse: Pulse = body(bytes)?;
+        self.pulsed(device, &pulse);
         self.files.set_ally_pulse(device, pulse, now).map_err(|e| (500, e))?;
         json(&serde_json::json!({ "received": true }))
     }
@@ -775,11 +776,10 @@ impl Server {
             ("POST", "/v1/stream/prepare") => {
                 let answer = self.prepare(req.body, now);
                 if let (Ok(_), Ok(prepare)) = (&answer, body::<Prepare>(req.body)) {
-                    self.asked_for(req.device.unwrap_or_default(), &prepare, now);
+                    self.asked_for(&prepare, now);
                 }
                 answer
             }
-            ("POST", "/v1/report") => self.report(req.device.unwrap_or_default(), req.body, now),
             ("POST", "/v1/stream/pair") => self.pair(req.body, req.from),
             ("POST", "/v1/power/sleep") => self.sleep(now),
             ("POST", "/v1/stream/end") => self.end(now),
@@ -836,10 +836,7 @@ impl Server {
         let (answer, key) = match open {
             Some(answer) => (answer, None),
             None => match self.trusted(req, now) {
-                Ok(key) => {
-                    self.heard_from(req.device.unwrap_or_default(), req.from, now);
-                    (self.signed(req, now), Some(key))
-                }
+                Ok(key) => (self.signed(req, now), Some(key)),
                 Err(Some(key)) => (refuse(409, "The Ally and the desktop disagree about the time. Check the clock on both."), Some(key)),
                 Err(None) => (refuse(401, "This device is not linked to the desktop."), None),
             },
