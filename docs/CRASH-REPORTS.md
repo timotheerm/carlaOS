@@ -19,6 +19,12 @@ are kept.
   shutting down, a power cut): found at the next start because the marker saying
   "running" was never removed. These wait in Settings without a message, because a
   normal Windows shutdown with CarlaOS open looks the same.
+- **A frozen window**: the interface says it is alive every 3 seconds. When a window the
+  player can see, with no game or stream running, stays silent for 30 seconds, a
+  "Stopped responding" report is written once (and "responding again" goes into the
+  notes if it recovers). Hidden or minimised windows (the page reports when it is hidden), running
+  games and streams, and the time around the Ally sleeping are not judged, because
+  a hidden page answers rarely.
 - **Recent activity** (`breadcrumbs.log`, kept to about 100 KB): a session starting,
   running and ending, a stream cut off and picked up again, a desktop stopping or
   starting to answer, and errors the interface caught. Only plain words and ids: no

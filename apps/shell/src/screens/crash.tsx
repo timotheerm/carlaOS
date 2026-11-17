@@ -4,7 +4,7 @@ import { message } from "../library/store";
 import { crash, type ReportInfo } from "../native";
 import { focusFirst } from "../nav/focus";
 
-const KIND = { panic: "Crashed", unexpected: "Closed unexpectedly" } as const;
+const KIND = { panic: "Crashed", unexpected: "Closed unexpectedly", hang: "Stopped responding" } as const;
 
 function when(at: number): string {
   return new Date(at * 1000).toLocaleString([], { dateStyle: "medium", timeStyle: "short" });

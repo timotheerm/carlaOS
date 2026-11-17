@@ -21,6 +21,7 @@
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -45,7 +46,7 @@ static WRITING: Mutex<()> = Mutex::new(());
 pub struct ReportInfo {
     /// The file name, which is also what `read` takes.
     pub name: String,
-    /// "panic" or "unexpected".
+    /// "panic", "unexpected" or "hang".
     pub kind: String,
     pub at: i64,
     pub size: u64,
@@ -246,6 +247,13 @@ impl Crash {
         name
     }
 
+    /// The interface stopped answering while the program kept running.
+    pub fn write_hang(&self, silent_for: i64, state: &str) -> Option<String> {
+        let summary = format!("The interface stopped responding for {silent_for} seconds.");
+        let detail = "The program was still running but its window did not answer. Whether it came back is in the notes below (\"responding again\").";
+        self.write_report("hang", &summary, detail, state)
+    }
+
     /// Report panics from now on. `state` says in a line or two what the
     /// client was doing; it runs inside the panic hook, so it must not wait
     /// for a lock (use `try_lock`) and must not allocate much.
@@ -305,11 +313,70 @@ impl Crash {
     }
 }
 
+/// What a watchdog concludes from the interface's heartbeat.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Beat {
+    Fine,
+    /// No heartbeat yet (the interface is still loading).
+    NotStarted,
+    /// Silent for this many seconds: reported once per freeze.
+    Froze(i64),
+    StillFrozen,
+}
+
+/// The interface says it is alive every few seconds; a watchdog asks here
+/// whether it has gone quiet for too long.
+pub struct Heartbeat {
+    last: AtomicI64,
+    frozen: AtomicBool,
+}
+
+impl Heartbeat {
+    pub const fn new() -> Self {
+        Heartbeat { last: AtomicI64::new(0), frozen: AtomicBool::new(false) }
+    }
+
+    /// The interface answered. True when it had been judged frozen before.
+    pub fn beat(&self, now: i64) -> bool {
+        self.last.store(now, Ordering::SeqCst);
+        self.frozen.swap(false, Ordering::SeqCst)
+    }
+
+    /// Count silence from now on: after the Ally slept, or when the window
+    /// comes back from being hidden (a hidden page answers rarely).
+    pub fn reset(&self, now: i64) {
+        if self.last.load(Ordering::SeqCst) != 0 {
+            self.last.store(now, Ordering::SeqCst);
+        }
+        self.frozen.store(false, Ordering::SeqCst);
+    }
+
+    pub fn check(&self, now: i64, limit: i64) -> Beat {
+        let last = self.last.load(Ordering::SeqCst);
+        if last == 0 {
+            return Beat::NotStarted;
+        }
+        let silent = now - last;
+        if silent <= limit {
+            return Beat::Fine;
+        }
+        if self.frozen.swap(true, Ordering::SeqCst) {
+            return Beat::StillFrozen;
+        }
+        // A beat may have landed since `last` was read: look again before judging.
+        if now - self.last.load(Ordering::SeqCst) <= limit {
+            self.frozen.store(false, Ordering::SeqCst);
+            return Beat::Fine;
+        }
+        Beat::Froze(silent)
+    }
+}
+
 /// `panic-1794913547.txt` or `unexpected-1794913547-2.txt`.
 fn parse_name(name: &str) -> Option<(String, i64)> {
     let stem = name.strip_suffix(".txt")?;
     let (kind, rest) = stem.split_once('-')?;
-    if kind != "panic" && kind != "unexpected" {
+    if !matches!(kind, "panic" | "unexpected" | "hang") {
         return None;
     }
     let at = rest.split('-').next()?;
@@ -390,6 +457,45 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("carla crash test {} {}", std::process::id(), N.fetch_add(1, Ordering::SeqCst)));
         let _ = fs::remove_dir_all(&dir);
         Crash::new(dir, "9.9.9")
+    }
+
+    #[test]
+    fn silence_is_reported_once_and_then_recovery_is_noticed() {
+        let h = Heartbeat::new();
+        assert_eq!(h.check(100, 25), Beat::NotStarted, "no heartbeat yet is not a freeze");
+        assert!(!h.beat(100));
+        assert_eq!(h.check(120, 25), Beat::Fine);
+        assert_eq!(h.check(126, 25), Beat::Froze(26));
+        assert_eq!(h.check(140, 25), Beat::StillFrozen, "one report per freeze");
+        assert!(h.beat(141), "the interface answered again after being judged frozen");
+        assert_eq!(h.check(150, 25), Beat::Fine);
+        assert_eq!(h.check(170, 25), Beat::Froze(29), "a second freeze is a new report");
+    }
+
+    #[test]
+    fn counting_silence_can_start_over() {
+        let h = Heartbeat::new();
+        h.reset(500);
+        assert_eq!(h.check(900, 25), Beat::NotStarted, "reset does not start a heartbeat that never began");
+        h.beat(100);
+        h.reset(1000);
+        assert_eq!(h.check(1020, 25), Beat::Fine, "after a sleep the silence counts from the wake-up");
+    }
+
+    #[test]
+    fn a_freeze_is_a_report_of_its_own_kind() {
+        let c = crash();
+        c.note("session ended: Rocket League");
+        let name = c.write_hang(31, "no game or stream was running").unwrap();
+        assert!(name.starts_with("hang-"));
+        let text = c.read(&name).unwrap();
+        for part in ["kind: hang", "31 seconds", "no game or stream was running", "session ended: Rocket League"] {
+            assert!(text.contains(part), "missing {part}");
+        }
+        assert_eq!(c.reports()[0].kind, "hang");
+        let second = c.write_hang(40, "").unwrap();
+        assert_ne!(second, name, "two freezes in one second do not overwrite each other");
+        assert_eq!(c.reports().len(), 2);
     }
 
     #[test]

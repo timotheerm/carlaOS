@@ -7,9 +7,12 @@
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
-use carla_core::crash::{Crash, ReportInfo};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
+
+use carla_core::crash::{Beat, Crash, Heartbeat, ReportInfo};
 use carla_core::{AppInfo, Role};
-use tauri::State;
+use tauri::{AppHandle, Manager, State};
 
 use crate::library::Library;
 
@@ -17,6 +20,57 @@ static CRASH: OnceLock<Crash> = OnceLock::new();
 static LIBRARY: OnceLock<Library> = OnceLock::new();
 
 pub struct Reports(pub Crash);
+
+static HEART: Heartbeat = Heartbeat::new();
+/// How often the watchdog looks, and how long the interface may stay silent.
+const WATCH_EVERY: Duration = Duration::from_secs(5);
+const SILENT_FOR: i64 = 30;
+/// What the page said about itself with its last beat: a hidden page (covered,
+/// on another desktop, screen off) has its timers slowed by the browser engine,
+/// so it is not judged. A frozen page cannot say anything, so it still is.
+static PAGE_HIDDEN: AtomicBool = AtomicBool::new(false);
+
+/// The interface says it is alive (every few seconds).
+#[tauri::command]
+pub fn crash_alive(hidden: bool) {
+    PAGE_HIDDEN.store(hidden, Ordering::SeqCst);
+    if HEART.beat(crate::library::now()) {
+        note("interface responding again");
+    }
+}
+
+/// Report an interface that stops answering while the program runs on.
+/// Only a window the player can see is judged (not minimised, and the page
+/// itself says it is not hidden), and only when no game or stream is running.
+/// A sleep in between, or the window coming back, starts the count again.
+pub fn watch_ui(app: AppHandle, library: Library) {
+    std::thread::spawn(move || {
+        let mut last_tick = crate::library::now();
+        let mut judging = false;
+        loop {
+            std::thread::sleep(WATCH_EVERY);
+            let now = crate::library::now();
+            let slept = now - last_tick > 3 * WATCH_EVERY.as_secs() as i64;
+            last_tick = now;
+            let visible = app.get_webview_window("main").is_some_and(|w| w.is_visible().unwrap_or(false) && !w.is_minimized().unwrap_or(true));
+            let idle = library.0.active.try_lock().is_ok_and(|a| a.is_none());
+            let judge = visible && idle && !PAGE_HIDDEN.load(Ordering::SeqCst);
+            if slept || (judge && !judging) {
+                HEART.reset(now);
+            }
+            judging = judge;
+            if !judge {
+                continue;
+            }
+            if let Beat::Froze(secs) = HEART.check(now, SILENT_FOR) {
+                note(&format!("interface not responding for {secs} seconds"));
+                if let Some(crash) = CRASH.get() {
+                    crash.write_hang(secs, &state());
+                }
+            }
+        }
+    });
+}
 
 /// Open the report folder. Worked out by hand, like the boot record, because
 /// this runs before the interface exists.

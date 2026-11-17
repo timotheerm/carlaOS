@@ -76,7 +76,10 @@ export function App() {
     void crash.reports().then(
       // Only a real crash is announced. A report for a run that "did not end"
         // also follows Windows shutting down or a power cut, so it waits in Settings.
-        (r) => r.some((x) => x.new && x.kind === "panic") && setToast((t) => t ?? "CarlaOS crashed last time. A report is in Settings, Crash reports."),
+        (r) => {
+          const fresh = r.find((x) => x.new && (x.kind === "panic" || x.kind === "hang"));
+          if (fresh) setToast((t) => t ?? `CarlaOS ${fresh.kind === "hang" ? "stopped responding" : "crashed"} last time. A report is in Settings, Crash reports.`);
+        },
       () => undefined,
     );
     if (main.current && !main.current.contains(document.activeElement)) focusFirst(main.current);
