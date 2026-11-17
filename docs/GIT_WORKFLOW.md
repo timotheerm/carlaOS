@@ -105,3 +105,19 @@ Never create two PRs against `main` when one silently relies on the other's unme
 ## Current repository release behaviour
 
 Read `docs/RELEASES.md`. Currently, merges to `main` are the release trigger. Do not manually tag or publish versions as part of ordinary feature work.
+
+## One-time GitHub repository settings
+
+Check these settings manually in **Repository → Settings → Rules → Rulesets** (or **Branches**, depending on the GitHub UI). The GitHub integration used for this setup could not read branch-protection settings, so their current state is not confirmed.
+
+Recommended protection for `main`:
+
+- Require pull requests before merging.
+- Require the Build workflow's **Tests and UI build** and **Windows installers** checks to pass. Select the exact check names GitHub reports after a successful run.
+- Require all review conversations to be resolved.
+- Block force pushes and branch deletion.
+- Keep squash merging enabled; disable merge commits and rebase merging if you want one consistent history.
+- Enable automatic deletion of merged topic branches.
+- Do not require one approving review if this repository is operated by a single owner; that can make your own PRs impossible to merge. The owner should still review and explicitly approve each PR.
+
+Do not turn on automatic merging for all PRs. A green workflow does not replace review of feature behaviour, privacy, dependency order or physical Ally testing.

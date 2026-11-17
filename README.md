@@ -44,15 +44,15 @@ one by hand: [docs/RELEASES.md](docs/RELEASES.md).
 Every pull request is built and tested in GitHub Actions, installers included
 (the `carlaos-installers` artifact of its **Build** run).
 
-To work on it locally on Windows:
+To work on it locally on Windows, follow [the full Windows development setup](docs/LOCAL_SETUP_WINDOWS.md). The short development loop is:
 
 ```
 cd apps/shell
-npm install
+npm ci
 npx tauri dev
 ```
 
-`cargo test` at the repository root covers the portable crates.
+`cargo test --locked` at the repository root covers the portable crates. Project memory and AI-assisted workflow instructions are in [knowledge/START-HERE.md](knowledge/START-HERE.md) and `CLAUDE.md`.
 
 ## Boundaries
 

@@ -3,6 +3,14 @@
 ## Project
 CarlaOS is a pink, console-style gaming shell for the ASUS ROG Xbox Ally (RC73YA) on Windows 11. Read `README.md` and the relevant documents in `docs/` before changing architecture or release behaviour.
 
+## Project memory and AI workflow
+- Before starting, read `knowledge/START-HERE.md`, the dated `knowledge/operations/current-state.md`, and the relevant feature notes.
+- Treat code, tests, merged history and CI as truth. Open PRs are proposals; mark them pending in notes.
+- Keep durable, provider-neutral project memory in `knowledge/` as Markdown. Keep detailed product specifications in `docs/` and Claude-specific agents/skills in `.claude/`.
+- Record important architecture or product trade-offs as ADRs in `knowledge/decisions/`. Update memory only after behaviour or decisions are verified; do not create a diary.
+- Use `.claude/agents/` for bounded specialist work and `.claude/skills/` for repeatable procedures. Read-only specialists should not implement fixes.
+- Claude Code is the primary coding coordinator. A second model (Astra/ChatGPT) may independently review a pinned diff but must not concurrently edit the same branch. See `knowledge/operations/second-model-review.md`.
+
 ## Non-negotiable Git rules
 - Treat `main` as the stable integration and release branch. Never commit directly to `main`.
 - Work from a local clone for normal development. Fetch before starting: `git fetch origin --prune`.
