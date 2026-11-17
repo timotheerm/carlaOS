@@ -7,9 +7,6 @@ import { watchCommands } from "./inflight";
 import "./tokens.css";
 import "./app.css";
 
-// Before anything calls the native side: a command the page waits on for long is written down.
-watchCommands();
-
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     {/* The same program serves two windows: the console, and the menu over a game. */}
@@ -35,3 +32,7 @@ const beat = () => void crash.alive(document.hidden);
 beat();
 window.setInterval(beat, 3000);
 document.addEventListener("visibilitychange", beat);
+
+// Once the first screen is up (never before: a diagnostic must not be able to stop the page from
+// starting), a command the page waits on for long is written down.
+window.setTimeout(() => watchCommands(), 2000);
