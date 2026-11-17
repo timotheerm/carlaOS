@@ -75,6 +75,36 @@ carla-companion saves restore KEY COPY
   else. Saves travel signed but not encrypted on the home network; away from
   home they go through Tailscale, which encrypts them.
 
+## Finding where a game keeps its saves
+
+If you do not know the folder, the desktop can suggest one. It only suggests;
+you confirm with `saves set`, and nothing is changed or deleted.
+
+```
+carla-companion saves guess "Name of the game"
+carla-companion saves find "Name of the game"
+```
+
+- `guess` looks for folders named like the game under Saved Games, Documents
+  (and My Games), AppData (Local, LocalLow, Roaming), ProgramData and the
+  game's own install folder. Nothing needs to be played.
+- `find` takes a snapshot of those places, asks you to start the game, play
+  briefly, save and quit, then press Enter. It takes a second snapshot and
+  ranks the folders where files appeared or changed (save-like names, small
+  files and plausible places rank higher; logs, caches and settings lower).
+
+Each suggestion comes with the exact `saves set` line to run. The search is
+bounded (depth, number of files, time), skips noisy folders (Microsoft,
+Packages, Temp, caches, crash dumps, browser profiles, Steam, Epic, Unity,
+NVIDIA, AMD, Discord) and never follows links. `guess` looks at most three
+folders deep. Skipping Steam also hides Steam's `userdata` folder (Steam Cloud
+saves), and so does skipping Epic for Epic's own folders. Each place has its
+own budget: when a walk is cut short the command says so, and that place is
+left out of the comparison, so the answer may be incomplete.
+
+It cannot find saves of a game that writes only when it quits and was left
+running, that keeps them in the cloud, or that keeps them in the registry.
+
 ## Not covered yet
 
 - Emulator memory cards that an emulator shares between its games are kept in
