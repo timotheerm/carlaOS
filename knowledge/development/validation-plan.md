@@ -74,6 +74,18 @@ First check the AMD driver on HOME PC: Sunshine reports crashes on RX 9070 XT wi
 - [ ] One emulator launch ([EMULATORS](../../docs/EMULATORS.md)); no firmware/keys are ever fetched.
 - [ ] One cloud tile ([CLOUD](../../docs/CLOUD.md)); desktop dashboard page ([DASHBOARD](../../docs/DASHBOARD.md)).
 
+## New since v0.22
+
+Added by merged PRs #37–#46 (beta builds, no hardware run yet). Nothing here is verified.
+
+- [ ] Install Desktop Host >= 0.29 and retry a streamed game; `launcher.log` shows no `handle is invalid` ([KI-010](known-issues.md), PR #37).
+- [ ] Crash and freeze reports appear in Settings, and copy works ([CRASH-REPORTS](../../docs/CRASH-REPORTS.md)).
+- [ ] `carla-companion find` and dashboard "Add a game" on a real game library, plus one pre-launcher game added with `--watch` ([DESKTOP-GAMES](../../docs/DESKTOP-GAMES.md)).
+- [ ] `saves guess` / `saves find` with a real game ([SAVE-SYNC](../../docs/SAVE-SYNC.md)).
+- [ ] `describe --lookup` on a hand-added game.
+- [ ] `saves suggestions` / `saves accept` on a second desktop.
+- [ ] `saves clean KEY on --yes` end to end with a real game, then restore from `saves copies`.
+
 ## Recording results
 
 Tell Claude the outcome per line (pass/fail, device, date, notes). It will update
