@@ -415,18 +415,27 @@ const PULSE_EVERY: Duration = Duration::from_secs(45);
 /// that is on, lightly, and tell each how this Ally is. While a game runs
 /// nothing is measured, so a stream never shares the connection with it.
 pub fn watch(library: Library) {
-    std::thread::spawn(move || loop {
-        std::thread::sleep(PULSE_EVERY);
-        let playing = crate::library::locked(&library.0.active).is_some();
-        for host in library.store().hosts().unwrap_or_default() {
-            // A desktop that is off is left alone: asking costs seconds.
-            let Ok((link, status, _)) = reach(&host) else { continue };
-            if playing {
-                let _ = link.pulse(&pulse_of(&library, &link.address, None));
-            } else {
-                let host = seen(&library, &host, &link, &status);
-                if measure_host(&library, &host, &link, &status, Depth::Quick).is_none() {
+    std::thread::spawn(move || {
+        // Whether each desktop answered last time, to write down a change only.
+        let mut answered: std::collections::HashMap<String, bool> = std::collections::HashMap::new();
+        loop {
+            std::thread::sleep(PULSE_EVERY);
+            let playing = crate::library::locked(&library.0.active).is_some();
+            for host in library.store().hosts().unwrap_or_default() {
+                let reached = reach(&host);
+                let up = reached.is_ok();
+                if answered.insert(host.id.clone(), up).is_some_and(|before| before != up) {
+                    crate::crash::note(&format!("desktop {} {} (a game or stream is running: {playing})", host.id, if up { "answers again" } else { "stopped answering" }));
+                }
+                // A desktop that is off is left alone: asking costs seconds.
+                let Ok((link, status, _)) = reached else { continue };
+                if playing {
                     let _ = link.pulse(&pulse_of(&library, &link.address, None));
+                } else {
+                    let host = seen(&library, &host, &link, &status);
+                    if measure_host(&library, &host, &link, &status, Depth::Quick).is_none() {
+                        let _ = link.pulse(&pulse_of(&library, &link.address, None));
+                    }
                 }
             }
         }
@@ -474,6 +483,7 @@ fn ensure_paired(exe: &std::path::Path, link: &Link) -> Result<(), String> {
 
 /// Forget that a desktop was paired, after a stream from it ended at once.
 pub(crate) fn stream_failed(library: &Library, place: &str) {
+    crate::crash::note(&format!("stream from {place} ended before it started: pairing will be asked again"));
     if let Some(host) = library.store().hosts().ok().and_then(|hosts| hosts.into_iter().find(|h| h.id == place)) {
         let mut cache = paired_cache();
         if let Some(set) = cache.as_mut() {

@@ -39,3 +39,32 @@ export const boot = {
     return invoke<boolean>("boot_set", { enabled });
   },
 };
+
+export type ReportInfo = { name: string; kind: "panic" | "unexpected"; at: number; size: number; new: boolean };
+
+// Crash reports kept by the Rust side. The browser preview has none.
+export const crash = {
+  async reports(): Promise<ReportInfo[]> {
+    if (!inTauri) return [];
+    return invoke<ReportInfo[]>("crash_reports");
+  },
+  async text(name: string): Promise<string> {
+    if (!inTauri) return "";
+    return invoke<string>("crash_report_text", { name });
+  },
+  /** The reports have been announced; they stop counting as new. */
+  async seen(): Promise<void> {
+    if (inTauri) await invoke("crash_seen");
+  },
+  /** One line for the trail. Never throws. */
+  async note(text: string): Promise<void> {
+    try {
+      if (inTauri) await invoke("crash_note", { text });
+    } catch {
+      /* nothing more can be done */
+    }
+  },
+  async openFolder(): Promise<void> {
+    if (inTauri) await invoke("crash_open_folder");
+  },
+};

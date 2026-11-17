@@ -261,6 +261,7 @@ export function Settings({
   onDesktops,
   onUpdates,
   onStartup,
+  onCrash,
   onStorage,
   onDownloads,
   downloading,
@@ -279,6 +280,7 @@ export function Settings({
   onDesktops: () => void;
   onUpdates: () => void;
   onStartup: () => void;
+  onCrash: () => void;
   onStorage: () => void;
   onDownloads: () => void;
   downloading: number;
@@ -343,6 +345,10 @@ export function Settings({
       <button className="setting" data-focus data-fid="set:startup" onClick={onStartup}>
         <span>Starting up</span>
         <span className="setting__value">Open CarlaOS when the Ally turns on · Administrator only</span>
+      </button>
+      <button className="setting" data-focus data-fid="set:crash" onClick={onCrash}>
+        <span>Crash reports</span>
+        <span className="setting__value">Send a copy to whoever looks after CarlaOS</span>
       </button>
       <button className="setting" data-focus data-fid="set:exit" onClick={onExit}>
         <span>Exit to Windows</span>

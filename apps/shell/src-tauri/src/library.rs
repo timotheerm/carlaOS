@@ -355,6 +355,7 @@ fn reconnect(app: &AppHandle, library: &Library, running: &mut Running, game_id:
             let _ = app.emit(SESSION_EVENT, Some(current.view.clone()));
         }
     };
+    crate::crash::note(&format!("stream cut off, reconnecting: {game_id} at {place}"));
     phase("reconnecting");
     let stopped = || locked(&library.0.active).as_ref().is_none_or(|a| a.stop);
     let until = Instant::now() + RECONNECT_FOR;
@@ -367,11 +368,13 @@ fn reconnect(app: &AppHandle, library: &Library, running: &mut Running, game_id:
         match crate::hosts::start_stream(library, game_id, place, &|| {}, &stopped, true) {
             Ok((moonlight, woke)) => {
                 *running = Running::Stream { moonlight, since: Instant::now(), woke: woke || woke_before };
+                crate::crash::note(&format!("stream picked up again: {game_id}"));
                 phase("starting");
                 return true;
             }
             Err(_) if Instant::now() < until => std::thread::sleep(Duration::from_secs(4)),
             Err(e) => {
+                crate::crash::note(&format!("stream could not be picked up again: {game_id}"));
                 let _ = app.emit(NOTICE_EVENT, format!("The stream could not be picked up again. {e}"));
                 return false;
             }
@@ -386,6 +389,7 @@ fn follow(app: AppHandle, library: &Library, mut running: Running, install: Inst
     let game_id = install.game_id.clone();
     let cloud = place == CLOUD;
     let library = library.clone();
+    crate::crash::note(&format!("session started: {game_id} at {place}"));
     std::thread::spawn(move || {
         let mut never_started = false;
         let mut napper = carla_core::nap::Napper::new(now_ms());
@@ -435,6 +439,7 @@ fn follow(app: AppHandle, library: &Library, mut running: Running, install: Inst
             }
             match phase {
                 Phase::Running if current.view.phase != "running" => {
+                    crate::crash::note(&format!("session running: {game_id} at {place}"));
                     played = true;
                     current.view.phase = "running";
                     current.view.note = None;
@@ -453,6 +458,7 @@ fn follow(app: AppHandle, library: &Library, mut running: Running, install: Inst
         if never_started && place != LOCAL {
             crate::hosts::stream_failed(&library, &place);
         }
+        crate::crash::note(&format!("session ended: {game_id} at {place}, played {played}, never started {never_started}"));
         // A game that never appeared was not played.
         let ended = if played { now() } else { started };
         let _ = library.store().end_session(session, ended);

@@ -177,7 +177,11 @@ fn serve(app: &AppHandle, library: &Library, host: &HostRow, link: &Link) {
         });
         match after {
             After::Nothing => {}
-            After::Restart => app.restart(),
+            After::Restart => {
+                // `restart` does not end the program through the usual exit.
+                crate::crash::ended();
+                app.restart()
+            }
             After::Update(found) => {
                 let installed = update::download(&found, &update::download_dir(), &|_| {}).and_then(|installer| update::install(Part::Ally, &installer));
                 if installed.is_ok() {
