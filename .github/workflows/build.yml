@@ -86,6 +86,7 @@ jobs:
         working-directory: apps/shell
       - run: npm run build
         working-directory: apps/shell
+      - run: node scripts/test-inflight.mjs
 
   windows:
     name: Windows installers

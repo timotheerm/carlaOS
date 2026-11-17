@@ -27,6 +27,7 @@ are kept.
   around the Ally sleeping are not judged, because a hidden page answers rarely.
   The end of a session writes each of its steps into the notes before it runs, so a step
   that never returns shows up as the last "session end:" line.
+- **A command the page waits on**: every call from the interface to the native side is timed. One still running after 8 seconds is written into the notes (`command hosts_refresh still running after 8 s`) and again when it ends, so a freeze shows which command it was stuck on. Only the command's name and the time are written. Commands that wait for a person or are long by design are left out.
 - **Recent activity** (`breadcrumbs.log`, kept to about 100 KB): a session starting,
   running and ending, a stream cut off and picked up again, a desktop stopping or
   starting to answer, and errors the interface caught. Only plain words and ids: no
