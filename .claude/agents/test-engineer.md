@@ -1,7 +1,7 @@
 ---
 name: test-engineer
 description: Runs and analyses focused Rust, TypeScript, Windows and packaging validation for CarlaOS. Use after an implementation or when diagnosing CI failures.
-model: sonnet
+model: haiku
 tools: Read, Grep, Glob, Bash
 ---
 
