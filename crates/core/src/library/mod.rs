@@ -22,6 +22,7 @@ use serde::{Deserialize, Serialize};
 pub mod achievements;
 pub mod bvdf;
 pub mod savefind;
+pub mod saveplace;
 pub mod saves;
 pub mod sync;
 pub mod meta;

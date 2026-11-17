@@ -76,8 +76,18 @@ fn with(library: &Library, game_id: &str, title: &str, folder: &PathBuf, host: &
         let _ = library.store().set_synced(game_id, &row);
     };
     let failed = |text: String| Synced { host_id: host.id.clone(), digest: None, at: now(), outcome: "problem".into(), both_changed: false, files: 0, problem: Some(text) };
-    let remote = match link.saves(game_id, title) {
-        Ok(Some(remote)) => remote,
+    // Where the saves are known to be, so a desktop with no folder yet can
+    // suggest its own. Only a hint: it syncs nothing by itself.
+    let known_place = library.store().save_place(game_id).ok().flatten();
+    let remote = match link.saves_placed(game_id, title, known_place.as_ref()) {
+        Ok(Some(remote)) => {
+            // Learnt only from a desktop that answered a signed request. The
+            // first desktop to say it is believed; only it may change it.
+            if let Some(place) = &remote.place {
+                let _ = library.store().learn_save_place(game_id, &host.id, place);
+            }
+            remote
+        }
         Ok(None) => {
             // Its administrator has not named a folder there, or took it back.
             let _ = library.store().clear_synced(game_id, &host.id);

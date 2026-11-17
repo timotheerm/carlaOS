@@ -105,6 +105,35 @@ left out of the comparison, so the answer may be incomplete.
 It cannot find saves of a game that writes only when it quits and was left
 running, that keeps them in the cloud, or that keeps them in the registry.
 
+## A second desktop for the same game
+
+A folder is still only ever confirmed at the machine it is on. But once one
+desktop has a save folder below a well-known place (Saved Games, Documents,
+Documents\My Games, AppData Local, LocalLow or Roaming, ProgramData, or the
+game's own install folder), it also records the folder as a **place**: the
+well-known root and the path below it, for example "Saved Games / Wolf". The
+Ally remembers the place the first time a signed answer carries one, and
+sends it to every desktop it asks about that game.
+
+A desktop that has no folder for the game turns the place into a folder of its
+own profile (the same Saved Games, a different user name). Names that could
+lead out of the root (`..`, drive letters, network paths, links) are refused.
+When that folder, or the folder it would be made in, exists, the desktop notes
+a **suggestion** in `save-suggestions.json` (at most 200, one per game) and
+answers "no folder", as before. Nothing is created, read or synced.
+
+```
+carla-companion saves suggestions     list them
+carla-companion saves accept KEY      use the folder (it must exist)
+carla-companion saves dismiss KEY     forget it
+```
+
+`accept` runs the same checks as `saves set`. After that the ordinary rules
+apply: the Ally's newer save goes to the desktop before a stream, and the
+desktop's new save comes back afterwards. A desktop that already has a folder
+for the game ignores any place it is sent.
+
+
 ## Not covered yet
 
 - Emulator memory cards that an emulator shares between its games are kept in

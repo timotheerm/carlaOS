@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use rusqlite::{params, Connection, OptionalExtension};
 
 use super::emulation::Console;
+use super::saveplace::SavePlace;
 use super::{Artless, GameView, HostRow, Install, Kind, ManualGame, Offered, Scanned, Streamed, Synced, Update, Waiting, LOCAL};
 use crate::link::quality::Setting;
 
@@ -148,6 +149,10 @@ impl Store {
             ("play_sessions", "asleep", "INTEGER NOT NULL DEFAULT 0"),
             // When CarlaOS last looked for pictures of a game by itself.
             ("games", "art_tried", "INTEGER NOT NULL DEFAULT 0"),
+            // Where a game's saves are, in words that hold on any machine (JSON).
+            ("games", "save_place", "TEXT"),
+            // The desktop that told us that place: only it may change it.
+            ("games", "save_place_host", "TEXT"),
             // "host" when the description came from a desktop, empty when the
             // administrator wrote it on the Ally: only the first is replaced.
             ("games", "description_from", "TEXT NOT NULL DEFAULT ''"),
@@ -725,6 +730,41 @@ impl Store {
         Ok(path.flatten().filter(|p| !p.is_empty()).map(PathBuf::from))
     }
 
+    /// Where a desktop said this game's saves are, for the desktops that have
+    /// no folder yet.
+    pub fn save_place(&self, game_id: &str) -> Result<Option<SavePlace>> {
+        let json: Option<Option<String>> =
+            self.db.query_row("SELECT save_place FROM games WHERE id = ?1", params![game_id], |r| r.get(0)).optional().map_err(err)?;
+        Ok(json.flatten().and_then(|j| serde_json::from_str(&j).ok()))
+    }
+
+    pub fn set_save_place(&mut self, game_id: &str, place: Option<&SavePlace>) -> Result<()> {
+        let json = place.map(|p| serde_json::to_string(p).expect("serialisable"));
+        self.db.execute("UPDATE games SET save_place = ?2, save_place_host = NULL WHERE id = ?1", params![game_id, json]).map_err(err)?;
+        Ok(())
+    }
+
+    /// A desktop says where the game's saves are. The first one to say it is
+    /// believed; after that only that same desktop can change it (a folder
+    /// that moved), so a second desktop cannot replace it. Says whether the
+    /// place was stored.
+    pub fn learn_save_place(&mut self, game_id: &str, host_id: &str, place: &SavePlace) -> Result<bool> {
+        let row: Option<(Option<String>, Option<String>)> =
+            self.db.query_row("SELECT save_place, save_place_host FROM games WHERE id = ?1", params![game_id], |r| Ok((r.get(0)?, r.get(1)?))).optional().map_err(err)?;
+        let Some((current, from)) = row else { return Ok(false) };
+        let current: Option<SavePlace> = current.and_then(|j| serde_json::from_str(&j).ok());
+        let allowed = match (&current, from.as_deref()) {
+            (None, _) => true,
+            (Some(have), Some(host)) => host == host_id && have != place,
+            (Some(_), None) => false,
+        };
+        if allowed {
+            let json = serde_json::to_string(place).expect("serialisable");
+            self.db.execute("UPDATE games SET save_place = ?2, save_place_host = ?3 WHERE id = ?1", params![game_id, json, host_id]).map_err(err)?;
+        }
+        Ok(allowed)
+    }
+
     pub fn set_save_path(&mut self, game_id: &str, path: Option<&Path>) -> Result<()> {
         self.db.execute("UPDATE games SET save_path = ?2 WHERE id = ?1", params![game_id, path.map(text)]).map_err(err)?;
         Ok(())
@@ -989,6 +1029,30 @@ mod tests {
         assert_eq!(now[0].added, 100);
         store.remove_host("home").unwrap();
         assert!(store.list_all().unwrap().iter().all(|g| !g.installable.contains(&"home".to_string())));
+    }
+
+    #[test]
+    fn a_games_save_place_is_kept_and_a_bad_one_reads_as_none() {
+        use super::super::saveplace::SaveRoot;
+        let mut store = Store::in_memory().unwrap();
+        store.sync(LOCAL, "steam", &[scanned("1", "Steam Game")], 100).unwrap();
+        assert_eq!(store.save_place("steam:1").unwrap(), None);
+        let place = SavePlace { root: SaveRoot::SavedGames, rel: "Wolf".into() };
+        store.set_save_place("steam:1", Some(&place)).unwrap();
+        assert_eq!(store.save_place("steam:1").unwrap(), Some(place.clone()));
+        store.db.execute("UPDATE games SET save_place = 'nonsense' WHERE id = 'steam:1'", []).unwrap();
+        assert_eq!(store.save_place("steam:1").unwrap(), None);
+        store.set_save_place("steam:1", None).unwrap();
+        // The first desktop to say it is believed; only it may change it.
+        let moved = SavePlace { root: SaveRoot::SavedGames, rel: "Moved".into() };
+        let poison = SavePlace { root: SaveRoot::SavedGames, rel: "Poison".into() };
+        assert!(store.learn_save_place("steam:1", "desk-a", &place).unwrap());
+        assert!(!store.learn_save_place("steam:1", "desk-b", &poison).unwrap());
+        assert!(store.learn_save_place("steam:1", "desk-a", &moved).unwrap());
+        assert_eq!(store.save_place("steam:1").unwrap(), Some(moved));
+        assert!(!store.learn_save_place("steam:1", "desk-b", &poison).unwrap());
+        assert!(!store.learn_save_place("nowhere", "desk-a", &place).unwrap());
+        assert_eq!(store.save_place("nowhere").unwrap(), None);
     }
 
     #[test]

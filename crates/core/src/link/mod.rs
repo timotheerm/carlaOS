@@ -224,6 +224,11 @@ pub struct SavesFind {
     /// A game added by hand has a different id on each machine, so the name
     /// is the fallback.
     pub title: String,
+    /// Where the game's saves are, in words that hold on any machine. Only a
+    /// hint for a desktop that has no folder yet: it never names a folder by
+    /// itself.
+    #[serde(default)]
+    pub place: Option<crate::library::saveplace::SavePlace>,
 }
 
 /// A desktop's save folder for a game, as it is now.
@@ -232,6 +237,9 @@ pub struct SavesFound {
     /// Names the folder in the requests that follow.
     pub key: String,
     pub manifest: crate::library::sync::Manifest,
+    /// The folder's place, when it is below a well-known one.
+    #[serde(default)]
+    pub place: Option<crate::library::saveplace::SavePlace>,
 }
 
 /// Names one file of a save folder. Also the first line of a file being
