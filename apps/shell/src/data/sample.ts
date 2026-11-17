@@ -39,8 +39,34 @@ const g = (
   installable: string[] = [],
 ): Game => ({ id, title, platform, kind, hue, places, installable, playtimeMinutes, lastPlayed, added, description, favourite: false, origin });
 
+// A drawn scene to stand in for a game's wide picture or cover in the browser
+// preview: sky, sun and hills in the game's colour. Invented, like the games.
+function scene(hue: number, tall: boolean, title?: string): string {
+  const [w, h] = tall ? [600, 900] : [1920, 1080];
+  const sun = { x: w * (0.62 + (hue % 30) / 100), y: h * (0.3 + (hue % 17) / 100), r: h * 0.13 };
+  const hill = (i: number) => {
+    const base = h * (0.52 + i * 0.13);
+    const a = h * (0.1 - i * 0.02);
+    let d = `M0 ${h} L0 ${base}`;
+    for (let x = 0; x <= w; x += w / 12) d += ` L${x.toFixed(0)} ${(base + Math.sin(x / (w / (5 + i * 2)) + hue + i * 2) * a - Math.cos(x / (w / 3) + i) * a * 0.6).toFixed(0)}`;
+    return `<path d="${d} L${w} ${h} Z" fill="hsl(${(hue + 320 + i * 12) % 360} ${44 - i * 4}% ${46 - i * 11}%)"/>`;
+  };
+  const stars = Array.from({ length: 26 }, (_, i) => `<circle cx="${((i * 397 + hue * 7) % w).toFixed(0)}" cy="${((i * 211 + hue * 3) % (h * 0.5)).toFixed(0)}" r="${1.5 + (i % 3)}" fill="#fff" opacity="${0.25 + (i % 4) * 0.12}"/>`).join("");
+  const name = title ? `<text x="${w * 0.08}" y="${h * 0.9}" font-family="Nunito, Segoe UI, sans-serif" font-weight="800" font-size="62" fill="#fff">${title.replace(/&/g, "and").slice(0, 15)}</text>` : "";
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${w} ${h}" preserveAspectRatio="xMidYMid slice"><defs><linearGradient id="s" x1="0" y1="0" x2="0.3" y2="1"><stop offset="0" stop-color="hsl(${(hue + 300) % 360} 55% 34%)"/><stop offset="0.6" stop-color="hsl(${hue} 70% 62%)"/><stop offset="1" stop-color="hsl(${(hue + 30) % 360} 85% 78%)"/></linearGradient><radialGradient id="g"><stop offset="0" stop-color="#fff" stop-opacity="0.95"/><stop offset="0.35" stop-color="hsl(${(hue + 30) % 360} 100% 88%)" stop-opacity="0.7"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></radialGradient></defs><rect width="${w}" height="${h}" fill="url(#s)"/>${stars}<circle cx="${sun.x.toFixed(0)}" cy="${sun.y.toFixed(0)}" r="${(sun.r * 2.6).toFixed(0)}" fill="url(#g)"/>${hill(0)}${hill(1)}${hill(2)}${name}</svg>`;
+  return `data:image/svg+xml,${encodeURIComponent(svg)}`;
+}
+
+// Which sample games have no wide picture, or no picture at all, so the
+// preview shows what those look like too.
+const NO_WIDE = new Set(["tin-knight", "velvet-circuit", "thunder-lane"]);
+const NO_PICTURE = new Set(["paper-lanterns", "cloudberry", "lantern-keepers"]);
+
 // One game whose desktop has an update to finish, so the preview shows it.
-const waiting: Record<string, Game["updates"]> = { "ashen-crown": [{ place: "home", state: "needed", bytes: 2_400_000_000, done: 0 }] };
+const waiting: Record<string, Game["updates"]> = {
+  "ashen-crown": [{ place: "home", state: "needed", bytes: 2_400_000_000, done: 0 }],
+  "iron-meadow": [{ place: "local", state: "needed", bytes: 850_000_000, done: 0 }],
+};
 
 export const games: Game[] = ([
   g("neon-harbor", "Neon Harbor", "Steam", "game", 330, ["local", "home"], 1260, "2026-11-10", "2026-09-02",
@@ -85,7 +111,12 @@ export const games: Game[] = ([
     "A tower-defence game where the towers are dragons."),
   g("open-quarry", "Open Quarry", "Standalone", "port", 30, ["local", "home"], 15, "2026-09-05", "2026-09-05",
     "An open-source reimplementation of a beloved mining shooter."),
-] as Game[]).map((game) => ({ ...game, updates: waiting[game.id] ?? [] }));
+] as Game[]).map((game) => ({
+  ...game,
+  updates: waiting[game.id] ?? [],
+  cover: NO_PICTURE.has(game.id) ? undefined : scene(game.hue, true, game.title),
+  hero: NO_PICTURE.has(game.id) || NO_WIDE.has(game.id) ? undefined : scene(game.hue, false),
+}));
 
 export const cloud: CloudService[] = [
   { id: "gfn", name: "GeForce NOW", note: "Your own PC games, on a rented cloud PC", hue: 110, kind: "Cloud PC" },

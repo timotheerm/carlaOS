@@ -18,16 +18,20 @@ import { GameDetail } from "./screens/pregame";
 import { Cloud, Desktops, Games, Home, HostView, Settings, type Ctx } from "./screens/screens";
 import { Updates } from "./screens/updates";
 import { Ambient } from "./ui/ambient";
-import { Hints, SECTIONS, TopBar, type Section } from "./ui/chrome";
+import { FocusLine, Hints, SECTIONS, TopBar, type Section } from "./ui/chrome";
+import { Downloads } from "./screens/downloads";
+import type { Backdrop } from "./data/types";
 import { installSounds, play as cue, setSounds, soundsOn } from "./ui/sound";
 import { Splash } from "./ui/splash";
 
 type Page = { kind: "game"; id: string } | { kind: "host"; id: string } | { kind: "cleanup"; id: CleanupView }
   | { kind: "manage"; id: "home" } | { kind: "desktops"; id: "home" } | { kind: "search"; id: "home" }
-  | { kind: "updates"; id: "home" } | { kind: "startup"; id: "home" } | { kind: "storage"; id: "home" };
+  | { kind: "updates"; id: "home" } | { kind: "startup"; id: "home" } | { kind: "storage"; id: "home" } | { kind: "downloads"; id: "home" };
 type Theme = "light" | "dark";
 
 const THEME_KEY = "carla.theme";
+const BACKDROP_KEY = "carla.backdrop";
+const BACKDROPS: Backdrop[] = ["full", "soft", "off"];
 
 function load<T>(key: string, fallback: T): T {
   try {
@@ -48,6 +52,10 @@ export function App() {
   const [section, setSection] = useState<Section>("home");
   const [stack, setStack] = useState<Page[]>([]);
   const [theme, setTheme] = useState<Theme>(() => load<Theme>(THEME_KEY, "light"));
+  const [backdrop, setBackdrop] = useState<Backdrop>(() => {
+    const saved = load<Backdrop>(BACKDROP_KEY, "full");
+    return BACKDROPS.includes(saved) ? saved : "full";
+  });
   const { games: everything, hosts, session, scanning, downloads } = useLibrary();
   // What can be played now. The rest of the library is only offered for installing.
   const games = useMemo(() => everything.filter((g) => g.places.length > 0), [everything]);
@@ -76,6 +84,11 @@ export function App() {
     document.documentElement.dataset.theme = theme;
     localStorage.setItem(THEME_KEY, JSON.stringify(theme));
   }, [theme]);
+
+  useEffect(() => {
+    document.documentElement.dataset.backdrop = backdrop;
+    localStorage.setItem(BACKDROP_KEY, JSON.stringify(backdrop));
+  }, [backdrop]);
 
   useEffect(() => {
     void library.start();
@@ -223,6 +236,7 @@ export function App() {
       cue("launch");
       void library.openCloud(service, name).catch((e) => setToast(message(e)));
     },
+    openDownloads: () => push({ kind: "downloads", id: "home" }),
     refreshHosts: () => {
       setToast("Checking…");
       void library.refreshHosts().catch((e) => setToast(message(e)));
@@ -238,6 +252,7 @@ export function App() {
   else if (top?.kind === "updates") page = <Updates hosts={hosts} notify={setToast} refreshHosts={() => void library.refreshHosts().catch(() => undefined)} />;
   else if (top?.kind === "startup") page = <Startup notify={setToast} />;
   else if (top?.kind === "storage") page = <Storage notify={setToast} />;
+  else if (top?.kind === "downloads") page = <Downloads library={everything} downloads={downloads} hosts={hosts} openGame={ctx.openGame} />;
   else if (top?.kind === "cleanup") page = <Cleanup view={top.id} open={(view) => push({ kind: "cleanup", id: view })} />;
   else if (section === "home") page = <Home {...ctx} />;
   else if (section === "games") page = <Games {...ctx} />;
@@ -254,6 +269,10 @@ export function App() {
         onUpdates={() => push({ kind: "updates", id: "home" })}
         onStartup={() => push({ kind: "startup", id: "home" })}
         onStorage={() => push({ kind: "storage", id: "home" })}
+        onDownloads={ctx.openDownloads}
+        downloading={downloads.length}
+        backdrop={backdrop}
+        onBackdrop={() => setBackdrop(BACKDROPS[(BACKDROPS.indexOf(backdrop) + 1) % BACKDROPS.length])}
         sounds={sounds}
         onSounds={() => {
           setSounds(!sounds);
@@ -271,7 +290,7 @@ export function App() {
   if (session) {
     return (
       <div className="shell shell--playing">
-        <Ambient games={games} fixed={games.find((g) => g.id === session.gameId) ?? null} />
+        <Ambient games={games} fixed={games.find((g) => g.id === session.gameId) ?? null} backdrop={backdrop} />
         <main className="main" ref={main} key={pageKey}>
           <Playing
             session={session}
@@ -292,8 +311,8 @@ export function App() {
 
   return (
     <div className="shell">
-      <Ambient games={games} />
-      <TopBar section={section} onSelect={go} />
+      <Ambient games={everything} backdrop={backdrop} />
+      <TopBar section={section} onSelect={go} downloads={downloads} onDownloads={() => !stack.some((p) => p.kind === "downloads") && ctx.openDownloads()} />
       <main className="main" ref={main} key={pageKey}>
         {/* Section pages have no visible title: the top bar shows where you are. Screen readers still get one. */}
         {!top && <h1 className="sr-only">{SECTIONS.find((s) => s.id === section)?.label}</h1>}
@@ -301,6 +320,7 @@ export function App() {
         {page}
       </main>
       <Hints
+        left={<FocusLine games={everything} downloads={downloads} />}
         items={[
           ["A", "Select"],
           ["B", "Back"],

@@ -155,6 +155,7 @@ impl Library {
         let root = locked(&self.0.steam_root).clone();
         crate::installs::sync_local(self, root.as_deref());
         crate::installs::fetch_covers(app, self);
+        crate::autoart::run(app, self);
         self.store().list_all()
     }
 }

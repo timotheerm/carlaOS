@@ -2,6 +2,8 @@ import { useLayoutEffect, useState } from "react";
 import { focusFirst } from "../nav/focus";
 import type { CloudService, Download, Game, Host } from "../data/types";
 import { Cover, Empty, GameCard, Grid, HostCard, Row, playtime } from "../ui/parts";
+import { StateLine, installState } from "../ui/install";
+import type { Backdrop } from "../data/types";
 
 export type Ctx = {
   /** Games that can be played now, here or from a desktop. */
@@ -25,6 +27,8 @@ export type Ctx = {
   wakeHost: (id: string) => void;
   /** Open a cloud gaming service itself. */
   openCloud: (service: string, name: string) => void;
+  /** Open the page of everything that is being installed. */
+  openDownloads: () => void;
 };
 
 const byRecent = (a: Game, b: Game) => (b.lastPlayed ?? "").localeCompare(a.lastPlayed ?? "");
@@ -32,7 +36,7 @@ const countOn = (games: Game[], place: string) => games.filter((g) => g.places.i
 
 function cards(list: Game[], ctx: Ctx) {
   return list.map((g) => (
-    <GameCard key={g.id} game={g} favourite={ctx.favourites.has(g.id)} onOpen={ctx.openGame} download={ctx.downloads.find((d) => d.gameId === g.id)} />
+    <GameCard key={g.id} game={g} favourite={ctx.favourites.has(g.id)} onOpen={ctx.openGame} downloads={ctx.downloads} />
   ));
 }
 
@@ -66,13 +70,16 @@ export function Home(ctx: Ctx) {
           data-game={hero.id}
           onClick={() => ctx.openGame(hero.id)}
         >
-          <Cover game={hero} wide />
           <span className="hero__text">
             <span className="hero__eyebrow">Continue playing</span>
             <span className="hero__title">{hero.title}</span>
             <span className="hero__meta">
-              {hero.platform} · {playtime(hero.playtimeMinutes)}
+              <StateLine state={installState(hero, ctx.downloads)} extra={`${hero.platform} · ${playtime(hero.playtimeMinutes)}`} />
             </span>
+            <span className="hero__go">Open</span>
+          </span>
+          <span className="hero__cover">
+            <Cover game={hero} band={false} />
           </span>
         </button>
       )}
@@ -83,7 +90,17 @@ export function Home(ctx: Ctx) {
           ))}
         </Row>
       )}
-      {fetched.length > 0 && <Row title="Installing now">{cards(fetched, ctx)}</Row>}
+      {fetched.length > 0 && (
+        <Row title="Installing now">
+          {cards(fetched, ctx)}
+          <button className="card card--more" data-focus data-fid="home:downloads" onClick={ctx.openDownloads}>
+            <span className="card__more">See every step</span>
+            <span className="card__meta">
+              <span className="card__sub">Downloads</span>
+            </span>
+          </button>
+        </Row>
+      )}
       {recent.length > 0 && <Row title="Recently played">{cards(recent.slice(0, 8), ctx)}</Row>}
       {favourites.length > 0 && <Row title="Favourites">{cards(favourites, ctx)}</Row>}
       {added.length > 0 && <Row title="Recently added">{cards(added, ctx)}</Row>}
@@ -245,6 +262,10 @@ export function Settings({
   onUpdates,
   onStartup,
   onStorage,
+  onDownloads,
+  downloading,
+  backdrop,
+  onBackdrop,
   sounds,
   onSounds,
   hostCount,
@@ -259,6 +280,10 @@ export function Settings({
   onUpdates: () => void;
   onStartup: () => void;
   onStorage: () => void;
+  onDownloads: () => void;
+  downloading: number;
+  backdrop: Backdrop;
+  onBackdrop: () => void;
   sounds: boolean;
   onSounds: () => void;
   hostCount: number;
@@ -277,6 +302,12 @@ export function Settings({
         <span>Appearance</span>
         <span className="setting__value">{theme === "light" ? "Light" : "Dark"}</span>
       </button>
+      <button className="setting" data-focus data-fid="set:backdrop" onClick={onBackdrop}>
+        <span>Game pictures behind the screen</span>
+        <span className="setting__value">
+          {backdrop === "full" ? "Full: the picture of the game in focus" : backdrop === "soft" ? "Soft: only its colours" : "Off: plain background"}
+        </span>
+      </button>
       <button className="setting" data-focus data-quiet data-fid="set:sounds" onClick={onSounds}>
         <span>Sounds</span>
         <span className="setting__value">{sounds ? "On" : "Off"}</span>
@@ -284,6 +315,10 @@ export function Settings({
       <button className="setting" data-focus data-fid="set:refresh" onClick={onRefresh}>
         <span>Refresh library</span>
         <span className="setting__value">{refreshing ? "Looking…" : `${gameCount} games`}</span>
+      </button>
+      <button className="setting" data-focus data-fid="set:downloads" onClick={onDownloads}>
+        <span>Downloads</span>
+        <span className="setting__value">{downloading ? `${downloading} being installed or updated` : "Nothing is being installed"}</span>
       </button>
       <button className="setting" data-focus data-fid="set:manage" onClick={onManage}>
         <span>Manage games</span>

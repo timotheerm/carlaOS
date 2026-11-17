@@ -3,7 +3,7 @@
 import { useEffect, useLayoutEffect, useState } from "react";
 import { backend } from "../cleanup/backend";
 import type { AdminStatus } from "../cleanup/types";
-import type { Game, Inspected, Kind, Match, NewGame, Saves } from "../data/types";
+import type { Console, Discovered, FoundGame, Game, Inspected, Kind, Match, NewGame, Saves } from "../data/types";
 import { library, message } from "../library/store";
 import { focusFirst, keepFocus } from "../nav/focus";
 import { size, when } from "../ui/parts";
@@ -371,6 +371,76 @@ function SavesAdmin({ game, onDone, notify }: { game: Game; onDone: () => void; 
   );
 }
 
+// What was found on the Ally that is not in the library: games and ports to
+// add with one press, and emulators to pair with a folder of game files.
+function FoundList({ found, onFound, onEmulator, onDone, notify }: { found: Discovered; onFound: (next: Discovered) => void; onEmulator: (start: Console) => void; onDone: () => void; notify: (text: string) => void }) {
+  const [busy, setBusy] = useState(false);
+  const add = async (list: FoundGame[]) => {
+    setBusy(true);
+    const added: string[] = [];
+    try {
+      for (const g of list) {
+        await library.addManual({ title: g.title, exe: g.exe, args: g.args, kind: g.kind, cover: null, description: "", origin: g.origin });
+        added.push(g.exe);
+      }
+      notify(list.length === 1 ? `${list[0].title} was added. Its picture is looked for now.` : `${list.length} games were added. Their pictures are looked for now.`);
+    } catch (e) {
+      notify(message(e));
+    }
+    onFound({ ...found, games: found.games.filter((g) => !added.includes(g.exe)) });
+    setBusy(false);
+  };
+  useLayoutEffect(() => keepFocus("found:all", "found:done"), [found.games.length]);
+  const nothing = found.games.length === 0 && found.emulators.length === 0;
+  return (
+    <div className="settings">
+      <div className="pagehead">
+        <h1>Found on this Ally</h1>
+        <p>
+          {nothing
+            ? "Nothing new was found. CarlaOS looks in folders called Games, Ports or Emulators on every disk, on the desktop and in the Start menu."
+            : "Games, ports and emulators that are not in the library yet. Nothing is added until you choose it."}
+        </p>
+      </div>
+      {found.games.length > 1 && (
+        <button className="setting setting--primary" data-focus data-autofocus data-fid="found:all" disabled={busy} onClick={() => void add(found.games)}>
+          <span>Add all {found.games.length} games</span>
+          <span className="setting__value">{busy ? "Adding…" : "Each gets a card and a picture"}</span>
+        </button>
+      )}
+      {found.games.map((g, i) => (
+        <button key={g.exe} className="setting" data-focus data-autofocus={found.games.length === 1 && i === 0 ? "" : undefined} data-fid={`found:${g.exe}`} disabled={busy} onClick={() => void add([g])}>
+          <span>
+            {g.title}
+            {g.port ? ` · ${g.port}` : ""}
+          </span>
+          <span className="setting__value">
+            {g.kind === "port" ? (g.origin === "PC" ? "PC classic" : `${g.origin} port`) : "Game"} · {fileName(g.exe)} · found in {g.from} · add
+          </span>
+        </button>
+      ))}
+      {found.emulators.map((e) => (
+        <button
+          key={e.exe}
+          className="setting"
+          data-focus
+          data-fid={`found:${e.exe}`}
+          onClick={() => onEmulator({ id: "", name: e.name, emulator: e.exe, options: e.options, folder: "", endings: e.endings })}
+        >
+          <span>
+            {e.program} · {e.name}
+          </span>
+          <span className="setting__value">Emulator · choose the folder with your game files</span>
+        </button>
+      ))}
+      <button className="setting" data-focus data-autofocus={found.games.length === 0 ? "" : undefined} data-fid="found:done" onClick={onDone}>
+        <span>Done</span>
+        <span className="setting__value">Back to Manage games</span>
+      </button>
+    </div>
+  );
+}
+
 export function Manage({ games, notify }: { games: Game[]; notify: (text: string) => void }) {
   const [admin, setAdmin] = useState<AdminStatus | null>(null);
   const [adding, setAdding] = useState<Inspected | null>(null); // program being added
@@ -378,6 +448,12 @@ export function Manage({ games, notify }: { games: Game[]; notify: (text: string
   const [saves, setSaves] = useState<string | "list" | null>(null); // game whose saves are open
   const [consoles, setConsoles] = useState(false);
   const [addingCloud, setAddingCloud] = useState(false);
+  const [found, setFound] = useState<Discovered | "looking" | null>(null);
+  const [emulator, setEmulator] = useState<Console | null>(null); // a found emulator being set up
+  const [auto, setAuto] = useState<boolean | null>(null);
+  useEffect(() => {
+    if (admin?.unlocked) void library.artAuto().then(setAuto, () => undefined);
+  }, [admin?.unlocked]);
 
   // Locked on the way in and again on the way out.
   useEffect(() => {
@@ -391,7 +467,7 @@ export function Manage({ games, notify }: { games: Game[]; notify: (text: string
     if (active instanceof HTMLElement && active.matches("[data-focus]") && active.isConnected) return;
     const main = document.querySelector("main");
     if (main) focusFirst(main);
-  }, [admin?.unlocked, adding, addingCloud, saves, consoles, art, manual.length]);
+  }, [admin?.unlocked, adding, addingCloud, saves, consoles, art, manual.length, found === null, emulator]);
 
   if (!admin) return null;
   if (!admin.unlocked) {
@@ -438,6 +514,20 @@ export function Manage({ games, notify }: { games: Game[]; notify: (text: string
   const pictured = games.find((g) => g.id === art);
   if (pictured) return <ArtPicker game={pictured} onDone={() => setArt("list")} notify={notify} />;
   if (art === "list") return <ArtList games={games} onOpen={setArt} onDone={() => setArt(null)} />;
+  if (emulator) {
+    return (
+      <Consoles
+        add={emulator}
+        notify={notify}
+        onDone={() => {
+          setEmulator(null);
+          // Look again: the emulator that was set up is no longer new.
+          void library.discoverGames().then(setFound, () => setFound(null));
+        }}
+      />
+    );
+  }
+  if (found && found !== "looking") return <FoundList found={found} onFound={setFound} onEmulator={setEmulator} onDone={() => setFound(null)} notify={notify} />;
   if (consoles) return <Consoles onDone={() => setConsoles(false)} notify={notify} />;
   const onAlly = games.filter((g) => g.places.includes("local")).sort((a, b) => a.title.localeCompare(b.title));
   const open = onAlly.find((g) => g.id === saves);
@@ -487,6 +577,22 @@ export function Manage({ games, notify }: { games: Game[]; notify: (text: string
         <span>Add a game</span>
         <span className="setting__value">Choose its program, or a shortcut to it</span>
       </button>
+      <button
+        className="setting"
+        data-focus
+        data-fid="manage:find"
+        disabled={found === "looking"}
+        onClick={() => {
+          setFound("looking");
+          library.discoverGames().then(setFound, (e) => {
+            setFound(null);
+            notify(message(e));
+          });
+        }}
+      >
+        <span>Look for games on this Ally</span>
+        <span className="setting__value">{found === "looking" ? "Looking…" : "Ports, games and emulators that are not in the library yet"}</span>
+      </button>
       <button className="setting" data-focus data-fid="manage:cloud" onClick={() => setAddingCloud(true)}>
         <span>Add a cloud game</span>
         <span className="setting__value">A game on GeForce NOW, Xbox Cloud Gaming, Boosteroid or Luna</span>
@@ -496,6 +602,24 @@ export function Manage({ games, notify }: { games: Game[]; notify: (text: string
         <span className="setting__value">
           {games.some((g) => !(g.cover ?? g.hero)) ? `${games.filter((g) => !(g.cover ?? g.hero)).length} without a picture · ` : ""}Find pictures and choose between them
         </span>
+      </button>
+      <button
+        className="setting"
+        data-focus
+        data-fid="manage:auto"
+        onClick={() =>
+          library.setArtAuto(!auto).then((on) => {
+            setAuto(on);
+            notify(on ? "Games without a picture are looked up by themselves." : "Pictures are only looked for when you ask.");
+          }, (e) => notify(message(e)))
+        }
+      >
+        <span>Find pictures by itself</span>
+        <span className="setting__value">{auto === false ? "Off" : "On · a game without a picture is looked up by name on Steam and Wikipedia"}</span>
+      </button>
+      <button className="setting" data-focus data-fid="manage:again" onClick={() => library.artAutoAgain().then(() => notify("Looking for the pictures that are still missing."), (e) => notify(message(e)))}>
+        <span>Look for missing pictures now</span>
+        <span className="setting__value">Also for games nothing was found for before</span>
       </button>
       <button className="setting" data-focus data-fid="manage:consoles" onClick={() => setConsoles(true)}>
         <span>Consoles and emulators</span>

@@ -6,7 +6,7 @@ import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { games as sampleGames, hosts as sampleHosts } from "../data/sample";
 import { sampleArt, sampleDetails, sampleMatches } from "../data/sample";
-import type { ArtChoice, ArtSearch, CheckFix, CheckReport, Console, ConsoleHint, Details, Download, Inspected, Storage, FoundHost, Game, Host, HostPicture, HostState, Kind, Match, NewGame, SaveSync, Saves, Session, Waiting, Power, PowerView } from "../data/types";
+import type { ArtChoice, ArtSearch, CheckFix, CheckReport, Console, ConsoleHint, Details, Discovered, Download, Inspected, Storage, FoundHost, Game, Host, HostPicture, HostState, Kind, Match, NewGame, SaveSync, Saves, Session, Waiting, Power, PowerView } from "../data/types";
 import { inTauri } from "../native";
 import { when } from "../ui/parts";
 
@@ -71,6 +71,7 @@ const previewAdmin = new Set<string>();
 
 // The SteamGridDB key as the browser preview pretends it: kept or not.
 let previewKey = false;
+let previewAuto = true;
 
 // "C:\\Games\\Paper Lanterns\\lanterns.exe" suggests "Paper Lanterns".
 function previewTitle(exe: string): string {
@@ -149,9 +150,20 @@ function sample(): Game[] {
   return sampleGames.map((g) => ({ ...g, favourite: saved.includes(g.id) }));
 }
 
+// What the browser preview pretends is being fetched, one of each kind, so
+// every state can be seen without waiting.
+function previewDownloads(): Download[] {
+  return [
+    { gameId: "glass-garden", place: "local", title: "Glass Garden", phase: "downloading", done: 3_150_000_000, total: 7_400_000_000, update: false, rate: 24_500_000, eta: 173 },
+    { gameId: "thunder-lane", place: "home", title: "Thunder Lane", phase: "queued", done: 0, total: 0, update: false, rate: 0, eta: null },
+    { gameId: "sugar-rush-saga", place: "local", title: "Sugar Rush Saga", phase: "paused", done: 400_000_000, total: 2_200_000_000, update: false, rate: 0, eta: null },
+    { gameId: "petal-kart", place: "local", title: "Petal Kart", phase: "finishing", done: 900_000_000, total: 900_000_000, update: true, rate: 0, eta: null },
+  ];
+}
+
 let state: State = inTauri
   ? { games: [], hosts: [], session: null, scanning: false, downloads: [] }
-  : { games: sample(), hosts: sampleHosts, session: null, scanning: false, downloads: [] };
+  : { games: sample(), hosts: sampleHosts, session: null, scanning: false, downloads: previewDownloads() };
 const listeners = new Set<() => void>();
 
 function set(patch: Partial<State>) {
@@ -418,7 +430,7 @@ export const library = {
     let step = 0;
     const timer = setInterval(() => {
       step += 1;
-      if (step <= 20) put({ ...base, phase: "downloading", total, done: Math.round((total * step) / 20) });
+      if (step <= 20) put({ ...base, phase: "downloading", total, done: Math.round((total * step) / 20), rate: Math.round(total / 12), eta: Math.round((20 - step) * 0.6) });
       else if (step === 21) put({ ...base, phase: "finishing", total, done: total });
       else {
         clearInterval(timer);
@@ -742,6 +754,41 @@ export const library = {
       await invoke("art_clear", { gameId });
       await reload();
     } else set({ games: state.games.map((g) => (g.id === gameId ? { ...g, ownArt: false, cover: undefined, hero: undefined } : g)) });
+  },
+
+  /** Whether pictures are looked for by themselves. */
+  async artAuto(): Promise<boolean> {
+    return inTauri ? invoke<boolean>("art_auto") : previewAuto;
+  },
+
+  async setArtAuto(on: boolean): Promise<boolean> {
+    if (inTauri) return invoke<boolean>("art_set_auto", { on });
+    return (previewAuto = on);
+  },
+
+  /** Look every game without a picture up again now. */
+  async artAutoAgain() {
+    if (inTauri) await invoke("art_auto_again");
+  },
+
+  /** Look for games, ports and emulators on the Ally that are not in the library. */
+  async discoverGames(): Promise<Discovered> {
+    if (inTauri) return invoke<Discovered>("discover_scan");
+    await new Promise((r) => setTimeout(r, 500));
+    const have = new Set(state.games.map((g) => g.id));
+    const games: Discovered["games"] = [
+      { exe: "D:\\Games\\Ship of Harkinian\\soh.exe", args: "", title: "The Legend of Zelda: Ocarina of Time", kind: "port", origin: "Nintendo 64", port: "Ship of Harkinian", from: "D:\\Games" },
+      { exe: "D:\\Games\\Lantern Parade\\LanternParade.exe", args: "", title: "Lantern Parade", kind: "game", origin: "", port: "", from: "D:\\Games" },
+      { exe: "C:\\Ports\\sm64\\sm64.us.f3dex2e.exe", args: "", title: "Super Mario 64", kind: "port", origin: "Nintendo 64", port: "Super Mario 64 PC port", from: "Desktop" },
+      { exe: "D:\\Games\\OpenMW\\openmw.exe", args: "", title: "The Elder Scrolls III: Morrowind", kind: "port", origin: "PC", port: "OpenMW", from: "D:\\Games" },
+    ];
+    return {
+      games: games.filter((g) => !have.has(`manual:${g.exe.toLowerCase()}`)),
+      emulators: [
+        { exe: "C:\\Emulators\\Dolphin-x64\\Dolphin.exe", program: "Dolphin", name: "GameCube and Wii", options: '-b -e "{game}"', endings: ["iso", "gcm", "rvz", "wbfs"], from: "C:\\Emulators" },
+        { exe: "C:\\Emulators\\Ryujinx\\Ryujinx.exe", program: "Ryujinx", name: "Switch", options: '--fullscreen "{game}"', endings: ["nsp", "xci"], from: "C:\\Emulators" },
+      ].filter((e) => !previewConsoles.some((c) => c.emulator === e.exe)),
+    };
   },
 
   /** Whether a SteamGridDB key is kept. */

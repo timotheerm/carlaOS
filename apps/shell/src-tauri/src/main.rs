@@ -3,11 +3,13 @@
 
 mod admin;
 mod art;
+mod autoart;
 mod boot;
 mod cloud;
 mod consoles;
 mod details;
 mod device;
+mod discover;
 mod hosts;
 mod installs;
 mod library;
@@ -120,6 +122,10 @@ fn main() {
             art::art_key,
             art::art_set_key,
             art::library_inspect,
+            autoart::art_auto,
+            autoart::art_set_auto,
+            autoart::art_auto_again,
+            discover::discover_scan,
             details::meta_search,
             details::meta_fetch,
             hosts::hosts_update,
