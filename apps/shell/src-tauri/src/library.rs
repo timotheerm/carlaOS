@@ -74,7 +74,7 @@ pub(crate) struct Active {
 }
 
 pub(crate) struct Inner {
-    store: Mutex<Store>,
+    pub(crate) store: Mutex<Store>,
     pub(crate) steam_root: Mutex<Option<PathBuf>>,
     pub(crate) art_dir: PathBuf,
     pub(crate) data_dir: PathBuf,
@@ -279,7 +279,9 @@ pub(crate) fn play(app: AppHandle, library: &Library, mut install: Install, plac
     // The game's power level and screen speed, before it starts, so it
     // starts with them.
     let kind = carla_core::power::Kind::of(&place);
-    if let Ok(profile) = carla_core::power::profile(&library.store(), &game_id, kind) {
+    // Read first: the lock must not be held while Windows changes the power mode and screen.
+    let profile = carla_core::power::profile(&library.store(), &game_id, kind);
+    if let Ok(profile) = profile {
         crate::power::apply(profile, kind);
     }
     let started_running = if cloud {
@@ -329,7 +331,8 @@ pub(crate) fn play(app: AppHandle, library: &Library, mut install: Install, plac
     };
     let _ = app.emit(SESSION_EVENT, Some(view.clone()));
     let started = now();
-    let session = match library.store().start_session(&game_id, &place, started) {
+    let started_session = library.store().start_session(&game_id, &place, started);
+    let session = match started_session {
         Ok(session) => session,
         Err(e) => {
             running.stop(false);
@@ -352,10 +355,13 @@ pub(crate) fn adopt(app: &AppHandle, library: &Library, install: Install) -> Res
     let view = SessionView { game_id: install.game_id.clone(), title: install.title.clone(), phase: "running", since: started, adopted: true, stream: false, cloud: false, note: None };
     claim(library, &view, LOCAL)?;
     let kind = carla_core::power::Kind::of(LOCAL);
-    if let Ok(profile) = carla_core::power::profile(&library.store(), &install.game_id, kind) {
+    // Read first: the lock must not be held while Windows changes the power mode and screen.
+    let profile = carla_core::power::profile(&library.store(), &install.game_id, kind);
+    if let Ok(profile) = profile {
         crate::power::apply(profile, kind);
     }
-    let session = match library.store().start_session(&install.game_id, LOCAL, started) {
+    let started_session = library.store().start_session(&install.game_id, LOCAL, started);
+    let session = match started_session {
         Ok(session) => session,
         Err(e) => {
             *locked(&library.0.active) = None;
@@ -437,7 +443,9 @@ fn follow(app: AppHandle, library: &Library, mut running: Running, install: Inst
                 } else {
                     // Windows may have gone back to its own power mode.
                     let kind = carla_core::power::Kind::of(&place);
-                    if let Ok(profile) = carla_core::power::profile(&library.store(), &game_id, kind) {
+                    // Read first: the lock must not be held while Windows changes the power mode and screen.
+                    let profile = carla_core::power::profile(&library.store(), &game_id, kind);
+                    if let Ok(profile) = profile {
                         crate::power::apply(profile, kind);
                     }
                 }
