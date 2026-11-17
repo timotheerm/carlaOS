@@ -1,0 +1,501 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>CarlaOS Dashboard</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%23d98ba0'/%3E%3Cpath d='M16 24s-8-4.9-8-10.4A4.4 4.4 0 0 1 16 11a4.4 4.4 0 0 1 8 2.6C24 19.100 16 24 16 24z' fill='%23fff'/%3E%3C/svg%3E">
+<style>
+/* The same colours as CarlaOS on the Ally (apps/shell/src/tokens.css). */
+:root {
+  --bg: #fbf5f3;
+  --bg-glow: #f9dfe6;
+  --surface: #ffffff;
+  --surface-2: #fdf3f5;
+  --accent: #d98ba0;
+  --accent-strong: #c46b84;
+  --accent-soft: #f6d5dd;
+  --on-accent: #2e1a24;
+  --text: #3a2a33;
+  --text-quiet: #6b5d64;
+  --line: #f0e2e6;
+  --shadow: 0 0.75rem 2rem rgb(58 42 51 / 10%);
+  --ok: #4a7d5a;
+  --ok-soft: #e3f1e6;
+  --warn: #946510;
+  --warn-soft: #fbeed2;
+  --poor: #a8474f;
+  --poor-soft: #f8dfe1;
+  --off: #b5acb0;
+  --radius: 1.25rem;
+  --pill: 999px;
+  --font: "Nunito", "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif;
+  --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1e1220;
+    --bg-glow: #3a2038;
+    --surface: #2c1b2f;
+    --surface-2: #35213a;
+    --accent: #f2a7bb;
+    --accent-strong: #f7bccb;
+    --accent-soft: #5a3550;
+    --on-accent: #2c1b2f;
+    --text: #f8ecef;
+    --text-quiet: #b9a6b3;
+    --line: #432a45;
+    --shadow: 0 0.75rem 2rem rgb(0 0 0 / 35%);
+    --ok: #9cc7a8;
+    --ok-soft: #2b3d33;
+    --warn: #e9bd6a;
+    --warn-soft: #45371f;
+    --poor: #f1a0a6;
+    --poor-soft: #4a2730;
+    --off: #7d6f79;
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  min-height: 100vh;
+  background: radial-gradient(60rem 30rem at 85% -10rem, var(--bg-glow), transparent 70%) no-repeat, var(--bg);
+  color: var(--text);
+  font: 1rem/1.45 var(--font);
+  -webkit-font-smoothing: antialiased;
+}
+main { max-width: 76rem; margin: 0 auto; padding: 1.5rem 1.5rem 3rem; }
+h1, h2, h3, p { margin: 0; }
+button { font: inherit; color: inherit; cursor: pointer; }
+:focus-visible { outline: 3px solid var(--accent-strong); outline-offset: 3px; }
+.sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.num { font-variant-numeric: tabular-nums; }
+
+header.top { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; margin-bottom: 1.25rem; }
+.brand { display: flex; align-items: center; gap: 0.75rem; margin-right: auto; }
+.brand svg { width: 2.75rem; height: 2.75rem; border-radius: 0.9rem; box-shadow: var(--shadow); }
+.brand b { display: block; font-size: 1.35rem; font-weight: 800; letter-spacing: -0.01em; line-height: 1.1; }
+.brand span { color: var(--text-quiet); font-size: 0.9rem; }
+.pc { text-align: right; line-height: 1.25; }
+.pc b { display: block; font-weight: 800; }
+.pc span { color: var(--text-quiet); font-size: 0.85rem; }
+
+.card { background: var(--surface); border-radius: var(--radius); box-shadow: var(--shadow); padding: 1.35rem 1.5rem; }
+.card > h2 { font-size: 0.8rem; font-weight: 800; letter-spacing: 0.09em; text-transform: uppercase; color: var(--text-quiet); margin-bottom: 0.9rem; display: flex; align-items: center; gap: 0.5rem; }
+.card > h2 .grow { flex: 1; }
+.grid { display: grid; gap: 1.25rem; grid-template-columns: repeat(12, 1fr); align-items: start; }
+.span-7 { grid-column: span 7; } .span-5 { grid-column: span 5; } .span-6 { grid-column: span 6; } .span-12 { grid-column: span 12; }
+@media (max-width: 60rem) { .span-7, .span-5, .span-6 { grid-column: span 12; } .pc { text-align: left; } }
+
+/* The headline: one sentence that answers "is it working?" */
+.hero { display: flex; align-items: center; gap: 1.5rem; padding: 1.75rem 2rem; margin-bottom: 1.25rem; background: linear-gradient(120deg, var(--accent-soft), var(--surface) 62%); position: relative; overflow: hidden; }
+.hero h1 { font-size: clamp(1.6rem, 3.2vw, 2.35rem); font-weight: 800; letter-spacing: -0.02em; line-height: 1.15; }
+.hero p { color: var(--text-quiet); font-size: 1.1rem; margin-top: 0.3rem; max-width: 44rem; }
+.hero .words { flex: 1; min-width: 0; }
+.orb { position: relative; width: 4.5rem; height: 4.5rem; flex: none; border-radius: 50%; background: var(--accent); display: grid; place-items: center; color: #fff; }
+.orb svg { width: 2.2rem; height: 2.2rem; }
+.orb::before, .orb::after { content: ""; position: absolute; inset: 0; border-radius: 50%; border: 2px solid var(--accent); opacity: 0; }
+.hero[data-kind="streaming"] .orb::before, .hero[data-kind="connected"] .orb::before { animation: ring 2.4s var(--ease) infinite; }
+.hero[data-kind="streaming"] .orb::after { animation: ring 2.4s var(--ease) 1.2s infinite; }
+.hero[data-kind="waiting"] .orb, .hero[data-kind="link"] .orb { background: var(--off); }
+.hero[data-kind="attention"] .orb { background: var(--warn); }
+.hero[data-kind="attention"] { background: linear-gradient(120deg, var(--warn-soft), var(--surface) 62%); }
+@keyframes ring { 0% { transform: scale(1); opacity: 0.7; } 100% { transform: scale(1.9); opacity: 0; } }
+
+.btn { border: 0; border-radius: var(--pill); padding: 0.7rem 1.3rem; font-weight: 800; background: var(--accent); color: var(--on-accent); transition: transform 150ms var(--ease), filter 150ms; white-space: nowrap; }
+.btn:hover { filter: brightness(1.05); transform: translateY(-1px); }
+.btn:active { transform: translateY(0); }
+.btn.quiet { background: var(--surface-2); color: var(--text); box-shadow: inset 0 0 0 1.5px var(--line); }
+.btn.small { padding: 0.4rem 0.9rem; font-size: 0.9rem; }
+.btn.danger { background: var(--poor-soft); color: var(--poor); }
+.btn[disabled] { opacity: 0.6; cursor: default; transform: none; }
+
+.pill { display: inline-flex; align-items: center; gap: 0.4rem; border-radius: var(--pill); padding: 0.2rem 0.75rem; font-size: 0.85rem; font-weight: 800; background: var(--surface-2); color: var(--text-quiet); white-space: nowrap; }
+.pill::before { content: ""; width: 0.5rem; height: 0.5rem; border-radius: 50%; background: currentColor; }
+.pill.ok { background: var(--ok-soft); color: var(--ok); }
+.pill.fair, .pill.warn { background: var(--warn-soft); color: var(--warn); }
+.pill.poor { background: var(--poor-soft); color: var(--poor); }
+.pill.pink { background: var(--accent-soft); color: var(--text); }
+.pill.plain::before { display: none; }
+
+/* The connection: one big number, then what it means. */
+.ping { display: flex; align-items: flex-end; gap: 1rem; flex-wrap: wrap; }
+.ping .big { font-size: 4.25rem; font-weight: 800; line-height: 0.95; letter-spacing: -0.03em; }
+.ping .unit { font-size: 1.4rem; font-weight: 800; color: var(--text-quiet); margin-left: 0.25rem; }
+.ping .meta { padding-bottom: 0.4rem; }
+.ping .meta small { display: block; color: var(--text-quiet); margin-top: 0.3rem; font-size: 0.9rem; }
+.chart { margin-top: 1rem; }
+.chart svg { display: block; width: 100%; height: 5rem; overflow: visible; }
+.chart .line { fill: none; stroke: var(--accent-strong); stroke-width: 2.5; stroke-linejoin: round; stroke-linecap: round; vector-effect: non-scaling-stroke; }
+.chart .area { fill: var(--accent-soft); opacity: 0.6; }
+.chart .legend { display: flex; justify-content: space-between; color: var(--text-quiet); font-size: 0.8rem; margin-top: 0.3rem; }
+.tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.75rem; margin-top: 1.1rem; }
+.tile { background: var(--surface-2); border-radius: 1rem; padding: 0.8rem 1rem; min-width: 0; }
+.tile small { display: block; color: var(--text-quiet); font-size: 0.8rem; font-weight: 700; }
+.tile b { font-size: 1.3rem; font-weight: 800; }
+.tile span { color: var(--text-quiet); font-size: 0.85rem; }
+@media (max-width: 34rem) { .tiles { grid-template-columns: 1fr; } }
+.advice { margin-top: 1rem; padding: 0.8rem 1rem; border-radius: 1rem; background: var(--warn-soft); color: var(--text); font-size: 0.95rem; }
+.empty { color: var(--text-quiet); padding: 0.5rem 0; }
+.empty b { display: block; color: var(--text); font-size: 1.15rem; margin-bottom: 0.2rem; }
+
+.rows { list-style: none; margin: 0; padding: 0; }
+.rows li { display: flex; align-items: flex-start; gap: 0.9rem; padding: 0.75rem 0; border-top: 1.5px solid var(--line); }
+.rows li:first-child { border-top: 0; padding-top: 0; }
+.rows li:last-child { padding-bottom: 0; }
+.rows .body { flex: 1; min-width: 0; }
+.rows .body b { font-weight: 800; }
+.rows .body p { color: var(--text-quiet); font-size: 0.92rem; overflow-wrap: anywhere; }
+.dot { width: 0.8rem; height: 0.8rem; border-radius: 50%; margin-top: 0.4rem; flex: none; background: var(--off); }
+.dot.ok { background: var(--ok); } .dot.warn { background: var(--warn); }
+.avatar { width: 2.6rem; height: 2.6rem; border-radius: 0.9rem; background: var(--accent-soft); color: var(--on-accent); display: grid; place-items: center; flex: none; }
+.avatar svg { width: 1.6rem; height: 1.6rem; }
+.title-line { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+
+.code { text-align: center; padding: 1.2rem 1rem 1rem; border-radius: 1rem; background: var(--surface-2); margin-top: 1rem; }
+.code .digits { font-size: 3rem; font-weight: 800; letter-spacing: 0.12em; line-height: 1.1; color: var(--accent-strong); }
+.code p { color: var(--text-quiet); font-size: 0.95rem; margin-top: 0.4rem; }
+.code .actions { margin-top: 0.8rem; display: flex; gap: 0.5rem; justify-content: center; }
+.actions { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+
+.meter { margin-top: 0.9rem; }
+.meter .label { display: flex; justify-content: space-between; font-size: 0.9rem; font-weight: 700; }
+.meter .label span { color: var(--text-quiet); font-weight: 600; }
+.bar { height: 0.6rem; border-radius: var(--pill); background: var(--surface-2); overflow: hidden; margin-top: 0.3rem; }
+.bar i { display: block; height: 100%; border-radius: var(--pill); background: var(--accent); transition: width 600ms var(--ease); }
+.two { display: grid; grid-template-columns: 1fr 1fr; gap: 1.25rem; }
+@media (max-width: 34rem) { .two { grid-template-columns: 1fr; } }
+
+.facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr)); gap: 0.75rem; }
+.count { font-size: 2.6rem; font-weight: 800; line-height: 1; letter-spacing: -0.02em; }
+.chips { display: flex; gap: 0.4rem; flex-wrap: wrap; margin-top: 0.7rem; }
+
+.banner { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; padding: 0.9rem 1.25rem; margin-bottom: 1.25rem; background: var(--accent-soft); color: var(--on-accent); border-radius: var(--radius); }
+.banner p { flex: 1; min-width: 12rem; font-weight: 700; }
+.toast { position: fixed; left: 50%; bottom: 1.5rem; transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 0.8rem 1.3rem; border-radius: var(--pill); font-weight: 700; box-shadow: var(--shadow); max-width: calc(100vw - 2rem); text-align: center; z-index: 5; }
+footer { margin-top: 1.5rem; color: var(--text-quiet); font-size: 0.85rem; text-align: center; }
+[hidden] { display: none !important; }
+@media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+</style>
+</head>
+<body>
+<main>
+  <header class="top">
+    <div class="brand">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="9" fill="#d98ba0"/><path d="M16 24s-8-4.9-8-10.4A4.4 4.4 0 0 1 16 11a4.4 4.4 0 0 1 8 2.600C24 19.100 16 24 16 24z" fill="#fff"/></svg>
+      <div><b>CarlaOS</b><span>Dashboard for this PC</span></div>
+    </div>
+    <div class="pc"><b id="pc-name">&nbsp;</b><span id="pc-hardware"></span></div>
+  </header>
+
+  <div id="update" class="banner" hidden></div>
+
+  <section id="hero" class="card hero" data-kind="waiting" aria-live="polite">
+    <div class="orb" id="orb" aria-hidden="true"></div>
+    <div class="words"><h1 id="headline">One moment</h1><p id="headline-detail">Asking this PC how it is.</p></div>
+    <div id="hero-actions" class="actions"></div>
+  </section>
+
+  <div class="grid">
+    <section class="card span-7" aria-labelledby="h-connection">
+      <h2 id="h-connection">Connection to the Ally</h2>
+      <div id="connection"></div>
+    </section>
+    <section class="card span-5" aria-labelledby="h-stream">
+      <h2 id="h-stream">Stream</h2>
+      <div id="stream"></div>
+    </section>
+    <section class="card span-6" aria-labelledby="h-allies">
+      <h2 id="h-allies"><span>Linked Allies</span><span class="grow"></span><button class="btn small" id="link-button" type="button">Link an Ally</button></h2>
+      <ul class="rows" id="allies"></ul>
+      <div id="code"></div>
+    </section>
+    <section class="card span-6" aria-labelledby="h-pc">
+      <h2 id="h-pc">This PC</h2>
+      <ul class="rows" id="checks"></ul>
+      <div class="two" id="vitals"></div>
+    </section>
+    <section class="card span-12" aria-labelledby="h-games">
+      <h2 id="h-games"><span>Games the Ally can stream from here</span><span class="grow"></span><button class="btn small quiet" id="games-button" type="button">Look for games again</button></h2>
+      <div id="games"></div>
+    </section>
+  </div>
+  <footer id="footer"></footer>
+</main>
+<div id="toast" class="toast" role="status" hidden></div>
+
+<script>
+"use strict";
+const TOKEN = "__CARLA_TOKEN__";
+const $ = (id) => document.getElementById(id);
+
+/* Everything shown is put in as text, never as markup. */
+function h(tag, attrs, ...children) {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (v == null || v === false) continue;
+    if (k === "class") el.className = v;
+    else if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
+    else el.setAttribute(k, v === true ? "" : v);
+  }
+  for (const c of children.flat()) if (c != null && c !== false) el.append(c);
+  return el;
+}
+function svg(markup) {
+  const t = document.createElement("template");
+  t.innerHTML = markup; // only ever the constants below
+  return t.content.firstChild;
+}
+const ICONS = {
+  streaming: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 5.500v13l11-6.500z" fill="currentColor"/></svg>',
+  connected: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.500l4.500 4.500L19 7.500"/></svg>',
+  waiting: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 14.500A8 8 0 0 1 9.500 4a8 8 0 1 0 10.500 10.500z"/></svg>',
+  link: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>',
+  attention: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 6v8M12 18v.500"/></svg>',
+  ally: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="20" height="10" rx="4"/><rect x="7.500" y="9" width="9" height="6" rx="1"/><path d="M4.500 11v2M19.500 11.500v.010M19.500 13.500v.010"/></svg>',
+};
+
+function ago(seconds) {
+  if (seconds == null) return "never";
+  if (seconds < 8) return "just now";
+  if (seconds < 90) return `${seconds} seconds ago`;
+  if (seconds < 5400) return `${Math.round(seconds / 60)} minutes ago`;
+  if (seconds < 129600) return `${Math.round(seconds / 3600)} hours ago`;
+  const days = Math.round(seconds / 86400);
+  return days <= 1 ? "yesterday" : `${days} days ago`;
+}
+function lasted(minutes) {
+  if (minutes == null) return null;
+  if (minutes < 1) return "Just started";
+  if (minutes < 60) return `${minutes} min`;
+  return `${Math.floor(minutes / 60)} h ${minutes % 60} min`;
+}
+const gb = (bytes) => (bytes / 1073741824).toFixed(bytes > 10737418240 ? 0 : 1);
+const cap = (s) => s ? s[0].toUpperCase() + s.slice(1) : s;
+
+let toastTimer;
+function toast(text, stay) {
+  const t = $("toast");
+  t.textContent = text;
+  t.hidden = false;
+  clearTimeout(toastTimer);
+  if (!stay) toastTimer = setTimeout(() => { t.hidden = true; }, 4500);
+}
+
+async function call(method, path, body) {
+  const reply = await fetch(path, { method, headers: { "x-carla-token": TOKEN, "content-type": "application/json" }, body: body ? JSON.stringify(body) : undefined, cache: "no-store" });
+  const data = await reply.json().catch(() => ({}));
+  // The companion restarted (an update, a sign-in): this page's token is old.
+  if (reply.status === 403) { location.reload(); throw new Error("reloading"); }
+  if (!reply.ok) throw new Error(data.error || "That did not work.");
+  return data;
+}
+async function act(button, method, path, body, done) {
+  if (button) button.disabled = true;
+  try {
+    const answer = await call(method, path, body);
+    if (done) done(answer);
+    await refresh();
+  } catch (e) {
+    if (e.message !== "reloading") toast(e.message);
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+/* Which Ally the connection card is about: the one streaming, else the one
+   that is connected, else the one heard from last. */
+function focusAlly(allies) {
+  const rank = { streaming: 0, connected: 1, away: 2 };
+  return [...allies].sort((a, b) => rank[a.state] - rank[b.state] || (a.heard_ago ?? 1e12) - (b.heard_ago ?? 1e12))[0];
+}
+
+function chart(pings) {
+  const w = 300, hgt = 64, top = Math.max(20, ...pings) * 1.15;
+  const x = (i) => pings.length === 1 ? w : (i / (pings.length - 1)) * w;
+  const y = (v) => hgt - (v / top) * hgt;
+  const points = pings.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(" ");
+  const ns = "http://www.w3.org/2000/svg";
+  const el = document.createElementNS(ns, "svg");
+  el.setAttribute("viewBox", `0 0 ${w} ${hgt}`);
+  el.setAttribute("preserveAspectRatio", "none");
+  el.setAttribute("role", "img");
+  el.setAttribute("aria-label", `The delay over the last ${pings.length} measurements: between ${Math.min(...pings)} and ${Math.max(...pings)} milliseconds.`);
+  const area = document.createElementNS(ns, "polygon");
+  area.setAttribute("class", "area");
+  area.setAttribute("points", `0,${hgt} ${points} ${w},${hgt}`);
+  const line = document.createElementNS(ns, "polyline");
+  line.setAttribute("class", "line");
+  line.setAttribute("points", points);
+  el.append(area, line);
+  return h("div", { class: "chart" }, el, h("div", { class: "legend" }, h("span", {}, `Lowest ${Math.min(...pings)} ms`), h("span", {}, `Highest ${Math.max(...pings)} ms`)));
+}
+
+function connection(o) {
+  const ally = focusAlly(o.allies);
+  if (!ally) return [h("div", { class: "empty" }, h("b", {}, "No Ally yet"), "Link an Ally and its connection shows here: the delay in milliseconds, how steady it is and how fast.")];
+  if (ally.ping_ms == null) {
+    return [h("div", { class: "empty" }, h("b", {}, "Not measured yet"), `${ally.name} measures the connection when it looks at this PC and during a stream. It needs CarlaOS 0.10 or newer for that.`)];
+  }
+  const when = ally.live ? `Measured by ${ally.name} just now` : `Measured by ${ally.name} ${ago(ally.measured_ago)}`;
+  const out = [
+    h("div", { class: "ping" },
+      h("div", {}, h("span", { class: "big num" }, String(ally.ping_ms)), h("span", { class: "unit" }, "ms")),
+      h("div", { class: "meta" }, h("span", { class: `pill ${ally.grade.tone}` }, ally.grade.name), h("small", {}, when))),
+  ];
+  if (ally.pings.length > 1) out.push(chart(ally.pings));
+  out.push(h("div", { class: "tiles" },
+    h("div", { class: "tile" }, h("small", {}, "Ping"), h("b", { class: "num" }, `${ally.ping_ms} ms`), h("br"), h("span", {}, "there and back")),
+    h("div", { class: "tile" }, h("small", {}, "Steadiness"), h("b", { class: "num" }, `± ${ally.jitter_ms} ms`), h("br"), h("span", {}, ally.jitter_ms <= 8 ? "steady" : ally.jitter_ms <= 25 ? "a little uneven" : "uneven")),
+    h("div", { class: "tile" }, h("small", {}, "Speed"), h("b", { class: "num" }, ally.mbps != null ? `${ally.mbps >= 10 ? Math.round(ally.mbps) : ally.mbps} Mbit/s` : "Not measured"), h("br"), h("span", {}, ally.route === "tailscale" ? "away, through Tailscale" : "on the home network"))));
+  if (ally.grade.advice) out.push(h("p", { class: "advice" }, ally.grade.advice));
+  return out;
+}
+
+function stream(o) {
+  const s = o.stream;
+  if (!s) return [h("div", { class: "empty" }, h("b", {}, "Nothing is being streamed"), "When a game is picked on the Ally, it starts here and shows up on this page.")];
+  const picture = s.height ? `${s.height}p${s.fps ? ` at ${s.fps}` : ""}` : "Not known yet";
+  const level = s.level ? `${cap(s.level)}${s.automatic ? ", chosen by measuring" : ", fixed on the Ally"}` : null;
+  return [
+    h("div", { class: "title-line" }, h("span", { class: "pill pink" }, "Live"), h("b", { style: "font-size:1.3rem;font-weight:800" }, s.game)),
+    h("div", { class: "tiles", style: "grid-template-columns:1fr 1fr" },
+      h("div", { class: "tile" }, h("small", {}, "Picture"), h("b", { class: "num" }, picture), level && h("br"), level && h("span", {}, level)),
+      h("div", { class: "tile" }, h("small", {}, "Video"), h("b", { class: "num" }, s.mbps ? `${s.mbps} Mbit/s` : "Not known yet"), h("br"), h("span", {}, "at most")),
+      h("div", { class: "tile" }, h("small", {}, "Playing for"), h("b", { class: "num" }, lasted(s.minutes) ?? "A while")),
+      h("div", { class: "tile" }, h("small", {}, "Going to"), h("b", {}, s.ally ?? "The Ally"))),
+    h("p", { style: "color:var(--text-quiet);font-size:0.92rem;margin-top:0.9rem" }, `Shown: ${s.screen}.`),
+  ];
+}
+
+let forgetting = null;
+function allies(o) {
+  if (!o.allies.length) return [h("li", {}, h("div", { class: "body" }, h("p", {}, "No Ally is linked to this PC yet. Press \"Link an Ally\" for a code to type on the Ally.")))];
+  const state = { streaming: ["pink", "Streaming"], connected: ["ok", "Connected"], away: ["", "Not connected"] };
+  return o.allies.map((a) => {
+    const [tone, word] = state[a.state];
+    const bits = [
+      a.state === "away" ? (a.heard_ago == null ? "Has not asked for anything since it was linked" : `Last heard from ${ago(a.heard_ago)}`) : (a.route === "tailscale" ? "Away from home, through Tailscale" : "On the home network"),
+      a.address && a.state !== "away" ? a.address : null,
+      a.version ? `CarlaOS ${a.version}` : null,
+      a.paired === true ? "Moonlight paired" : a.paired === false ? "Moonlight pairs at the first stream" : null,
+      a.remote_admin ? "can be set up from here" : null,
+    ].filter(Boolean).join(" · ");
+    const asking = forgetting === a.id;
+    return h("li", {},
+      h("div", { class: "avatar", "aria-hidden": "true" }, svg(ICONS.ally)),
+      h("div", { class: "body" }, h("div", { class: "title-line" }, h("b", {}, a.name), h("span", { class: `pill ${tone}` }, word)), h("p", {}, asking ? `Stop accepting ${a.name}? It would need a new code to link again.` : bits)),
+      asking
+        ? h("div", { class: "actions" }, h("button", { class: "btn small danger", type: "button", onclick: (e) => { forgetting = null; act(e.currentTarget, "POST", "/local/forget", { id: a.id }, () => toast(`${a.name} is no longer linked.`)); } }, "Forget it"), h("button", { class: "btn small quiet", type: "button", onclick: () => { forgetting = null; refresh(); } }, "Keep"))
+        : h("button", { class: "btn small quiet", type: "button", "aria-label": `Forget ${a.name}`, onclick: () => { forgetting = a.id; refresh(); } }, "Forget"));
+  });
+}
+
+function code(o) {
+  if (!o.code) return [];
+  const c = o.code.code, left = o.code.seconds_left;
+  return [h("div", { class: "code" },
+    h("div", { class: "digits num", "aria-label": `Code ${c.split("").join(" ")}` }, `${c.slice(0, 3)} ${c.slice(3)}`),
+    h("p", {}, "On the Ally: Settings, Desktops, Add a desktop, choose this PC, then type these six digits."),
+    h("p", {}, `Works for ${left >= 60 ? `${Math.ceil(left / 60)} more minutes` : `${left} more seconds`}, for one Ally.`),
+    h("div", { class: "actions" }, h("button", { class: "btn small quiet", type: "button", onclick: (e) => act(e.currentTarget, "POST", "/local/code/hide") }, "Hide the code")))];
+}
+
+function checks(o) {
+  return o.checks.map((c) => h("li", {}, h("span", { class: `dot ${c.tone}`, "aria-hidden": "true" }), h("div", { class: "body" }, h("b", {}, c.title), h("span", { class: "sr-only" }, c.tone === "ok" ? " is fine. " : c.tone === "warn" ? " needs attention. " : ". "), h("p", {}, c.detail))));
+}
+
+function meter(label, percent, words) {
+  return h("div", { class: "meter" }, h("div", { class: "label" }, label, h("span", { class: "num" }, words)),
+    h("div", { class: "bar", role: "progressbar", "aria-label": label, "aria-valuemin": "0", "aria-valuemax": "100", "aria-valuenow": String(Math.round(percent)) }, h("i", { style: `width:${Math.max(2, Math.min(100, percent))}%` })));
+}
+function vitals(o) {
+  const v = o.vitals, out = [];
+  if (v.cpu != null) out.push(meter("Processor", v.cpu, `${v.cpu} %`));
+  if (v.memory_total) out.push(meter("Memory", (v.memory_used / v.memory_total) * 100, `${gb(v.memory_used)} of ${gb(v.memory_total)} GB`));
+  return out;
+}
+
+function games(o) {
+  const g = o.games;
+  const out = [h("div", { class: "facts" },
+    h("div", {}, h("div", { class: "count num" }, String(g.total)), h("p", { style: "color:var(--text-quiet)" }, g.total === 1 ? "game ready to stream" : "games ready to stream")),
+    g.free_gb != null && h("div", {}, h("div", { class: "count num" }, `${g.free_gb} GB`), h("p", { style: "color:var(--text-quiet)" }, "free for new games")))];
+  if (g.from.length) out.push(h("div", { class: "chips" }, g.from.map(([name, n]) => h("span", { class: "pill plain" }, `${name} ${n}`))));
+  for (const f of g.fetching) out.push(meter(`Installing ${f.title}`, f.percent ?? 0, f.percent != null ? `${f.percent} %` : "waiting for Steam"));
+  return out;
+}
+
+let newer = null, updating = false;
+function update() {
+  const el = $("update");
+  if (updating) {
+    el.hidden = false;
+    el.replaceChildren(h("p", {}, `Version ${newer} is being installed. This page comes back by itself.`));
+  } else if (newer) {
+    el.hidden = false;
+    el.replaceChildren(h("p", {}, `CarlaOS ${newer} is ready for this PC.`),
+      h("button", { class: "btn small", type: "button", onclick: (e) => act(e.currentTarget, "POST", "/local/update", null, (a) => { updating = a.updating; update(); }) }, "Update now"));
+  } else {
+    el.hidden = true;
+  }
+}
+async function lookForNewer(fresh) {
+  try {
+    const answer = await call(fresh ? "POST" : "GET", "/local/newer");
+    newer = answer.newer;
+    update();
+    return answer;
+  } catch { return null; }
+}
+
+let last = "";
+function render(o) {
+  document.title = `${o.headline.title} · CarlaOS`;
+  $("pc-name").textContent = o.name;
+  $("pc-hardware").textContent = o.hardware;
+  $("hero").dataset.kind = o.headline.kind;
+  // Said again by a screen reader only when it changes.
+  if ($("headline").textContent !== o.headline.title) $("headline").textContent = o.headline.title;
+  if ($("headline-detail").textContent !== o.headline.detail) $("headline-detail").textContent = o.headline.detail;
+  $("orb").replaceChildren(svg(ICONS[o.headline.kind]));
+  $("hero-actions").replaceChildren(...(o.stream ? [h("button", { class: "btn quiet", type: "button", onclick: (e) => act(e.currentTarget, "POST", "/local/end", null, () => toast("The game is being closed.")) }, "Close the game")] : []));
+  $("connection").replaceChildren(...connection(o));
+  $("stream").replaceChildren(...stream(o));
+  $("allies").replaceChildren(...allies(o));
+  $("code").replaceChildren(...code(o));
+  $("link-button").textContent = o.code ? "New code" : "Link an Ally";
+  $("checks").replaceChildren(...checks(o));
+  $("vitals").replaceChildren(...vitals(o));
+  $("games").replaceChildren(...games(o));
+  $("footer").replaceChildren(`CarlaOS Desktop Host ${o.version} · `, h("button", { class: "btn small quiet", type: "button", onclick: async (e) => { e.currentTarget.disabled = true; const a = await lookForNewer(true); if (a && !a.newer) toast(a.problem || "This is the newest version."); } }, "Look for a newer version"));
+}
+
+let silent = 0;
+async function refresh() {
+  try {
+    const o = await call("GET", "/local/overview");
+    if (silent) $("toast").hidden = true;
+    silent = 0;
+    // Buttons keep their focus when nothing changed.
+    const now = JSON.stringify(o) + forgetting;
+    if (now !== last) { last = now; render(o); }
+    if (updating && o.version === newer) { updating = false; newer = null; update(); toast("CarlaOS on this PC is up to date."); }
+  } catch (e) {
+    if (e.message === "reloading") return;
+    if (++silent >= 2) toast(updating ? "Installing the new version…" : "The CarlaOS companion on this PC is not answering. This page carries on by itself when it does.", true);
+  }
+}
+
+$("link-button").addEventListener("click", (e) => act(e.currentTarget, "POST", "/local/code"));
+$("games-button").addEventListener("click", (e) => act(e.currentTarget, "POST", "/local/games", null, () => toast("The list of games is up to date.")));
+document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
+refresh();
+// Every two seconds while someone is looking; nothing while nobody is.
+setInterval(() => { if (!document.hidden) refresh(); }, 2000);
+lookForNewer(false);
+setInterval(() => lookForNewer(false), 6 * 3600 * 1000);
+</script>
+</body>
+</html>
