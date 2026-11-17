@@ -5,3 +5,8 @@ apps/shell/src-tauri/gen/
 .DS_Store
 *.log
 **/.claude/settings.local.json
+
+# Obsidian state, local Claude settings and agent logs
+knowledge/.obsidian/
+.claude/settings.local.json
+.claude/logs/

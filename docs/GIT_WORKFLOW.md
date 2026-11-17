@@ -89,7 +89,7 @@ Never create two PRs against `main` when one silently relies on the other's unme
 - Do not have concurrent sessions edit the same files or shared interfaces.
 - Before integrating an agent's work, inspect its diff and run tests.
 - Never reset, discard, overwrite or force-push another session's work.
-- Never merge, close, retarget or delete an existing PR without the user's approval.
+- Do not close or delete an existing PR/branch without the user's approval. The coordinator may merge its own PRs, and retarget its own stacked child after the parent merged, under the standing authorisation in `CLAUDE.md` ("Autonomous integration").
 - Keep PRs focused and reasonably small; one PR per coherent feature/fix.
 
 ## PR readiness checklist
@@ -118,6 +118,6 @@ Recommended protection for `main`:
 - Block force pushes and branch deletion.
 - Keep squash merging enabled; disable merge commits and rebase merging if you want one consistent history.
 - Enable automatic deletion of merged topic branches.
-- Do not require one approving review if this repository is operated by a single owner; that can make your own PRs impossible to merge. The owner should still review and explicitly approve each PR.
+- Do not require one approving review if this repository is operated by a single owner; that can make your own PRs impossible to merge. With the standing authorisation in `CLAUDE.md` ("Autonomous integration"), the coordinator merges its own PRs once every CI check is green and the diff was inspected; the owner reviews what ships. Merges here use merge commits (`gh pr merge --merge`), matching the existing history.
 
 Do not turn on automatic merging for all PRs. A green workflow does not replace review of feature behaviour, privacy, dependency order or physical Ally testing.

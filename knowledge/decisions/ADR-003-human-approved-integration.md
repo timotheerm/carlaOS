@@ -1,11 +1,13 @@
 ---
 title: ADR-003 Human-approved integration
 type: decision
-status: accepted
+status: superseded by ADR-008
 date: 2026-11-17
 ---
 
 # ADR-003: Human-approved integration and automated validation
+
+> **Superseded by [[ADR-008-autonomous-integration]] (2026-11-17).** The owner granted the coordinator a standing authorisation to merge when strict conditions hold. The inspection and CI-awareness duties below still apply: ADR-008 makes them the merge gate.
 
 ## Context
 

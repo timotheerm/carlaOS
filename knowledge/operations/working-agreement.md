@@ -50,9 +50,13 @@ Follow [[../../docs/GIT_WORKFLOW]] and `CLAUDE.md`.
 - Never commit directly to `main`.
 - One PR per coherent feature, not one PR per agent.
 - A dependent task must share its parent branch or use a stacked PR targeting the parent branch.
-- No agent may merge, close, retarget, delete or force-push another active branch/PR.
-- Merge only after reviewing the actual diff, dependency chain and required checks. A green compile alone is not a complete product review.
+- The coordinator may merge its own PRs under the standing authorisation in `CLAUDE.md` "Autonomous integration" ([[../decisions/ADR-008-autonomous-integration]], which supersedes ADR-003): CI fully green, diff inspected, own work, dependencies merged, not an approval-gated change. A green CI proves only what the workflow tests.
+- No agent may close, force-push, or delete another active branch/PR, and nothing may be tagged or released by hand, without the user.
 - Never claim physical Ally validation unless it was performed on the device.
+
+## Running tests locally
+
+From a VS developer shell (command in [[../development/known-issues]], KI-006): `cargo test --locked --lib --bins`. Plain `cargo test` also runs `windows_live.rs`, which changes real registry/startup/service state and needs approval. Agent models, tools and delegation rules live in `.claude/agents/*.md` and `CLAUDE.md` "Orchestration" ([[../decisions/ADR-007-dynamic-orchestration]]); do not duplicate them here.
 
 ## Memory rules
 
