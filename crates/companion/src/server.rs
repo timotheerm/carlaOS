@@ -346,7 +346,7 @@ impl Server {
         };
         let games = games
             .into_iter()
-            .map(|app| RemoteGame { id: format!("steam:{}", app.appid), source: "steam".to_string(), source_id: app.appid, title: app.title, has_cover: false, update: None, platform: String::new(), emulated: false })
+            .map(|app| RemoteGame { id: format!("steam:{}", app.appid), source: "steam".to_string(), source_id: app.appid, title: app.title, has_cover: false, update: None, platform: String::new(), emulated: false, description: String::new() })
             .collect();
         json(&RemoteLibrary { games, free_bytes: (self.installs.free)(), problem })
     }
@@ -462,6 +462,7 @@ impl Server {
             platform: if g.emulated { g.platform } else { String::new() },
             emulated: g.emulated,
             update: g.update,
+            description: String::new(),
         });
         let extras = self.files.extras().into_iter().filter(|e| e.exe.is_file()).map(|e| RemoteGame {
             id: format!("manual:{}", e.key),
@@ -472,6 +473,7 @@ impl Server {
             platform: String::new(),
             emulated: false,
             update: None,
+            description: e.description.as_deref().map(carla_core::library::clean_description).unwrap_or_default(),
         });
         steam.chain(extras).collect()
     }
@@ -1285,6 +1287,49 @@ mod tests {
         assert!(matches!(link.prepare(&id), Err(Error::Host(_))));
         assert_eq!(desk.files.drop_extra(&added.key).unwrap().as_deref(), Some("Paper Lanterns Deluxe"));
         assert_eq!(desk.files.drop_extra(&added.key).unwrap(), None);
+    }
+
+    #[test]
+    fn a_description_crosses_the_link_and_the_ally_keeps_what_it_was_typed() {
+        use carla_core::library::{Kind, ManualGame, Scanned, Store};
+        let desk = desk("describe", false);
+        let link = linked(&desk);
+        let exe = desk.files.dir().join("Lanterns.exe");
+        std::fs::write(&exe, b"program").unwrap();
+        let added = desk.files.add_extra("Paper Lanterns", &exe, "", None, None).unwrap();
+        let id = format!("manual:{}", added.key);
+        let described = |link: &Link| link.games().unwrap().into_iter().find(|g| g.id == id).unwrap().description;
+        assert_eq!(described(&link), "", "nothing is sent until there is something");
+
+        let (_, kept) = desk.files.describe_extra(&added.key, "A quiet\nlantern   game.\u{7}").unwrap();
+        assert_eq!(kept, "A quiet lantern   game.");
+        assert_eq!(described(&link), "A quiet lantern   game.");
+        // Adding the program again keeps it; a hand-edited file cannot send more than the limit.
+        desk.files.add_extra("Paper Lanterns", &exe, "", None, None).unwrap();
+        assert_eq!(described(&link), "A quiet lantern   game.");
+        let mut extras = desk.files.extras();
+        extras[0].description = Some("x".repeat(5000));
+        std::fs::write(desk.files.dir().join("games.json"), serde_json::to_vec(&extras).unwrap()).unwrap();
+        assert_eq!(described(&link).chars().count(), 1000);
+        desk.files.describe_extra(&added.key, "From the desktop.").unwrap();
+
+        // The Ally stores what came over the link.
+        let remote = link.games().unwrap().into_iter().find(|g| g.id == id).unwrap();
+        let scanned = |description: &str| Scanned { source_id: added.key.clone(), title: "Paper Lanterns".into(), description: description.into(), ..Scanned::default() };
+        let mut store = Store::in_memory().unwrap();
+        store.sync("desk", "manual", &[scanned(&remote.description)], 10).unwrap();
+        assert_eq!(store.list().unwrap()[0].description, "From the desktop.");
+        // A new text from the desktop replaces it, but clearing it there does not clear it here.
+        store.sync("desk", "manual", &[scanned("Newer.")], 20).unwrap();
+        assert_eq!(store.list().unwrap()[0].description, "Newer.");
+        store.sync("desk", "manual", &[scanned("")], 30).unwrap();
+        assert_eq!(store.list().unwrap()[0].description, "Newer.");
+        // What the administrator typed on the Ally is never replaced.
+        store.sync("desk", "manual", &[scanned("Newer.")], 40).unwrap();
+        let own = ManualGame { title: "Paper Lanterns".into(), exe: exe.clone(), args: String::new(), kind: Kind::Game, cover: None, description: "Mine.".into(), origin: String::new() };
+        store.add_manual(&own, 50).unwrap();
+        store.sync("desk", "manual", &[scanned("Newer.")], 60).unwrap();
+        assert_eq!(store.list().unwrap().iter().find(|g| g.title == "Paper Lanterns").map(|g| g.description.as_str()), Some("Mine."));
     }
 
     #[test]
