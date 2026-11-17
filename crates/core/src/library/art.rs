@@ -2,7 +2,8 @@
 //!
 //! The administrator asks for pictures of one game; CarlaOS asks the places
 //! that have them and shows what came back, and the administrator picks.
-//! Nothing is chosen for them and nothing is fetched until they ask.
+//! Nothing is chosen for them here. (Games with no picture at all are given
+//! one by `autoart`, which the administrator can turn off.)
 //!
 //! Where pictures come from:
 //! - **Steam**: the library cover and wide pictures of games sold there.
@@ -148,6 +149,7 @@ const SYSTEMS: &[(&[&str], &str)] = &[
     (&["saturn"], "Sega - Saturn"),
     (&["mega drive", "megadrive", "genesis"], "Sega - Mega Drive - Genesis"),
     (&["master system"], "Sega - Master System - Mark III"),
+    (&["xbox 360"], "Microsoft - Xbox 360"),
     (&["xbox"], "Microsoft - Xbox"),
 ];
 
@@ -258,6 +260,18 @@ fn grid(term: &str, key: &str) -> Result<Vec<Candidate>, String> {
         }
     }
     Ok(found)
+}
+
+/// Community pictures of a Steam game, found by its Steam number, which
+/// cannot be the wrong game: (covers, wide pictures).
+pub fn grid_for_steam(app: &str, key: &str, label: &str) -> (Vec<Candidate>, Vec<Candidate>) {
+    let ask = |path: &str| match get_with(&format!("{GRID}/{path}"), 2 * 1024 * 1024, Some(key)) {
+        Ok((200, body)) => parse_grid_pictures(&body, label),
+        _ => Vec::new(),
+    };
+    let covers = ask(&format!("grids/steam/{app}?dimensions=600x900&types=static&nsfw=false&humor=false"));
+    let wide = ask(&format!("heroes/steam/{app}?types=static&nsfw=false&humor=false"));
+    (covers.into_iter().filter(|c| c.shape == Shape::Tall).take(3).collect(), wide.into_iter().filter(|c| c.shape == Shape::Wide).take(3).collect())
 }
 
 /// Is this what a SteamGridDB key looks like? Checked before it is kept or

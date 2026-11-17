@@ -119,9 +119,9 @@ function Form({ start, onDone, notify }: { start: Console; onDone: () => void; n
   );
 }
 
-export function Consoles({ onDone, notify }: { onDone: () => void; notify: (text: string) => void }) {
+export function Consoles({ onDone, notify, add }: { onDone: () => void; notify: (text: string) => void; /** An emulator that was found, to set up straight away. */ add?: Console }) {
   const [consoles, setConsoles] = useState<Console[] | null>(null);
-  const [editing, setEditing] = useState<Console | null>(null);
+  const [editing, setEditing] = useState<Console | null>(add ?? null);
   const [sure, setSure] = useState<string | null>(null); // console about to be removed
 
   const load = () => library.consoles().then(setConsoles, (e) => notify(message(e)));
@@ -137,6 +137,8 @@ export function Consoles({ onDone, notify }: { onDone: () => void; notify: (text
         start={editing}
         notify={notify}
         onDone={() => {
+          // Set up from what was found: back to that list.
+          if (add) return onDone();
           setEditing(null);
           void load();
         }}

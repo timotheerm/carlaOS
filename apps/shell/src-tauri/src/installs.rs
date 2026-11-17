@@ -33,6 +33,36 @@ pub struct DownloadView {
     total: u64,
     /// An installed game being brought up to date.
     update: bool,
+    /// Bytes a second, lately. 0 when it is not moving or not known yet.
+    rate: u64,
+    /// Seconds until everything is fetched at that speed.
+    eta: Option<u64>,
+}
+
+/// How far each download was when last looked at, to tell how fast it goes.
+static PACE: Mutex<Option<HashMap<(String, String), (u64, std::time::Instant, f64)>>> = Mutex::new(None);
+
+/// Fill in how fast each download is going, from how far it was last time.
+fn paced(mut list: Vec<DownloadView>) -> Vec<DownloadView> {
+    let mut pace = locked(&PACE);
+    let pace = pace.get_or_insert_with(HashMap::new);
+    let at = std::time::Instant::now();
+    pace.retain(|key, _| list.iter().any(|d| (&d.game_id, &d.place) == (&key.0, &key.1)));
+    for d in &mut list {
+        let entry = pace.entry((d.game_id.clone(), d.place.clone())).or_insert((d.done, at, 0.0));
+        let seconds = at.duration_since(entry.1).as_secs_f64();
+        if d.phase != Phase::Downloading {
+            *entry = (d.done, at, 0.0);
+        } else if seconds >= 2.0 {
+            let speed = d.done.saturating_sub(entry.0) as f64 / seconds;
+            // Smoothed, so the time left does not jump about.
+            *entry = (d.done, at, if entry.2 > 0.0 { entry.2 * 0.6 + speed * 0.4 } else { speed });
+        }
+        // Rounded so a steady download does not look like news each time.
+        d.rate = (entry.2 / 100_000.0).round() as u64 * 100_000;
+        d.eta = (d.rate > 0 && d.total > d.done).then(|| (d.total - d.done) / d.rate).map(|s| if s > 120 { s / 60 * 60 } else { s });
+    }
+    list
 }
 
 #[derive(Default)]
@@ -47,7 +77,7 @@ static WATCHED: Mutex<Option<Watched>> = Mutex::new(None);
 static LOOK_NOW: AtomicBool = AtomicBool::new(false);
 
 fn view(place: &str, d: Download) -> DownloadView {
-    DownloadView { game_id: format!("{}:{}", d.source, d.source_id), place: place.to_string(), title: d.title, phase: d.phase, done: d.done, total: d.total, update: d.update }
+    DownloadView { game_id: format!("{}:{}", d.source, d.source_id), place: place.to_string(), title: d.title, phase: d.phase, done: d.done, total: d.total, update: d.update, rate: 0, eta: None }
 }
 
 fn steam_root(library: &Library) -> Option<PathBuf> {
@@ -196,6 +226,7 @@ fn look(app: &AppHandle, library: &Library) -> Vec<DownloadView> {
             links.insert(id, there);
         }
     }
+    let now = paced(now);
     let before = {
         let mut watched = locked(&WATCHED);
         let watched = watched.get_or_insert_with(Watched::default);

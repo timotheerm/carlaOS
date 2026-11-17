@@ -51,7 +51,8 @@ export function banner(game: Game): Banner | null {
   if (game.kind === "port") {
     const found = game.origin ? consoleColour(game.origin) : null;
     return {
-      label: game.origin ? `${game.origin} · PC port` : "PC port",
+      // A PC classic on a rebuilt engine was never on a console.
+      label: game.origin === "PC" ? "PC classic · new engine" : game.origin ? `${game.origin} · PC port` : "PC port",
       colour: found?.colour ?? PORT,
       ink: found?.ink ?? "#ffffff",
     };
