@@ -8,7 +8,7 @@
 
 use std::io;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command};
+use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
@@ -52,13 +52,23 @@ pub fn split_args(line: &str) -> Vec<String> {
 
 const EPIC_ADDRESS: &str = "com.epicgames.launcher://apps/";
 
+/// A program started from here gets no standard handles of its own.
+///
+/// The launcher that Sunshine runs frees its console so it does not sit in
+/// the stream's picture. Afterwards the handles Windows passes down by default
+/// are invalid, and starting any program fails with "The handle is invalid"
+/// (os error 6): the game never started and the stream ended at once.
+fn quiet(command: &mut Command) -> &mut Command {
+    command.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
+}
+
 /// Hand an address to the program registered for it, without a shell in
 /// between that could read `&` or `%` as something else.
 fn open_address(address: &str) -> io::Result<()> {
     if cfg!(windows) {
-        Command::new("rundll32.exe").arg("url.dll,FileProtocolHandler").arg(address).spawn().map(|_| ())
+        quiet(Command::new("rundll32.exe").arg("url.dll,FileProtocolHandler").arg(address)).spawn().map(|_| ())
     } else {
-        Command::new("xdg-open").arg(address).spawn().map(|_| ())
+        quiet(Command::new("xdg-open").arg(address)).spawn().map(|_| ())
     }
 }
 
@@ -68,7 +78,7 @@ pub fn start(install: &Install, steam_root: Option<&Path>) -> io::Result<Option<
     match install.source.as_str() {
         "steam" => {
             let root = steam_root.ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Steam is not installed"))?;
-            Command::new(steam::client(root)).arg(format!("steam://rungameid/{}", install.source_id)).spawn()?;
+            quiet(Command::new(steam::client(root)).arg(format!("steam://rungameid/{}", install.source_id))).spawn()?;
             Ok(None)
         }
         "epic" => {
@@ -90,7 +100,7 @@ pub fn start(install: &Install, steam_root: Option<&Path>) -> io::Result<Option<
             std::fs::create_dir_all(&install.install_path)?;
             // The browser stays open for as long as the game is played: it
             // is what is watched, and what is closed to end the game.
-            Command::new(browser).args(cloud::browser_args(&install.install_path, &link)).spawn().map(Some)
+            quiet(Command::new(browser).args(cloud::browser_args(&install.install_path, &link))).spawn().map(Some)
         }
         _ => {
             let exe = install
@@ -112,6 +122,7 @@ pub fn start(install: &Install, steam_root: Option<&Path>) -> io::Result<Option<
             let dir = [followed.as_ref().and_then(|l| l.dir.as_deref()), Some(install.install_path.as_path()), exe.parent()].into_iter().flatten().find(|d| d.is_dir());
             let mut command = Command::new(exe);
             command.args(split_args(args));
+            quiet(&mut command);
             if let Some(dir) = dir {
                 command.current_dir(dir);
             }
@@ -145,6 +156,7 @@ fn open_program(exe: &Path, args: &str, dir: Option<&Path>) -> io::Result<()> {
     }
     let mut command = Command::new("powershell.exe");
     command.args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", &script]).env("CARLA_START", exe).env("CARLA_START_ARGS", args.trim());
+    quiet(&mut command);
     if let Some(dir) = dir {
         command.env("CARLA_START_DIR", dir);
     }
@@ -342,6 +354,46 @@ impl Watch {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The launcher frees its console, so the handles a program would inherit
+    /// are invalid. Run in a child process so no other test is disturbed.
+    #[cfg(windows)]
+    #[test]
+    fn a_program_starts_even_when_the_inherited_handles_are_invalid() {
+        // Not 0: a child that ran no test at all (the name below is stale) exits 0.
+        const FIXED: i32 = 42;
+        if std::env::var_os("CARLA_BAD_HANDLES").is_some() {
+            #[link(name = "kernel32")]
+            extern "system" {
+                fn SetStdHandle(which: u32, handle: isize) -> i32;
+            }
+            // STD_INPUT_HANDLE, pointing at nothing.
+            unsafe { SetStdHandle(-10i32 as u32, 0x7777) };
+            let plain = Command::new("cmd.exe").args(["/c", "exit"]).spawn();
+            let mut command = Command::new("cmd.exe");
+            command.args(["/c", "exit"]);
+            quiet(&mut command);
+            let fixed = command.spawn();
+            let code = match (plain, fixed) {
+                (Err(e), Ok(mut child)) if e.raw_os_error() == Some(6) => {
+                    let _ = child.wait();
+                    FIXED
+                }
+                // The broken state was not reproduced, so this proves nothing.
+                (Ok(_), _) => 3,
+                _ => 1,
+            };
+            std::process::exit(code);
+        }
+        let status = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "library::launch::tests::a_program_starts_even_when_the_inherited_handles_are_invalid", "--test-threads=1"])
+            .env("CARLA_BAD_HANDLES", "1")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap();
+        assert_eq!(status.code(), Some(FIXED), "{FIXED} = fixed, 3 = not reproduced, 1 = still failing, 0 = the child ran no test");
+    }
 
     #[test]
     fn arguments_split_like_a_shortcut() {
