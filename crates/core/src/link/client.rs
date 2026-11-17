@@ -219,6 +219,20 @@ impl Link {
         Ok(asked.elapsed())
     }
 
+    /// Tell the desktop what the connection is like from here, for its
+    /// dashboard. A desktop from before this existed answers with a problem.
+    pub fn report(&self, report: &super::AllyReport) -> Result<super::Reported> {
+        self.post("/v1/report", report, QUICK)
+    }
+
+    /// Time a few empty questions: the quickest, and how far the slowest was
+    /// from it. `None` when the desktop did not answer any.
+    pub fn ping(&self) -> Option<(u32, u32)> {
+        let took: Vec<Duration> = (0..3).filter_map(|_| self.probe(0).ok()).collect();
+        let (quickest, slowest) = (*took.iter().min()?, *took.iter().max()?);
+        Some((quickest.as_millis().min(u32::MAX as u128) as u32, (slowest - quickest).as_millis().min(u32::MAX as u128) as u32))
+    }
+
     /// Ask the desktop to go to sleep. It refuses while a game runs there.
     pub fn sleep(&self) -> Result<()> {
         self.post::<serde_json::Value>("/v1/power/sleep", &serde_json::json!({}), QUICK).map(|_| ())

@@ -23,6 +23,10 @@ use crate::files::{Config, Extra, Files, Pending, SaveFolder};
 use crate::sunshine::Streamer;
 use crate::virtual_screen::{self, Driver};
 
+#[path = "dashboard.rs"]
+mod dashboard;
+pub use dashboard::Vitals;
+
 /// How long a scan of the installed games is reused.
 const SCAN_AGE: Duration = Duration::from_secs(60);
 /// How long the answer to "is Sunshine all right?" is reused.
@@ -95,6 +99,17 @@ pub struct Server {
     exchanges: Mutex<HashMap<String, Waiting>>,
     games: Mutex<Option<(Instant, Vec<Found>)>>,
     health: Mutex<Option<(Instant, Result<(), String>)>>,
+    /// How busy this PC is, for the dashboard.
+    vitals: fn() -> Vitals,
+    /// Looks for a newer release, for the dashboard.
+    newer: fn() -> Result<Option<String>, String>,
+    newest: Mutex<Option<(Instant, Result<Option<String>, String>)>>,
+    /// Lets the dashboard's page, and nothing else, ask for more than the page.
+    token: String,
+    /// What each linked Ally was last heard saying.
+    heard: Mutex<HashMap<String, dashboard::Heard>>,
+    asked: Mutex<Option<dashboard::Asked>>,
+    clients: Mutex<Option<(Instant, Option<Vec<String>>)>>,
 }
 
 /// An installed game and the store it is from ("steam", "epic", "gog").
@@ -175,7 +190,21 @@ impl Server {
             exchanges: Mutex::default(),
             games: Mutex::default(),
             health: Mutex::default(),
+            vitals: Vitals::default,
+            newer: || Ok(None),
+            newest: Mutex::default(),
+            token: link::random_hex(16),
+            heard: Mutex::default(),
+            asked: Mutex::default(),
+            clients: Mutex::default(),
         }
+    }
+
+    /// Tell the dashboard how busy this PC is and whether there is a newer release.
+    pub fn with_dashboard(mut self, vitals: fn() -> Vitals, newer: fn() -> Result<Option<String>, String>) -> Self {
+        self.vitals = vitals;
+        self.newer = newer;
+        self
     }
 
     /// Let linked devices ask this companion to update itself.
@@ -571,7 +600,14 @@ impl Server {
             ("GET", "/v1/library") => self.library(),
             ("POST", "/v1/install") => self.install(req.body, now),
             ("GET", "/v1/downloads") => json(&(self.installs.downloads)()),
-            ("POST", "/v1/stream/prepare") => self.prepare(req.body, now),
+            ("POST", "/v1/stream/prepare") => {
+                let answer = self.prepare(req.body, now);
+                if let (Ok(_), Ok(prepare)) = (&answer, body::<Prepare>(req.body)) {
+                    self.asked_for(req.device.unwrap_or_default(), &prepare, now);
+                }
+                answer
+            }
+            ("POST", "/v1/report") => self.report(req.device.unwrap_or_default(), req.body, now),
             ("POST", "/v1/stream/pair") => self.pair(req.body, req.from),
             ("POST", "/v1/power/sleep") => self.sleep(now),
             ("POST", "/v1/stream/end") => self.end(now),
@@ -626,7 +662,10 @@ impl Server {
         let (answer, key) = match open {
             Some(answer) => (answer, None),
             None => match self.trusted(req, now) {
-                Ok(key) => (self.signed(req, now), Some(key)),
+                Ok(key) => {
+                    self.heard_from(req.device.unwrap_or_default(), req.from, now);
+                    (self.signed(req, now), Some(key))
+                }
                 Err(Some(key)) => (refuse(409, "The Ally and the desktop disagree about the time. Check the clock on both."), Some(key)),
                 Err(None) => (refuse(401, "This device is not linked to the desktop."), None),
             },
@@ -653,6 +692,7 @@ pub fn serve(server: std::sync::Arc<Server>, http: tiny_http::Server) {
                         request.headers().iter().find(|h| h.field.as_str().as_str().eq_ignore_ascii_case(name)).map(|h| h.value.as_str().to_string())
                     };
                     let (device, time, nonce, signature) = (header(sign::DEVICE), header(sign::TIME), header(sign::NONCE), header(sign::SIGN));
+                    let (host, token) = (header("host"), header("x-carla-token"));
                     let method = request.method().as_str().to_ascii_uppercase();
                     let path = request.url().split('?').next().unwrap_or_default().to_string();
                     // Nothing the Ally sends is large, except a save file, and
@@ -668,7 +708,12 @@ pub fn serve(server: std::sync::Arc<Server>, http: tiny_http::Server) {
                     let mut bytes = Vec::new();
                     let read = std::io::Read::read_to_end(&mut std::io::Read::take(request.as_reader(), most), &mut bytes);
                     let from = request.remote_addr().map(|a| a.ip().to_string()).unwrap_or_default();
-                    let reply = if read.is_err() {
+                    // The dashboard: for this machine's own browser only.
+                    let here = request.remote_addr().is_some_and(|a| a.ip().is_loopback());
+                    let page = if here && read.is_ok() { server.local(&method, &path, host.as_deref(), token.as_deref(), &bytes, crate::files::now()) } else { None };
+                    let reply = if let Some(page) = page {
+                        page
+                    } else if read.is_err() {
                         Reply { status: 400, kind: "application/json", body: b"{\"error\":\"The request was not understood.\"}".to_vec(), sign: None }
                     } else {
                         server.handle(
@@ -692,6 +737,12 @@ pub fn serve(server: std::sync::Arc<Server>, http: tiny_http::Server) {
                         }
                     };
                     add("content-type", reply.kind);
+                    if reply.kind.starts_with("text/html") {
+                        // The page holds a token: it is not kept, and not shown inside another page.
+                        add("cache-control", "no-store");
+                        add("x-frame-options", "DENY");
+                        add("content-security-policy", "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; img-src data:; frame-ancestors 'none'");
+                    }
                     if let Some(s) = &reply.sign {
                         add(sign::SIGN, s);
                     }
@@ -734,6 +785,9 @@ mod tests {
             locked(&self.calls).push(format!("pair {pin} {name} {from}"));
             Ok(())
         }
+        fn paired(&self) -> Option<Vec<String>> {
+            Some(vec!["ally".to_string()])
+        }
     }
 
     /// What any test desktop's Steam was asked to install.
@@ -771,14 +825,14 @@ mod tests {
     /// How often any test desktop was put to sleep.
     static SLEEPS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
-    struct Desk {
-        files: Files,
+    pub(super) struct Desk {
+        pub files: Files,
         calls: Arc<Mutex<Vec<String>>>,
-        port: u16,
+        pub port: u16,
     }
 
     /// A companion on this machine with two games, listening on a free port.
-    fn desk(name: &str, down: bool) -> Desk {
+    pub(super) fn desk(name: &str, down: bool) -> Desk {
         let dir = std::env::temp_dir().join(format!("carla-companion-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -807,7 +861,7 @@ mod tests {
                 SLEEPS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 Ok(())
             },
-        ).with_updater(|| Ok(Some("9.9.9".into()))).with_admin_hold(Duration::from_millis(400)).with_installs(Installs {
+        ).with_updater(|| Ok(Some("9.9.9".into()))).with_dashboard(Vitals::default, || Ok(Some("9.9.9".into()))).with_admin_hold(Duration::from_millis(400)).with_installs(Installs {
             offered: || Ok(vec![App { appid: "40".into(), title: "Not Here Yet".into(), installdir: "NotHere".into() }, App { appid: "50".into(), title: "Needs Steam's Window".into(), installdir: String::new() }]),
             start: |app| {
                 locked(&ASKED_FOR).push(app.appid.clone());
