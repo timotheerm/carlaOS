@@ -42,7 +42,7 @@ fn backups(library: &Library, game_id: &str) -> Backups {
 /// Where this game's saves are on this machine: where the administrator
 /// said, or Steam's own cloud folder for a Steam game.
 fn save_dir(library: &Library, game_id: &str) -> Option<PathBuf> {
-    if let Ok(Some(chosen)) = library.store().save_path(game_id) {
+    if let Ok(Some(chosen)) = library.store().save_folder_of(game_id) {
         return chosen.is_dir().then_some(chosen);
     }
     let root = locked(&library.0.steam_root).clone()?;
@@ -160,7 +160,7 @@ pub fn saves_pick_folder(app: AppHandle, admin: State<'_, Admin>, library: State
     if saves::measure(&dir).is_none() {
         return Err("That folder is too large to be a save folder.".to_string());
     }
-    library.store().set_save_path(&game_id, Some(&dir))?;
+    library.store().set_save_folder_of(&game_id, Some(&dir))?;
     Ok(overview(&library, &game_id))
 }
 
@@ -168,7 +168,7 @@ pub fn saves_pick_folder(app: AppHandle, admin: State<'_, Admin>, library: State
 #[tauri::command]
 pub fn saves_forget_folder(admin: State<'_, Admin>, library: State<'_, Library>, game_id: String) -> Result<(), String> {
     admin.require()?;
-    library.store().set_save_path(&game_id, None)
+    library.store().set_save_folder_of(&game_id, None)
 }
 
 /// Search Steam and Wikipedia for a game's details, by the name typed.
