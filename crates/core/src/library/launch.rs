@@ -259,6 +259,15 @@ impl Processes {
 }
 
 impl Processes {
+    /// The file of every program that is running, looked at afresh.
+    pub fn programs(&mut self) -> Vec<PathBuf> {
+        let Some(system) = self.system.as_mut() else { return Vec::new() };
+        system.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing().with_exe(UpdateKind::OnlyIfNotSet));
+        system.processes().values().filter_map(|p| p.exe().map(Path::to_path_buf)).collect()
+    }
+}
+
+impl Processes {
     /// End every program whose file is inside `dir`. Says how many.
     pub fn end_inside(&mut self, dir: &Path) -> usize {
         // Looked at afresh, and with the same guard against a folder that is
@@ -286,6 +295,14 @@ pub struct Watch {
 impl Watch {
     pub fn new(install: &Install, child: Option<Child>) -> Self {
         Self { dir: install.install_path.clone(), child, tracker: Tracker::new(Instant::now()), processes: Processes::default() }
+    }
+
+    /// Watch a game that is already running: one that CarlaOS did not start
+    /// itself. It is never waited for, only followed until it has gone.
+    pub fn adopted(install: &Install) -> Self {
+        let mut watch = Self::new(install, None);
+        watch.tracker.seen = true;
+        watch
     }
 
     /// Close the game because the player asked. It is not asked nicely:

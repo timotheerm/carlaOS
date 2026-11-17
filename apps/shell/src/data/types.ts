@@ -52,7 +52,7 @@ export type Waiting = {
   done: number;
 };
 
-export type Session = { gameId: string; title: string; phase: "waking" | "starting" | "running"; stream: boolean; cloud: boolean; note?: string | null };
+export type Session = { gameId: string; title: string; phase: "waking" | "starting" | "reconnecting" | "running"; stream: boolean; cloud: boolean; note?: string | null; adopted?: boolean };
 
 export type NewGame = { title: string; exe: string; args: string; kind: Kind; cover: string | null; description: string; origin: string };
 

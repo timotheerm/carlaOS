@@ -34,7 +34,7 @@ type GameView = {
 };
 type DownloadView = Omit<Download, "gameId"> & { game_id: string };
 const fromDownload = ({ game_id, ...d }: DownloadView): Download => ({ ...d, gameId: game_id });
-type SessionView = { game_id: string; title: string; phase: Session["phase"]; stream: boolean; cloud: boolean; note?: string | null };
+type SessionView = { game_id: string; title: string; phase: Session["phase"]; stream: boolean; cloud: boolean; note?: string | null; adopted?: boolean };
 // What the Rust side sends for one linked desktop.
 type HostView = {
   id: string;
@@ -117,7 +117,7 @@ const fromView = (g: GameView): Game => ({
 });
 
 const fromSession = (s: SessionView | null): Session | null =>
-  s && { gameId: s.game_id, title: s.title, phase: s.phase, stream: s.stream, cloud: s.cloud, note: s.note ?? null };
+  s && { gameId: s.game_id, title: s.title, phase: s.phase, stream: s.stream, cloud: s.cloud, note: s.note ?? null, adopted: s.adopted ?? false };
 
 const awake = (state: HostState) => state === "ready" || state === "busy" || state === "not_ready";
 
@@ -258,6 +258,11 @@ export const library = {
   },
 
   refreshHosts,
+
+  /** Back to the game that is running, from the library. */
+  async resume() {
+    if (inTauri) await invoke("session_resume");
+  },
 
   /** Wake a sleeping desktop, then keep asking until it answers. */
   async wake(id: string) {
