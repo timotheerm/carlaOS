@@ -41,9 +41,9 @@ pub fn crash_alive(hidden: bool) {
 
 /// Report an interface that stops answering while the program runs on.
 /// Only a window the player can see is judged (not minimised, and the page
-/// itself says it is not hidden), and only when no game or stream is running.
+/// itself says it is not hidden), also while a game or stream is marked as running.
 /// A sleep in between, or the window coming back, starts the count again.
-pub fn watch_ui(app: AppHandle, library: Library) {
+pub fn watch_ui(app: AppHandle, _library: Library) {
     std::thread::spawn(move || {
         let mut last_tick = crate::library::now();
         let mut judging = false;
@@ -53,8 +53,10 @@ pub fn watch_ui(app: AppHandle, library: Library) {
             let slept = now - last_tick > 3 * WATCH_EVERY.as_secs() as i64;
             last_tick = now;
             let visible = app.get_webview_window("main").is_some_and(|w| w.is_visible().unwrap_or(false) && !w.is_minimized().unwrap_or(true));
-            let idle = library.0.active.try_lock().is_ok_and(|a| a.is_none());
-            let judge = visible && idle && !PAGE_HIDDEN.load(Ordering::SeqCst);
+            // A session still marked active does not excuse a window that stopped
+            // answering: that is how a session that never ended looks. A covered
+            // window reports itself hidden and is not judged.
+            let judge = visible && !PAGE_HIDDEN.load(Ordering::SeqCst);
             if slept || (judge && !judging) {
                 HEART.reset(now);
             }

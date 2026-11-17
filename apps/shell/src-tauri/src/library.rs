@@ -468,13 +468,20 @@ fn follow(app: AppHandle, library: &Library, mut running: Running, install: Inst
         // A desktop that was asleep before the stream may sleep again.
         let sleep_again = played && matches!(running, Running::Stream { woke: true, .. });
         *locked(&library.0.active) = None;
+        // Each step is written down before it starts: if one of them never
+        // returns, the last line of the trail says which.
+        crate::crash::note("session end: starting power::rest");
         crate::power::rest();
+        crate::crash::note("session end: closing the quick menu window");
         crate::quick::ended(&app);
+        crate::crash::note("session end: telling the interface");
         let _ = app.emit(SESSION_EVENT, None::<SessionView>);
+        crate::crash::note("session end: bringing CarlaOS back");
         if let Some(window) = app.get_webview_window("main") {
             let _ = window.unminimize();
             let _ = window.set_focus();
         }
+        crate::crash::note("session end: done");
         // Saves follow the player: to the desktops after playing here, back
         // from the desktop after a stream.
         if played && place == LOCAL {
