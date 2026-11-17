@@ -77,8 +77,23 @@ carla-companion saves restore KEY COPY
 
 ## Not covered yet
 
-- Emulator saves (memory cards belong to the emulator, not to one game).
+- Emulator memory cards that an emulator shares between its games are kept in
+  step per console, not per game: see below.
 - Two desktops are kept in step through the Ally, not with each other.
 - Tested with stand-ins only: two folders, and an Ally and a companion talking
   over the real protocol on one machine. Not yet run with a real game on
   Windows.
+
+## Emulated games
+
+An emulator keeps the saves of all its games together, so an emulated game has
+one save folder per **console**, not per game. Choosing "Choose the save
+folder" on any game of a console sets it for every game of that console. Its
+saves are kept in step under the console's name (for example "GameCube and
+Wii"), so the desktop names its folder the same way:
+
+```
+carla-companion saves set "GameCube and Wii" "C:\Users\You\Documents\Dolphin Emulator\GC"
+```
+
+Steam, Epic and GOG games are unchanged.

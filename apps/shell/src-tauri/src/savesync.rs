@@ -39,8 +39,12 @@ pub struct SyncView {
 /// cloud folder is left to Steam.
 fn folder(library: &Library, game_id: &str) -> Option<(PathBuf, String)> {
     let store = library.store();
-    let folder = store.save_path(game_id).ok().flatten().filter(|f| f.is_dir())?;
-    let title = store.install(game_id, LOCAL).ok()?.title;
+    let folder = store.save_folder_of(game_id).ok().flatten().filter(|f| f.is_dir())?;
+    // A console's saves are named by the console, which a desktop names the same way.
+    let title = match store.save_title_of(game_id).ok().flatten() {
+        Some(console) => console,
+        None => store.install(game_id, LOCAL).ok()?.title,
+    };
     Some((folder, title))
 }
 

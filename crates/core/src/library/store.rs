@@ -722,6 +722,48 @@ impl Store {
         Ok(())
     }
 
+    /// The folder a game's saves are kept in on this machine. An emulated game
+    /// shares one folder with every game of its console, because an emulator
+    /// keeps the saves of all its games together.
+    pub fn save_folder_of(&self, game_id: &str) -> Result<Option<PathBuf>> {
+        match self.console_of(game_id)? {
+            Some(console) => {
+                let path: Option<Option<String>> = self
+                    .db
+                    .query_row("SELECT save_path FROM games WHERE kind = ?1 AND platform = ?2 AND save_path IS NOT NULL AND save_path <> '' LIMIT 1", params![Kind::Emulated.as_str(), console], |r| r.get(0))
+                    .optional()
+                    .map_err(err)?;
+                Ok(path.flatten().map(PathBuf::from))
+            }
+            None => self.save_path(game_id),
+        }
+    }
+
+    /// Say where a game's saves are kept here: for an emulated game, for every
+    /// game of its console at once.
+    pub fn set_save_folder_of(&mut self, game_id: &str, path: Option<&Path>) -> Result<()> {
+        match self.console_of(game_id)? {
+            Some(console) => {
+                self.db.execute("UPDATE games SET save_path = ?3 WHERE kind = ?1 AND platform = ?2", params![Kind::Emulated.as_str(), console, path.map(text)]).map_err(err)?;
+                Ok(())
+            }
+            None => self.set_save_path(game_id, path),
+        }
+    }
+
+    /// The name a console's saves are known by on a desktop: the console's
+    /// name, the same on both. `None` for any other game.
+    pub fn save_title_of(&self, game_id: &str) -> Result<Option<String>> {
+        self.console_of(game_id)
+    }
+
+    /// The console an emulated game belongs to.
+    fn console_of(&self, game_id: &str) -> Result<Option<String>> {
+        let row: Option<(String, String)> =
+            self.db.query_row("SELECT kind, platform FROM games WHERE id = ?1", params![game_id], |r| Ok((r.get(0)?, r.get(1)?))).optional().map_err(err)?;
+        Ok(row.filter(|(kind, platform)| kind == Kind::Emulated.as_str() && !platform.is_empty()).map(|(_, platform)| platform))
+    }
+
     /// What happened the last time a game's saves were brought in step with
     /// each desktop.
     pub fn synced(&self, game_id: &str) -> Result<Vec<Synced>> {
@@ -939,6 +981,22 @@ mod tests {
         assert_eq!(now[0].added, 100);
         store.remove_host("home").unwrap();
         assert!(store.list_all().unwrap().iter().all(|g| !g.installable.contains(&"home".to_string())));
+    }
+
+    #[test]
+    fn an_emulated_games_saves_are_one_folder_for_its_whole_console() {
+        let mut store = Store::in_memory().unwrap();
+        let game = |id: &str, title: &str| Scanned { platform: "GameCube and Wii".into(), emulated: true, exe: Some(PathBuf::from("/emu/dolphin")), ..scanned(id, title) };
+        store.sync(LOCAL, "emu", &[game("a", "Tin Knight"), game("b", "Other Game")], 100).unwrap();
+        store.sync(LOCAL, "steam", &[scanned("1", "Steam Game")], 100).unwrap();
+        store.set_save_folder_of("emu:a", Some(Path::new("/saves/gc"))).unwrap();
+        assert_eq!(store.save_folder_of("emu:b").unwrap(), Some(PathBuf::from("/saves/gc")));
+        assert_eq!(store.save_title_of("emu:b").unwrap().as_deref(), Some("GameCube and Wii"));
+        // A Steam game keeps its own folder and is named by its own title.
+        store.set_save_folder_of("steam:1", Some(Path::new("/saves/steam"))).unwrap();
+        assert_eq!((store.save_folder_of("steam:1").unwrap(), store.save_title_of("steam:1").unwrap()), (Some(PathBuf::from("/saves/steam")), None));
+        store.set_save_folder_of("emu:b", None).unwrap();
+        assert_eq!(store.save_folder_of("emu:a").unwrap(), None);
     }
 
     #[test]
