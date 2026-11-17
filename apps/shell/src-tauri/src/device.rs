@@ -31,12 +31,13 @@ mod os {
         CoCreateInstance, CoInitializeEx, CoSetProxyBlanket, CLSCTX_ALL, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, EOAC_NONE, RPC_C_AUTHN_LEVEL_CALL,
         RPC_C_IMP_LEVEL_IMPERSONATE,
     };
-    use windows::Win32::System::Power::{GetSystemPowerStatus, SYSTEM_POWER_STATUS};
+    use windows::Win32::System::Power::{GetPwrCapabilities, GetSystemPowerStatus, SetSuspendState, SYSTEM_POWER_CAPABILITIES, SYSTEM_POWER_STATUS};
     use windows::Win32::System::Rpc::{RPC_C_AUTHN_WINNT, RPC_C_AUTHZ_NONE};
-    use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
+    use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentProcessId, GetCurrentThreadId};
     use windows::Win32::System::Wmi::{IWbemClassObject, IWbemLocator, IWbemServices, WbemLocator, WBEM_FLAG_FORWARD_ONLY, WBEM_FLAG_RETURN_IMMEDIATELY, WBEM_INFINITE};
     use windows::Win32::UI::Input::XboxController::{XInputGetState, XINPUT_STATE};
-    use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId, SetForegroundWindow};
+    use windows::Win32::Foundation::{LPARAM, WPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId, IsWindow, PostMessageW, SetForegroundWindow, HWND_BROADCAST, SC_MONITORPOWER, WM_SYSCOMMAND};
 
     /// Windows wants this once on every thread that talks to sound or WMI.
     /// Asking again on the same thread is harmless.
@@ -169,6 +170,41 @@ mod os {
         unsafe { GetForegroundWindow() }.0 as isize
     }
 
+    /// Whether a window belongs to CarlaOS itself.
+    pub fn is_ours(window: isize) -> bool {
+        let mut process = 0u32;
+        // SAFETY: the handle is only passed back to Windows, which checks
+        // it; `process` is a valid place to write to.
+        unsafe { GetWindowThreadProcessId(HWND(window as *mut _), Some(&mut process)) };
+        // SAFETY: no arguments.
+        process != 0 && process == unsafe { GetCurrentProcessId() }
+    }
+
+    /// Whether a window remembered earlier is still there.
+    pub fn is_window(window: isize) -> bool {
+        // SAFETY: the handle is only passed back to Windows, which checks it.
+        unsafe { IsWindow(Some(HWND(window as *mut _))) }.as_bool()
+    }
+
+    /// Put the Ally to sleep. A handheld sleeps the modern way, by turning
+    /// its screen off; an older machine is sent to sleep itself.
+    pub fn sleep() -> std::result::Result<(), String> {
+        let mut can = SYSTEM_POWER_CAPABILITIES::default();
+        // SAFETY: `can` is a valid place for Windows to write to.
+        let known = unsafe { GetPwrCapabilities(&mut can) };
+        if known && can.AoAc {
+            // SAFETY: a message to every window, with plain numbers. 2 turns
+            // the screen off, which on such a machine is going to sleep.
+            return unsafe { PostMessageW(Some(HWND_BROADCAST), WM_SYSCOMMAND, WPARAM(SC_MONITORPOWER as usize), LPARAM(2)) }.map_err(|e| format!("Windows would not go to sleep: {e}"));
+        }
+        // SAFETY: plain flags: sleep, not hibernate; let programs object; keep wake events.
+        if unsafe { SetSuspendState(false, false, false) } {
+            Ok(())
+        } else {
+            Err("Windows would not go to sleep.".to_string())
+        }
+    }
+
     /// Put a window in front even though another program has the front.
     /// Windows only lets the program in front hand it over, so this briefly
     /// joins that program's input queue.
@@ -210,6 +246,15 @@ mod os {
     }
     pub fn front() -> isize {
         0
+    }
+    pub fn is_ours(_: isize) -> bool {
+        false
+    }
+    pub fn is_window(_: isize) -> bool {
+        false
+    }
+    pub fn sleep() -> Result<(), String> {
+        Err("Only the Ally can be put to sleep from here.".to_string())
     }
     pub fn bring_forward(_: isize) {}
 }

@@ -31,6 +31,8 @@ const OPEN_EVENT: &str = "quick://open";
 static OPEN: AtomicBool = AtomicBool::new(false);
 /// The window that was in front when the menu opened: the game.
 static GAME_WINDOW: AtomicIsize = AtomicIsize::new(0);
+/// CarlaOS itself was in front when the menu opened, not the game.
+static OVER_CARLAOS: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Clone, Serialize)]
 pub struct QuickState {
@@ -44,6 +46,8 @@ pub struct QuickState {
     battery: Option<Battery>,
     /// The running game's power level and screen speed.
     power: Option<PowerView>,
+    /// The menu is over CarlaOS's library, with the game waiting behind it.
+    home: bool,
 }
 
 fn state(library: &Library) -> QuickState {
@@ -57,7 +61,7 @@ fn state(library: &Library) -> QuickState {
         None => (None, false, None, None),
     };
     let power = game.and_then(|(id, place)| power::view(library, &id, &place).ok());
-    QuickState { title, stream, since, sound: device::sound(), brightness: device::brightness(), battery: device::battery(), power }
+    QuickState { title, stream, since, sound: device::sound(), brightness: device::brightness(), battery: device::battery(), power, home: OVER_CARLAOS.load(Ordering::SeqCst) }
 }
 
 fn window_handle(window: &tauri::WebviewWindow) -> isize {
@@ -94,7 +98,9 @@ fn open(app: &AppHandle) {
             }
         }
     };
-    GAME_WINDOW.store(device::front(), Ordering::SeqCst);
+    let front = device::front();
+    GAME_WINDOW.store(front, Ordering::SeqCst);
+    OVER_CARLAOS.store(front != 0 && device::is_ours(front), Ordering::SeqCst);
     let _ = window.show();
     device::bring_forward(window_handle(&window));
     let _ = window.set_focus();
@@ -116,11 +122,22 @@ fn close(app: &AppHandle) {
     }
 }
 
+/// Take the menu away without putting anything in front: the caller does.
+pub(crate) fn hide(app: &AppHandle) {
+    if OPEN.swap(false, Ordering::SeqCst) {
+        if let Some(window) = app.get_webview_window(WINDOW) {
+            let _ = window.hide();
+        }
+    }
+    GAME_WINDOW.store(0, Ordering::SeqCst);
+}
+
 /// The game is over: the menu has nothing left to be over. Its window is
 /// given up altogether, so CarlaOS is as light as before.
 pub(crate) fn ended(app: &AppHandle) {
     OPEN.store(false, Ordering::SeqCst);
     GAME_WINDOW.store(0, Ordering::SeqCst);
+    crate::presence::ended();
     if let Some(window) = app.get_webview_window(WINDOW) {
         let _ = window.destroy();
     }
@@ -134,6 +151,11 @@ pub fn watch(app: AppHandle, library: Library) {
         let mut presses = None::<Presses>;
         loop {
             let playing = locked(&library.0.active).as_ref().is_some_and(|a| a.view.phase == "running");
+            // The game's window is remembered whether or not a controller is
+            // connected, for the way back to it from the library.
+            if playing {
+                crate::presence::note_front();
+            }
             let pad = if playing { device::pad() } else { None };
             let Some(pad) = pad else {
                 chord = Chord::default();
@@ -193,6 +215,14 @@ pub fn quick_set_power(library: State<'_, Library>, power: Power, screen: Screen
 #[tauri::command(async)]
 pub fn quick_close(app: AppHandle) {
     close(&app);
+}
+
+/// Leave the game running and go to CarlaOS's library. The way back is the
+/// bar at the top of the library, or this menu again.
+#[tauri::command(async)]
+pub fn quick_home(app: AppHandle) {
+    hide(&app);
+    crate::presence::to_carlaos(&app);
 }
 
 /// Take away the loading screen the desktop shows during a stream, for when

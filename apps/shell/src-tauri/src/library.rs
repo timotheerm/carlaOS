@@ -24,8 +24,13 @@ pub struct SessionView {
     pub(crate) game_id: String,
     pub(crate) title: String,
     /// "waking" while a sleeping desktop comes up, "starting" until the game's
-    /// program (or the stream) has been seen, then "running".
+    /// program (or the stream) has been seen, then "running". "reconnecting"
+    /// while a stream that sleep cut off is picked up again.
     pub(crate) phase: &'static str,
+    /// Unix seconds it was started, or first noticed.
+    pub(crate) since: i64,
+    /// Not started from CarlaOS: noticed while it was already running.
+    pub(crate) adopted: bool,
     /// Streamed from a desktop, not running on this Ally.
     stream: bool,
     /// Played on a cloud gaming service, in its own browser window.
@@ -79,6 +84,10 @@ pub(crate) struct Inner {
 #[derive(Clone)]
 pub struct Library(pub(crate) Arc<Inner>);
 
+pub(crate) fn now_ms() -> i64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
+}
+
 pub(crate) fn now() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
 }
@@ -111,6 +120,12 @@ impl Library {
 
     pub(crate) fn store(&self) -> MutexGuard<'_, Store> {
         locked(&self.0.store)
+    }
+
+    /// Every game installed on this Ally, as far as recognising a running
+    /// one goes.
+    pub(crate) fn candidates(&self) -> Vec<carla_core::presence::Candidate> {
+        self.store().local_installs().unwrap_or_default().iter().filter_map(carla_core::presence::Candidate::of).collect()
     }
 
     /// Look at what is installed and bring the catalogue up to date.
@@ -181,6 +196,11 @@ enum Running {
     Stream { moonlight: Child, since: Instant, woke: bool },
 }
 
+/// How long a stream that sleep cut off is tried again before giving up.
+const RECONNECT_FOR: Duration = Duration::from_secs(90);
+/// Sent to the interface with one line to show the player.
+pub(crate) const NOTICE_EVENT: &str = "system://notice";
+
 /// A stream that ends this soon never showed a game.
 const STREAM_SETTLE: Duration = Duration::from_secs(15);
 
@@ -217,7 +237,7 @@ fn claim(library: &Library, view: &SessionView, place: &str) -> Result<(), Strin
     if let Some(current) = active.as_ref() {
         return Err(format!("{} is still running.", current.view.title));
     }
-    *active = Some(Active { view: view.clone(), place: place.to_string(), since: now(), stop: false, end: false });
+    *active = Some(Active { view: view.clone(), place: place.to_string(), since: view.since, stop: false, end: false });
     Ok(())
 }
 
@@ -231,7 +251,7 @@ pub fn library_launch(app: AppHandle, library: State<'_, Library>, game_id: Stri
 pub(crate) fn play(app: AppHandle, library: &Library, mut install: Install, place: String) -> Result<SessionView, String> {
     let game_id = install.game_id.clone();
     let cloud = place == CLOUD;
-    let view = SessionView { game_id: game_id.clone(), title: install.title.clone(), phase: "starting", stream: place != LOCAL && !cloud, cloud, note: None };
+    let view = SessionView { game_id: game_id.clone(), title: install.title.clone(), phase: "starting", since: now(), adopted: false, stream: place != LOCAL && !cloud, cloud, note: None };
     // Claimed before anything slow happens, so a second press cannot start a
     // second game, and the player sees at once that something is happening.
     claim(library, &view, &place)?;
@@ -264,7 +284,7 @@ pub(crate) fn play(app: AppHandle, library: &Library, mut install: Install, plac
             }
         };
         let stopped = || locked(&library.0.active).as_ref().is_none_or(|a| a.stop);
-        crate::hosts::start_stream(library, &game_id, &place, &waking, &stopped).map(|(moonlight, woke)| Running::Stream { moonlight, since: Instant::now(), woke })
+        crate::hosts::start_stream(library, &game_id, &place, &waking, &stopped, false).map(|(moonlight, woke)| Running::Stream { moonlight, since: Instant::now(), woke })
     };
     let mut running = match started_running {
         Ok(running) => running,
@@ -294,12 +314,104 @@ pub(crate) fn play(app: AppHandle, library: &Library, mut install: Install, plac
         }
     };
 
+    follow(app, library, running, install, place, session, started, false);
+    Ok(view)
+}
+
+/// A game that is already running, noticed by [`crate::presence`]. From here
+/// on it is treated like one CarlaOS started: it has its playtime, the quick
+/// menu, and CarlaOS knows when it has closed.
+pub(crate) fn adopt(app: &AppHandle, library: &Library, install: Install) -> Result<(), String> {
+    let started = now();
+    let view = SessionView { game_id: install.game_id.clone(), title: install.title.clone(), phase: "running", since: started, adopted: true, stream: false, cloud: false, note: None };
+    claim(library, &view, LOCAL)?;
+    let kind = carla_core::power::Kind::of(LOCAL);
+    if let Ok(profile) = carla_core::power::profile(&library.store(), &install.game_id, kind) {
+        crate::power::apply(profile, kind);
+    }
+    let session = match library.store().start_session(&install.game_id, LOCAL, started) {
+        Ok(session) => session,
+        Err(e) => {
+            *locked(&library.0.active) = None;
+            crate::power::rest();
+            return Err(e);
+        }
+    };
+    let _ = app.emit(SESSION_EVENT, Some(view));
+    let running = Running::Game(Watch::adopted(&install));
+    follow(app.clone(), library, running, install, LOCAL.to_string(), session, started, true);
+    Ok(())
+}
+
+/// Pick up a stream again after the Ally has slept: the game is still open
+/// on the desktop, only the picture was cut. Says whether it worked.
+fn reconnect(app: &AppHandle, library: &Library, running: &mut Running, game_id: &str, place: &str) -> bool {
+    // Moonlight is still showing the picture that froze, or its own error.
+    running.stop(false);
+    let woke_before = matches!(running, Running::Stream { woke: true, .. });
+    let phase = |phase: &'static str| {
+        if let Some(current) = locked(&library.0.active).as_mut() {
+            current.view.phase = phase;
+            let _ = app.emit(SESSION_EVENT, Some(current.view.clone()));
+        }
+    };
+    phase("reconnecting");
+    let stopped = || locked(&library.0.active).as_ref().is_none_or(|a| a.stop);
+    let until = Instant::now() + RECONNECT_FOR;
+    loop {
+        if stopped() {
+            return false;
+        }
+        // The Wi-Fi needs a few seconds after waking, and the desktop may
+        // have gone to sleep as well: it is woken like at the start.
+        match crate::hosts::start_stream(library, game_id, place, &|| {}, &stopped, true) {
+            Ok((moonlight, woke)) => {
+                *running = Running::Stream { moonlight, since: Instant::now(), woke: woke || woke_before };
+                phase("starting");
+                return true;
+            }
+            Err(_) if Instant::now() < until => std::thread::sleep(Duration::from_secs(4)),
+            Err(e) => {
+                let _ = app.emit(NOTICE_EVENT, format!("The stream could not be picked up again. {e}"));
+                return false;
+            }
+        }
+    }
+}
+
+/// Watch a running game or stream until it has finished, then tidy up and
+/// bring CarlaOS back.
+#[allow(clippy::too_many_arguments)]
+fn follow(app: AppHandle, library: &Library, mut running: Running, install: Install, place: String, session: i64, started: i64, mut played: bool) {
+    let game_id = install.game_id.clone();
+    let cloud = place == CLOUD;
     let library = library.clone();
     std::thread::spawn(move || {
-        let mut played = false;
         let mut never_started = false;
+        let mut napper = carla_core::nap::Napper::new(now_ms());
         loop {
             std::thread::sleep(POLL);
+            // The Ally was asleep. That time was not played; and a stream
+            // was cut by it, while the game is still open on the desktop.
+            if let Some(nap) = napper.observe(now_ms()) {
+                let _ = library.store().session_slept(session, carla_core::nap::inside(nap, started));
+                if matches!(running, Running::Stream { .. }) {
+                    if played {
+                        if !reconnect(&app, &library, &mut running, &game_id, &place) {
+                            break;
+                        }
+                        // The reconnecting itself is not sleep.
+                        napper = carla_core::nap::Napper::new(now_ms());
+                        continue;
+                    }
+                } else {
+                    // Windows may have gone back to its own power mode.
+                    let kind = carla_core::power::Kind::of(&place);
+                    if let Ok(profile) = carla_core::power::profile(&library.store(), &game_id, kind) {
+                        crate::power::apply(profile, kind);
+                    }
+                }
+            }
             // A store that is updating the game first is not a game that
             // failed to start: wait for it and say so.
             if let (Running::Game(watch), false) = (&mut running, played) {
@@ -370,7 +482,6 @@ pub(crate) fn play(app: AppHandle, library: &Library, mut install: Install, plac
             crate::hosts::sleep_again(&library, &place);
         }
     });
-    Ok(view)
 }
 
 /// Ask the administrator to choose a file with the Windows file picker.
