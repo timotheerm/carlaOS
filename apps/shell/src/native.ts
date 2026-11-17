@@ -40,7 +40,7 @@ export const boot = {
   },
 };
 
-export type ReportInfo = { name: string; kind: "panic" | "unexpected"; at: number; size: number; new: boolean };
+export type ReportInfo = { name: string; kind: "panic" | "unexpected" | "hang"; at: number; size: number; new: boolean };
 
 // Crash reports kept by the Rust side. The browser preview has none.
 export const crash = {
@@ -55,6 +55,14 @@ export const crash = {
   /** The reports have been announced; they stop counting as new. */
   async seen(): Promise<void> {
     if (inTauri) await invoke("crash_seen");
+  },
+  /** The interface is alive. Sent every few seconds so a freeze can be reported. Never throws. */
+  async alive(hidden: boolean): Promise<void> {
+    try {
+      if (inTauri) await invoke("crash_alive", { hidden });
+    } catch {
+      /* nothing more can be done */
+    }
   },
   /** One line for the trail. Never throws. */
   async note(text: string): Promise<void> {

@@ -64,6 +64,7 @@ fn main() {
             presence::watch(app.handle().clone(), library.clone());
             system::watch(app.handle().clone(), library.clone());
             crash::watch_state(&library);
+            crash::watch_ui(app.handle().clone(), library.clone());
             app.manage(library);
             // CarlaOS starts between games.
             std::thread::spawn(power::rest);
@@ -162,6 +163,7 @@ fn main() {
             crash::crash_report_text,
             crash::crash_seen,
             crash::crash_note,
+            crash::crash_alive,
             crash::crash_open_folder,
         ])
         .build(context)

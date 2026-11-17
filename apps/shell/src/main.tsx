@@ -25,3 +25,9 @@ function note(kind: string, what: unknown) {
 }
 window.addEventListener("error", (e) => note("error", e.message));
 window.addEventListener("unhandledrejection", (e) => note("unhandled rejection", e.reason));
+// A heartbeat, so a window that stops answering is reported (see docs/CRASH-REPORTS.md).
+// It says whether the page is hidden, so a covered window is not mistaken for a frozen one.
+const beat = () => void crash.alive(document.hidden);
+beat();
+window.setInterval(beat, 3000);
+document.addEventListener("visibilitychange", beat);
