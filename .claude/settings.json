@@ -1,0 +1,43 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git fetch:*)", "Bash(git pull --ff-only:*)", "Bash(git switch:*)", "Bash(git branch:*)", "Bash(git worktree:*)",
+      "Bash(git status:*)", "Bash(git diff:*)", "Bash(git log:*)", "Bash(git add:*)", "Bash(git commit:*)", "Bash(git push:*)",
+      "Bash(gh pr list:*)", "Bash(gh pr view:*)", "Bash(gh pr checks:*)", "Bash(gh pr diff:*)", "Bash(gh pr create:*)", "Bash(gh pr merge:*)",
+      "Bash(gh run view:*)", "Bash(gh run list:*)", "Bash(gh release list:*)", "Bash(gh release view:*)"
+    ],
+    "deny": [
+      "Bash(git push --force:*)", "Bash(git push -f:*)", "Bash(git push *--force*)", "Bash(git push *--delete*)",
+      "Bash(git reset --hard:*)", "Bash(git clean:*)", "Bash(git branch -D:*)", "Bash(git tag:*)",
+      "Bash(gh pr close:*)", "Bash(gh release create:*)", "Bash(gh release delete:*)", "Bash(gh release edit:*)", "Bash(gh release upload:*)", "Bash(gh repo delete:*)"
+    ]
+  },
+  "hooks": {
+    "SubagentStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "shell": "bash",
+            "command": "node \"${CLAUDE_PROJECT_DIR}/.claude/hooks/log-agent.mjs\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Agent|Task",
+        "hooks": [
+          {
+            "type": "command",
+            "shell": "bash",
+            "command": "node \"${CLAUDE_PROJECT_DIR}/.claude/hooks/log-agent.mjs\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

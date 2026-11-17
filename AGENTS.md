@@ -20,8 +20,8 @@ Read this file before editing the repository. Then read `knowledge/START-HERE.md
 - Dependent work must be on its parent branch or use a deliberate stacked PR targeting that parent.
 - Use separate Git worktrees for independent concurrent writing sessions. Never share a writable worktree or branch between sessions.
 - One coordinator owns integration and final validation. Review every agent diff before integrating it.
-- Never overwrite user changes, reset another session's work, force-push, or change the state of an existing PR/branch without explicit approval.
-- Do not merge just because GitHub reports a PR as mergeable. Inspect the diff, dependencies and required checks.
+- Never overwrite user changes, reset another session's work, or force-push. Do not close or delete another session's PR/branch without explicit approval.
+- Do not merge just because GitHub reports a PR as mergeable. The coordinator may merge its own PRs only under `CLAUDE.md` "Autonomous integration" (all CI green, diff inspected and reviewed, dependencies merged, not an approval-gated change). Never tag, edit versions or publish by hand.
 
 ## CarlaOS engineering rules
 
