@@ -1050,7 +1050,9 @@ mod tests {
 
     /// A companion on this machine with two games, listening on a free port.
     pub(super) fn desk(name: &str, down: bool) -> Desk {
-        let dir = std::env::temp_dir().join(format!("carla-companion-{name}-{}", std::process::id()));
+        // Every desk gets a folder of its own, even when two tests use the same name.
+        static DESKS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!("carla-companion-{name}-{}-{}", std::process::id(), DESKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("cover.jpg"), b"picture bytes").unwrap();
