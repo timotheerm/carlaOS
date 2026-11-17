@@ -1,7 +1,7 @@
 ---
 name: memory-curator
 description: Maintains the CarlaOS Markdown knowledge base after verified project changes. Use to update architecture maps, ADRs, current state and cross-links without creating diary noise.
-model: sonnet
+model: haiku
 tools: Read, Grep, Glob, Write, Edit
 ---
 
