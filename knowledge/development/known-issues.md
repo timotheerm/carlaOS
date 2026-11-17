@@ -25,6 +25,7 @@ Add items with the [issue template](../templates/issue.md). Close by moving to "
 | KI-013 | Verification | Save features (finder, place, keep-clean) never tried with a real game or between two real desktops; `savesync.rs` glue (Tauri crate) has no automated test | PRs #41, #44, #46; [SAVE-SYNC.md](../../docs/SAVE-SYNC.md) | Medium |
 | KI-014 | Design limit | Keep-desktop-clean accepted limits: one Ally, no direct play on that desktop, a second Ally can start from an empty folder | PR #46; [ADR-009](../decisions/ADR-009-save-places-and-opt-in-cleanup.md) | Low |
 | KI-015 | Verification | OneDrive-redirected Documents handled only via `SHGetKnownFolderPath`; untested on a real redirected profile | PR #41; [SAVE-SYNC.md](../../docs/SAVE-SYNC.md) | Low |
+| KI-016 | Release | The release planner can wrongly skip a release: a push build looks up the pull request of each commit (scripts/release/changes.sh, gh api commits/<sha>/pulls) and GitHub may not have linked a just-merged PR yet, so only an earlier `no-release` PR is counted and the build says "everything merged since the last release is no-release". Seen on #48 (2026-11-17); the next merge released it. Idea: retry the lookup, or treat an unanswerable commit as a normal change | [plan.sh](../../scripts/release/plan.sh), run 44112061941 | Medium |
 
 ## Resolved
 
