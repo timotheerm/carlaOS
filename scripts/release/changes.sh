@@ -16,10 +16,34 @@ fi
 
 # Ask about every commit, not only the merges on main: a pull request that was
 # merged into another pull request's branch still deserves its line.
-# A commit GitHub cannot answer for (a pull request's trial merge, say) only
-# costs its line, so say so and carry on. "-" stands for "no labels".
+# "-" stands for "no labels".
+#
+# GitHub links a just-merged pull request to its commits a little late, so a
+# lookup may fail or come back empty. It is tried again a few times; a commit
+# that still has no pull request is listed as an UNRESOLVED change
+# ("?<tab>-<tab>Change <sha>: ..."). It counts as a normal change, so it can
+# never make "everything merged since the last release is no-release" true by
+# being left out.
+tries="${CHANGES_TRIES:-4}"
+delay="${CHANGES_DELAY:-4}"
+lookup() {
+  local commit="$1" attempt=1 rows
+  while :; do
+    if rows="$(gh api "repos/$GITHUB_REPOSITORY/commits/$commit/pulls" \
+      --jq '.[] | select(.merged_at != null) | [.number, ([.labels[].name] | join(",") | if . == "" then "-" else . end), .title] | @tsv')" \
+      && [ -n "$rows" ]; then
+      printf '%s\n' "$rows"
+      return
+    fi
+    if [ "$attempt" -ge "$tries" ]; then
+      echo "::warning::Could not find the pull request for commit $commit; counting it as a normal change." >&2
+      printf '?\t-\tChange %s: pull request not found\n' "${commit:0:7}"
+      return
+    fi
+    sleep "$((delay * attempt))"
+    attempt=$((attempt + 1))
+  done
+}
 git rev-list --max-count=500 "$range" | while read -r commit; do
-  gh api "repos/$GITHUB_REPOSITORY/commits/$commit/pulls" \
-    --jq '.[] | select(.merged_at != null) | [.number, ([.labels[].name] | join(",") | if . == "" then "-" else . end), .title] | @tsv' \
-    || echo "::warning::Could not look up the pull request for commit $commit." >&2
+  lookup "$commit"
 done | sort -t "$(printf '\t')" -k1,1n -u

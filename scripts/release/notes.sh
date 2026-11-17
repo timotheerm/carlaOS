@@ -58,7 +58,11 @@ if [ -n "$changes" ]; then
   # Titles are other people's text: keep them from being read as Markdown or mentions.
   printf '%s\n' "$changes" | while IFS="$(printf '\t')" read -r number _labels title; do
     title="$(printf '%s' "$title" | sed -e 's/[<>]//g' -e 's/@/@ /g')"
-    echo "- $title ([#$number]($site/pull/$number))"
+    if [ "$number" = "?" ]; then
+      echo "- $title"
+    else
+      echo "- $title ([#$number]($site/pull/$number))"
+    fi
   done
 else
   echo "- Changes made directly, without a pull request."
