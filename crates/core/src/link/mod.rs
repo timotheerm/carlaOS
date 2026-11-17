@@ -124,6 +124,10 @@ pub struct RemoteGame {
     /// The store there has an update to finish before the game starts.
     #[serde(default)]
     pub update: Option<crate::library::Update>,
+    /// What the administrator wrote (or looked up) there about a game added
+    /// by hand; empty when there is none. Older desktops never send it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
 }
 
 /// What a desktop's stores could install there: games of the account's
@@ -266,4 +270,20 @@ pub fn random(len: usize) -> Vec<u8> {
 
 pub fn random_hex(len: usize) -> String {
     hex(&random(len))
+}
+
+#[cfg(test)]
+mod description_tests {
+    use super::RemoteGame;
+
+    #[test]
+    fn a_game_from_an_older_desktop_has_no_description_and_none_is_sent_when_empty() {
+        let old = r#"{"id":"manual:ab","source":"manual","source_id":"ab","title":"Lanterns","has_cover":true}"#;
+        let game: RemoteGame = serde_json::from_str(old).unwrap();
+        assert_eq!(game.description, "");
+        assert!(!serde_json::to_string(&game).unwrap().contains("description"), "an older Ally never sees the field");
+        let told = RemoteGame { description: "A game.".into(), ..game };
+        let back: RemoteGame = serde_json::from_str(&serde_json::to_string(&told).unwrap()).unwrap();
+        assert_eq!(back.description, "A game.");
+    }
 }
