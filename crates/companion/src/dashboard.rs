@@ -186,6 +186,16 @@ struct Forget {
     id: String,
 }
 
+/// How many of the newest lines of the log the page shows.
+const LOG_LINES: usize = 100;
+
+/// The newest lines of `host.log`, for the page's "Log" section.
+#[derive(Debug, Serialize)]
+struct LogView {
+    path: String,
+    lines: Vec<String>,
+}
+
 /// How long a look for games can be added from.
 const FOUND_AGE: Duration = Duration::from_secs(600);
 
@@ -283,7 +293,7 @@ impl Server {
     }
 
     /// The names Sunshine has paired a Moonlight under, when it says.
-    fn paired_names(&self) -> Option<Vec<String>> {
+    pub(super) fn paired_names(&self) -> Option<Vec<String>> {
         let mut clients = locked(&self.clients);
         match clients.as_ref() {
             Some((at, names)) if at.elapsed() < CLIENTS_AGE => names.clone(),
@@ -541,6 +551,7 @@ impl Server {
             return refuse(404, "That device is no longer linked.");
         }
         locked(&self.pings).remove(&forget.id);
+        self.files.host(&format!("Device {} was forgotten from the dashboard.", label(&forget.id)));
         ok()
     }
 
@@ -561,6 +572,7 @@ impl Server {
         } else {
             match (method, path) {
                 ("GET", "/local/overview") => json(&self.overview(now)),
+                ("GET", "/local/log") => json(&LogView { path: self.files.host_log().path().to_string_lossy().into_owned(), lines: self.files.host_log().tail(LOG_LINES) }),
                 ("GET", "/local/newer") => json(&self.newer(false)),
                 ("POST", "/local/newer") => json(&self.newer(true)),
                 ("POST", "/local/code") => self.files.new_code().map_err(|e| (500, e)).and_then(|_| ok()),
@@ -672,6 +684,46 @@ mod tests {
         // The signed API is where it was.
         assert_eq!(get(desk.port, "/v1/status", &own, Some(&token)).0, 401);
         assert_eq!(get(desk.port, "/v1/hello", &own, None).0, 200);
+    }
+
+    #[test]
+    fn the_log_is_shown_on_the_page_only_to_this_pc_under_its_own_name_and_with_its_token() {
+        let desk = desk("dash-log", false);
+        let own = format!("127.0.0.1:{}", desk.port);
+        let token = token(desk.port);
+        desk.files.host("a line the page should show");
+        // Another site's Host, no token and a guessed one are all refused, and nothing of the log leaks.
+        for (host, tok) in [("evil.example", Some(token.as_str())), (own.as_str(), None), (own.as_str(), Some("0123456789abcdef0123456789abcdef"))] {
+            let (status, body) = get(desk.port, "/local/log", host, tok);
+            assert_eq!(status, 403, "{host} {tok:?}");
+            assert!(!body.contains("a line the page should show"), "{body}");
+        }
+        assert_eq!(ask("POST", desk.port, "/local/log", &own, Some(&token), "").0, 404, "only for GET");
+        let (status, body) = get(desk.port, "/local/log", &format!("localhost:{}", desk.port), Some(&token));
+        assert_eq!(status, 200, "{body}");
+        let log: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(log["lines"].as_array().unwrap().iter().any(|l| l.as_str().is_some_and(|l| l.ends_with("a line the page should show"))), "{body}");
+        assert!(log["path"].as_str().unwrap().ends_with("host.log"));
+        // The page's own polling is not written into the log it shows.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert!(!desk.files.host_log().text().contains("/local/log -> 200"), "{}", desk.files.host_log().text());
+    }
+
+    #[test]
+    fn the_newest_hundred_lines_of_the_log_are_what_the_page_gets() {
+        let desk = desk("dash-log-tail", false);
+        let token = token(desk.port);
+        // The server's own first note (Sunshine is ready) is in before the rest.
+        while !desk.files.host_log().text().contains("Sunshine is ready.") {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        for n in 0..250 {
+            desk.files.host(&format!("event {n}"));
+        }
+        let (_, body) = get(desk.port, "/local/log", &format!("127.0.0.1:{}", desk.port), Some(&token));
+        let lines = serde_json::from_str::<serde_json::Value>(&body).unwrap()["lines"].as_array().unwrap().clone();
+        assert_eq!(lines.len(), 100);
+        assert!(lines[0].as_str().unwrap().ends_with("event 150") && lines[99].as_str().unwrap().ends_with("event 249"));
     }
 
     #[test]

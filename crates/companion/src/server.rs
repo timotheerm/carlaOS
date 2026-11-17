@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -10,7 +11,7 @@ use carla_core::library::emulation;
 use carla_core::library::find::{self, Candidate};
 use carla_core::library::Scanned;
 use carla_core::link::enrol::{self, Exchange, Shared, Side};
-use carla_core::link::health::{Asking, Pulse};
+use carla_core::link::health::{Asking, Pulse, CONNECTED_FOR};
 use carla_core::link::probe::{self, BurstAsk};
 use carla_core::link::{EnrolAsk, EnrolReveal, FitAsk, ScreenFit};
 use carla_core::link::quality;
@@ -123,7 +124,19 @@ pub struct Server {
     replay: Mutex<Replay>,
     exchanges: Mutex<HashMap<String, Waiting>>,
     games: Mutex<Option<(Instant, Vec<Found>)>>,
+    /// Held while the disks are being scanned for games. The list above is
+    /// not, so that asking what is known never waits for a scan.
+    scanning: Mutex<()>,
     health: Mutex<Option<(Instant, Result<(), String>)>>,
+    /// Held while Sunshine is being asked, for the same reason.
+    checking: Mutex<()>,
+    /// When the list of games was last thrown away (a game was installed): a
+    /// scan that began before that is not kept.
+    cleared: Mutex<Instant>,
+    /// Lines of the log that would repeat for every stranger's request: per
+    /// kind, when the window began, how many were left out, and who asked last.
+    noise: Mutex<HashMap<String, (Instant, u32, String)>>,
+    noise_window: Duration,
     /// Names of this desktop's graphics chips.
     graphics: Vec<String>,
     /// The socket measuring packets are sent from (see `probe`).
@@ -187,6 +200,11 @@ fn locked<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// A device as the log names it: the first six letters of its id.
+fn label(id: &str) -> String {
+    id.chars().take(6).collect()
+}
+
 /// Remove the listed files from a save folder, each only if it still holds
 /// exactly what was checked. One that changed since (written meanwhile, or
 /// gone) stays where it is and is counted in `skipped`. Only plain files
@@ -247,7 +265,12 @@ impl Server {
             replay: Mutex::default(),
             exchanges: Mutex::default(),
             games: Mutex::default(),
+            scanning: Mutex::default(),
             health: Mutex::default(),
+            checking: Mutex::default(),
+            cleared: Mutex::new(Instant::now()),
+            noise: Mutex::default(),
+            noise_window: Duration::from_secs(10),
             graphics: Vec::new(),
             probe: None,
             bursting: Default::default(),
@@ -387,7 +410,9 @@ impl Server {
             return refuse(409, &format!("{} is running on {}. Install {} once it is closed.", playing.title, self.config.name, app.title));
         }
         let started = (self.installs.start)(&app).map_err(|e| (503, e))?;
+        self.files.host(&format!("Installing {} (steam:{}) was asked for.", app.title, app.appid));
         // The next question about games must not get an older answer.
+        *locked(&self.cleared) = Instant::now();
         *locked(&self.games) = None;
         json(&Installing { asked_store: started == Started::AskedSteam })
     }
@@ -404,7 +429,10 @@ impl Server {
             return refuse(409, &format!("{title} is running on {}. Update it when the game is closed.", self.config.name));
         }
         match (self.updater)() {
-            Ok(Some(version)) => json(&Updating { updating: true, version }),
+            Ok(Some(version)) => {
+                self.files.host(&format!("Updating to {version} was asked for: the companion restarts."));
+                json(&Updating { updating: true, version })
+            }
             Ok(None) => json(&Updating { updating: false, version: VERSION.to_string() }),
             Err(e) => Err((503, e)),
         }
@@ -445,18 +473,45 @@ impl Server {
         Hello { name: self.config.name.clone(), id: self.config.id.clone(), version: VERSION.to_string(), api_version: API_VERSION, approve }
     }
 
+    /// The installed games. `fresh` asks for a scan that began after this
+    /// call; several asking at once share one scan rather than each making
+    /// its own one after the other.
     fn games(&self, fresh: bool) -> Vec<Found> {
-        let mut games = locked(&self.games);
-        match games.as_ref() {
-            Some((at, list)) if !fresh && at.elapsed() < SCAN_AGE => list.clone(),
-            _ => {
-                let mut list = (self.scan)();
-                // Game files of the consoles set up here, each starting its emulator.
-                list.extend(self.files.consoles().iter().flat_map(emulation::scan).map(|game| ("emu", game)));
-                *games = Some((Instant::now(), list.clone()));
-                list
+        let asked = Instant::now();
+        let usable = |known: &Option<(Instant, Vec<Found>)>| match known {
+            Some((at, list)) if (!fresh && at.elapsed() < SCAN_AGE) || (fresh && *at >= asked) => Some(list.clone()),
+            _ => None,
+        };
+        if let Some(list) = usable(&locked(&self.games)) {
+            return list;
+        }
+        // Waits for a scan that is running, whose answer may be what is wanted.
+        let _scanning = locked(&self.scanning);
+        if let Some(list) = usable(&locked(&self.games)) {
+            return list;
+        }
+        let begun = Instant::now();
+        let mut list = (self.scan)();
+        // Game files of the consoles set up here, each starting its emulator.
+        list.extend(self.files.consoles().iter().flat_map(emulation::scan).map(|game| ("emu", game)));
+        // A scan that began before a game was installed does not show it: it is
+        // answered to whoever asked, but not kept for those who ask next.
+        if begun >= *locked(&self.cleared) {
+            *locked(&self.games) = Some((Instant::now(), list.clone()));
+        }
+        list
+    }
+
+    /// The list for the Ally's request for the games. While a scan runs, the
+    /// list from before is answered at once: a worker kept waiting for the
+    /// disks is one less to answer the Ally's other requests.
+    fn games_listing(&self) -> Vec<Found> {
+        if matches!(self.scanning.try_lock(), Err(std::sync::TryLockError::WouldBlock)) {
+            if let Some((_, list)) = locked(&self.games).as_ref() {
+                return list.clone();
             }
         }
+        self.games(true)
     }
 
     fn find(&self, game_id: &str) -> Option<Found> {
@@ -472,7 +527,7 @@ impl Server {
     }
 
     fn listed(&self) -> Vec<RemoteGame> {
-        let steam = self.games(true).into_iter().map(|(source, g)| RemoteGame {
+        let steam = self.games_listing().into_iter().map(|(source, g)| RemoteGame {
             id: format!("{source}:{}", g.source_id),
             source: source.to_string(),
             source_id: g.source_id,
@@ -502,33 +557,44 @@ impl Server {
             return refuse(409, &format!("{} is still running on {}.", playing.title, self.config.name));
         }
         (self.sleep)().map_err(|e| (503, e))?;
+        self.files.host("The Ally asked this PC to go to sleep.");
         json(&serde_json::json!({ "sleeping": true }))
     }
 
     /// Close the game that is being streamed, because the player chose to
     /// on the Ally. The launcher that started it does the closing.
     fn end(&self, now: i64) -> Answer {
-        let playing = self.files.playing(now).is_some();
-        if playing {
+        let playing = self.files.playing(now);
+        if let Some(playing) = &playing {
             self.files.ask_end(now).map_err(|e| (500, e))?;
+            self.files.host(&format!("Closing {} was asked for; the launcher closes it.", playing.title));
         }
-        json(&serde_json::json!({ "ended": playing }))
+        json(&serde_json::json!({ "ended": playing.is_some() }))
     }
 
     fn streamer(&self) -> Result<&dyn Streamer, String> {
         self.streamer.as_deref().ok_or_else(|| "The companion has not been given Sunshine's user name and password. Run its set-up again.".to_string())
     }
 
+    /// Whether Sunshine is all right, reused for a few seconds. While it is
+    /// being asked (Sunshine may take seconds to answer), the answer from
+    /// before is given at once, so that no worker waits for it.
     fn health(&self) -> Result<(), String> {
-        let mut health = locked(&self.health);
-        match health.as_ref() {
-            Some((at, result)) if at.elapsed() < HEALTH_AGE => result.clone(),
-            _ => {
-                let result = self.streamer().and_then(Streamer::check);
-                *health = Some((Instant::now(), result.clone()));
-                result
+        let known = || locked(&self.health).clone();
+        match known() {
+            Some((at, result)) if at.elapsed() < HEALTH_AGE => return result,
+            Some((_, result)) if matches!(self.checking.try_lock(), Err(std::sync::TryLockError::WouldBlock)) => return result,
+            _ => {}
+        }
+        let _checking = locked(&self.checking);
+        if let Some((at, result)) = known() {
+            if at.elapsed() < HEALTH_AGE {
+                return result;
             }
         }
+        let result = self.streamer().and_then(Streamer::check);
+        *locked(&self.health) = Some((Instant::now(), result.clone()));
+        result
     }
 
     fn status(&self, now: i64) -> Status {
@@ -652,6 +718,7 @@ impl Server {
             return refuse(403, "That is not the code on the desktop.");
         }
         let device = self.files.add_device(&waiting.device_name, &shared.device_key()).map_err(|e| (500, e))?;
+        self.files.host(&format!("A device was linked: {}.", label(&device.id)));
         self.files.clear_code();
         json(&EnrolDone { device_id: device.id, proof: shared.proof(Side::Desktop) })
     }
@@ -690,10 +757,13 @@ impl Server {
                 return refuse(409, &format!("{} is still running on {}. Close it there first.", playing.title, self.config.name));
             }
             // The same game is still running: the stream picks it up again.
+            self.files.host(&format!("Prepare: {} ({}) is already running; the stream picks it up again.", playing.title, playing.game_id));
             return json(&self.status(now));
         }
         self.streamer().and_then(|s| s.ensure_app(&self.launcher)).map_err(|e| (503, e))?;
         self.files.set_pending(&pending).map_err(|e| (500, e))?;
+        let screen = pending.screen.map_or("the desktop's screen as it is".to_string(), |s| format!("a screen of {}", s.words()));
+        self.files.host(&format!("Prepare: {} ({}) is ready to start when Moonlight connects, for {screen}.", pending.title, pending.game_id));
         // Sunshine looks at the screens as soon as Moonlight connects, before
         // the launcher runs: the stream's own screen has to be there by then.
         // Without it the launcher switches the desktop's screen instead.
@@ -709,8 +779,13 @@ impl Server {
             return refuse(400, "The pairing PIN is four digits.");
         }
         let streamer = self.streamer().map_err(|e| (503, e))?;
-        streamer.ensure_app(&self.launcher).map_err(|e| (503, e))?;
-        streamer.pair(&pair.pin, &pair.name, from).map_err(|e| (503, e))?;
+        self.files.host("Pairing with Moonlight began (the PIN is not written down).");
+        let paired = streamer.ensure_app(&self.launcher).and_then(|_| streamer.pair(&pair.pin, &pair.name, from));
+        match &paired {
+            Ok(()) => self.files.host("Pairing with Moonlight worked."),
+            Err(e) => self.files.host(&format!("Pairing with Moonlight failed: {e}")),
+        }
+        paired.map_err(|e| (503, e))?;
         json(&serde_json::json!({ "paired": true }))
     }
 
@@ -954,8 +1029,22 @@ impl Server {
             Some(answer) => (answer, None),
             None => match self.trusted(req, now) {
                 Ok(key) => (self.signed(req, now), Some(key)),
-                Err(Some(key)) => (refuse(409, "The Ally and the desktop disagree about the time. Check the clock on both."), Some(key)),
-                Err(None) => (refuse(401, "This device is not linked to the desktop."), None),
+                Err(Some(key)) => {
+                    self.files.host(&format!("Refused a request of {}: it is too old, too new or repeated (the Ally's and the desktop's clocks differ).", label(req.device.unwrap_or_default())));
+                    (refuse(409, "The Ally and the desktop disagree about the time. Check the clock on both."), Some(key))
+                }
+                Err(None) => {
+                    let why = match req.device {
+                        None => "it names no device".to_string(),
+                        Some(device) if self.knows(device) => format!("device {} is linked, but the request's signature does not match (its key changed, or the request was altered)", label(device)),
+                        Some(device) => format!("device {} is not linked here (forgotten, or linked to another desktop)", label(device)),
+                    };
+                    let linked = req.device.is_some_and(|d| self.knows(d));
+                    if linked || self.noisy("refused detail", &who(req.device, false, false), Instant::now()) {
+                        self.files.host(&format!("Refused {} {}: {why}.", carla_core::library::find::visible(req.method).chars().take(12).collect::<String>(), route_shape(req.path)));
+                    }
+                    (refuse(401, "This device is not linked to the desktop."), None)
+                }
             },
         };
         let (status, kind, body) = match answer {
@@ -967,76 +1056,512 @@ impl Server {
     }
 }
 
+/// The workers that answer requests. Each takes one request at a time, and
+/// one that waits for something holds its worker for as long as it waits.
+const WORKERS: usize = 8;
+/// How many of the workers may be on requests that can take long at once
+/// (the saves, a look for games, pairing, an Ally waiting for a request from
+/// the administrator). The rest are always free for the status, the games and
+/// the pulse, so that a few slow requests cannot make the Ally look gone.
+const LONG_AT_ONCE: usize = 4;
+/// A request that takes longer than this is marked in the log.
+const SLOW: Duration = Duration::from_secs(1);
+/// How long one read or write on a connection may wait for the other side.
+/// A client that went away, such as an Ally that dropped off Wi-Fi in the
+/// middle of a request, is let go after this and frees its worker.
+const IO_WAIT: Duration = Duration::from_secs(10);
+/// How long a request's body may take to arrive, however slowly it trickles in.
+const BODY_WITHIN: Duration = Duration::from_secs(30);
+/// How often the Allies and Sunshine are looked at for the log.
+const NOTICE_EVERY: Duration = Duration::from_secs(5);
+
+/// Open the API's port. The sockets it accepts are given timeouts (see
+/// [`IO_WAIT`]): `tiny_http` has none of its own.
+pub fn bind(addr: impl std::net::ToSocketAddrs) -> Result<(tiny_http::Server, Result<(), String>), Box<dyn std::error::Error + Send + Sync + 'static>> {
+    bind_within(addr, IO_WAIT)
+}
+
+/// The server, and whether sockets it accepts really have the timeouts: that
+/// is tried here on a connection to the listener itself, not assumed. When
+/// they do not, the body deadline is all that is left, and the caller says so.
+fn bind_within(addr: impl std::net::ToSocketAddrs, wait: Duration) -> Result<(tiny_http::Server, Result<(), String>), Box<dyn std::error::Error + Send + Sync + 'static>> {
+    let listener = std::net::TcpListener::bind(addr)?;
+    let timeouts = socket_timeouts(&listener, wait).map_err(|e| format!("could not set them ({e})")).and_then(|()| inherited(&listener, wait));
+    Ok((tiny_http::Server::from_listener(listener, None)?, timeouts))
+}
+
+/// Connect to the listener, accept that connection and read back its timeout.
+fn inherited(listener: &std::net::TcpListener, wait: Duration) -> Result<(), String> {
+    let port = listener.local_addr().map_err(|e| e.to_string())?.port();
+    let _client = std::net::TcpStream::connect_timeout(&std::net::SocketAddr::from(([127, 0, 0, 1], port)), Duration::from_secs(2)).map_err(|e| format!("could not be tried ({e})"))?;
+    let (accepted, _) = listener.accept().map_err(|e| format!("could not be tried ({e})"))?;
+    match accepted.read_timeout() {
+        Ok(Some(got)) if got + Duration::from_millis(50) >= wait => Ok(()),
+        _ => Err("accepted sockets do not inherit the timeouts".to_string()),
+    }
+}
+
+/// Give the sockets that `listener` accepts a read and a write timeout. They
+/// are inherited from the listening socket, which `std` has no call for.
+#[cfg(windows)]
+fn socket_timeouts(listener: &std::net::TcpListener, wait: Duration) -> std::io::Result<()> {
+    use std::os::windows::io::AsRawSocket;
+    #[link(name = "ws2_32")]
+    extern "system" {
+        fn setsockopt(socket: usize, level: i32, name: i32, value: *const u8, length: i32) -> i32;
+    }
+    const SOL_SOCKET: i32 = 0xffff;
+    const SO_SNDTIMEO: i32 = 0x1005;
+    const SO_RCVTIMEO: i32 = 0x1006;
+    // Windows takes milliseconds, as a 32-bit number.
+    let millis = u32::try_from(wait.as_millis()).unwrap_or(u32::MAX);
+    for option in [SO_RCVTIMEO, SO_SNDTIMEO] {
+        // SAFETY: a valid socket of this process, and a 4-byte value as the option wants.
+        let failed = unsafe { setsockopt(listener.as_raw_socket() as usize, SOL_SOCKET, option, (&millis as *const u32).cast(), 4) };
+        if failed != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn socket_timeouts(_: &std::net::TcpListener, _: Duration) -> std::io::Result<()> {
+    Ok(())
+}
+
+/// What the pool of workers may do (see `serve_with`).
+#[derive(Clone, Copy)]
+struct Limits {
+    workers: usize,
+    long: usize,
+    body: Duration,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self { workers: WORKERS, long: LONG_AT_ONCE, body: BODY_WITHIN }
+    }
+}
+
+/// How many workers are busy, and how many of those on long requests.
+struct Load {
+    limits: Limits,
+    busy: AtomicUsize,
+    long: AtomicUsize,
+    /// Threads that answer a request whose body never came whole.
+    detached: AtomicUsize,
+    warned: Mutex<Option<Instant>>,
+    /// Where request lines go to be written by a thread of their own, so that
+    /// a slow disk never keeps a worker (or its place) after the answer is sent.
+    lines: Mutex<Option<std::sync::mpsc::SyncSender<String>>>,
+}
+
+/// How many such threads there can be: each waits for a client that went
+/// quiet. Past that, the connection is let go without an answer.
+const DETACHED_AT_ONCE: usize = 16;
+
+/// A place taken in a count, given back when it goes.
+struct Slot<'a>(&'a AtomicUsize);
+
+impl Drop for Slot<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+impl Load {
+    fn new(limits: Limits) -> Self {
+        Self { limits, busy: AtomicUsize::new(0), long: AtomicUsize::new(0), detached: AtomicUsize::new(0), warned: Mutex::new(None), lines: Mutex::new(None) }
+    }
+
+    /// A worker takes a request. Also says whether that made every worker busy.
+    fn start(&self) -> (Slot<'_>, bool) {
+        let busy = self.busy.fetch_add(1, Ordering::SeqCst) + 1;
+        (Slot(&self.busy), busy >= self.limits.workers)
+    }
+
+    /// A worker takes a request that can take long. `None` when enough
+    /// workers are on such requests already.
+    fn start_long(&self) -> Option<Slot<'_>> {
+        if self.long.fetch_add(1, Ordering::SeqCst) >= self.limits.long {
+            self.long.fetch_sub(1, Ordering::SeqCst);
+            return None;
+        }
+        Some(Slot(&self.long))
+    }
+
+    /// A place for a thread that answers a client that went quiet. `false` when all are taken.
+    /// Write a request's line down, without waiting for the disk. A full queue drops the line.
+    fn say(&self, server: &Server, line: String) {
+        match locked(&self.lines).as_ref() {
+            Some(queue) => {
+                let _ = queue.try_send(line);
+            }
+            None => server.files.host(&line),
+        }
+    }
+
+    fn start_detached(&self) -> bool {
+        if self.detached.fetch_add(1, Ordering::SeqCst) >= DETACHED_AT_ONCE {
+            self.detached.fetch_sub(1, Ordering::SeqCst);
+            return false;
+        }
+        true
+    }
+
+    /// Whether to say again that every worker is busy: not more than every ten seconds.
+    fn warn_due(&self) -> bool {
+        let mut warned = locked(&self.warned);
+        let due = warned.is_none_or(|at| at.elapsed() >= Duration::from_secs(10));
+        if due {
+            *warned = Some(Instant::now());
+        }
+        due
+    }
+}
+
+/// Requests that can hold a worker for long.
+fn takes_long(path: &str) -> bool {
+    path.starts_with("/v1/saves/") || matches!(path, "/v1/admin/next" | "/v1/install" | "/v1/stream/pair" | "/local/find" | "/local/games")
+}
+
+/// A path as the log writes it: what kind of request it is, never which
+/// game, save folder or file it is about.
+fn route_shape(path: &str) -> String {
+    const PLAIN: [&str; 21] = [
+        "/v1/hello", "/v1/enrol/start", "/v1/enrol/finish", "/v1/enrol/ask", "/v1/enrol/reveal", "/v1/probe/burst", "/v1/stream/fit", "/v1/link/pulse", "/v1/status", "/v1/games", "/v1/library",
+        "/v1/install", "/v1/downloads", "/v1/stream/prepare", "/v1/stream/pair", "/v1/power/sleep", "/v1/stream/end", "/v1/stream/reveal", "/v1/admin/next", "/v1/admin/done", "/v1/update",
+    ];
+    if path == "/" || path == "/v1/saves/find" || PLAIN.contains(&path) {
+        return path.to_string();
+    }
+    if path.starts_with("/local/") {
+        // Text of whoever asked: without characters that hide or reorder others, and short.
+        return carla_core::library::find::visible(path).chars().filter(|c| !c.is_control()).take(40).collect();
+    }
+    for (prefix, rest) in [("/v1/cover/", ":game"), ("/v1/achievements/", ":game"), ("/v1/games/update/", ":game"), ("/v1/probe/", ":bytes")] {
+        if path.starts_with(prefix) {
+            return format!("{prefix}{rest}");
+        }
+    }
+    if let Some((_, what)) = path.strip_prefix("/v1/saves/").and_then(|rest| rest.split_once('/')) {
+        let what = if matches!(what, "read" | "write" | "remove" | "protect" | "retire") { what } else { "?" };
+        return format!("/v1/saves/:folder/{what}");
+    }
+    "(unknown)".to_string()
+}
+
+/// Who a request is from, in the log: the device's short label, "stranger"
+/// for an id that is not linked here, "unsigned" for no id, "this PC" for the dashboard.
+fn who(device: Option<&str>, linked: bool, local: bool) -> String {
+    match device {
+        _ if local => "this PC".to_string(),
+        Some(id) if linked => label(id),
+        Some(_) => "stranger".to_string(),
+        None => "unsigned".to_string(),
+    }
+}
+
+/// The dashboard asks every two seconds: that is not written down, unless it went wrong.
+fn too_common(method: &str, path: &str, status: u16) -> bool {
+    method == "GET" && status == 200 && (path == "/" || path.starts_with("/local/"))
+}
+
+/// One line of the log for one request: no body, no header, no query, no key.
+fn request_line(method: &str, path: &str, status: u16, took: Duration, who: &str, reason: Option<&str>) -> String {
+    let long_wait = path == "/v1/admin/next";
+    let mut line = format!("{method} {} -> {status} in {} ms ({who})", route_shape(path), took.as_millis());
+    if took >= SLOW && !long_wait {
+        line.push_str(" SLOW");
+    }
+    if let Some(reason) = reason {
+        line.push_str(": ");
+        line.push_str(reason);
+    }
+    line
+}
+
+/// How long a body of up to `most` bytes may take to come: little for what
+/// is small, and a second per megabyte more for a save over weak Wi-Fi.
+fn body_time(base: Duration, most: usize) -> Duration {
+    if most <= 64 * 1024 {
+        return base.min(Duration::from_secs(5));
+    }
+    (base + Duration::from_secs(most as u64 / (1024 * 1024))).min(Duration::from_secs(180).max(base))
+}
+
+/// Read a request's body, at most `most` bytes, and give up when it has not
+/// come whole within `within`.
+fn read_body(reader: &mut dyn std::io::Read, most: usize, within: Duration) -> std::io::Result<Vec<u8>> {
+    let deadline = Instant::now() + within;
+    let mut reader = std::io::Read::take(reader, most as u64);
+    let (mut bytes, mut chunk) = (Vec::new(), [0u8; 16 * 1024]);
+    loop {
+        let got = std::io::Read::read(&mut reader, &mut chunk)?;
+        if got == 0 {
+            return Ok(bytes);
+        }
+        bytes.extend_from_slice(&chunk[..got]);
+        if Instant::now() > deadline {
+            return Err(std::io::ErrorKind::TimedOut.into());
+        }
+    }
+}
+
+fn plain_reply(status: u16, error: &str) -> Reply {
+    Reply { status, kind: "application/json", body: serde_json::to_vec(&Problem { error: error.to_string() }).expect("serialisable"), sign: None }
+}
+
+/// Answer one request. Everything that is written down about it is written here.
+fn work(server: &Server, load: &std::sync::Arc<Load>, mut request: tiny_http::Request) {
+    let started = Instant::now();
+    let (_busy, crowded) = load.start();
+    if crowded && load.warn_due() {
+        server.files.host(&format!("All {} workers are busy: new requests wait until one is free.", load.limits.workers));
+    }
+    let header = |name: &str| request.headers().iter().find(|h| h.field.as_str().as_str().eq_ignore_ascii_case(name)).map(|h| h.value.as_str().to_string());
+    let (device, time, nonce, signature) = (header(sign::DEVICE), header(sign::TIME), header(sign::NONCE), header(sign::SIGN));
+    let (host, token) = (header("host"), header("x-carla-token"));
+    let method = request.method().as_str().to_ascii_uppercase();
+    let path = request.url().split('?').next().unwrap_or_default().to_string();
+    // Nothing the Ally sends is large, except a save file, and
+    // that much is only read from a device that is linked.
+    let linked = device.as_deref().is_some_and(|d| server.knows(d));
+    let save = path.starts_with("/v1/saves/") && path.ends_with("/write");
+    let most = match (linked, save, path.as_str()) {
+        (true, true, _) => sync::LARGEST_FILE + 4096,
+        // The Ally's description of its saves: a few hundred KB at most.
+        (true, _, p) if p.starts_with("/v1/saves/") && p.ends_with("/retire") => 1024 * 1024,
+        // The result of a request to the Ally, such as its list of games.
+        (true, _, "/v1/admin/done") => 2 * 1024 * 1024,
+        _ => 64 * 1024,
+    };
+    let from = request.remote_addr().map(|a| a.ip().to_string()).unwrap_or_default();
+    // The dashboard: for this machine's own browser only.
+    let here = request.remote_addr().is_some_and(|a| a.ip().is_loopback());
+    // Only so many workers at once may be on requests that can take long, and
+    // only a linked device or this PC may take one: someone else on the network
+    // cannot use them up by sending half a request. What they may send is small
+    // and has little time to come.
+    let long_path = takes_long(&path);
+    let trusted = linked || (here && path.starts_with("/local/"));
+    let most = if long_path && !trusted { most.min(4096) } else { most };
+    let long = (long_path && trusted).then(|| load.start_long());
+    let too_many = matches!(long, Some(None));
+    let within = body_time(load.limits.body, most as usize);
+    let read = if too_many { Ok(Vec::new()) } else { read_body(request.as_reader(), most as usize, within) };
+    let page = match &read {
+        Ok(bytes) if here && !too_many => server.local(&method, &path, host.as_deref(), token.as_deref(), bytes, crate::files::now()),
+        _ => None,
+    };
+    let reply = match (page, &read) {
+        _ if too_many => {
+            server.files.host(&format!("Too many long requests at once: {} {} was turned away.", method, route_shape(&path)));
+            plain_reply(503, "This desktop is busy with other requests. Try again in a moment.")
+        }
+        (Some(page), _) => page,
+        (None, Err(e)) if matches!(e.kind(), std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock) => plain_reply(408, "The request did not arrive in time."),
+        (None, Err(_)) => plain_reply(400, "The request was not understood."),
+        (None, Ok(bytes)) => server.handle(
+            &Request { method: &method, path: &path, device: device.as_deref(), time: time.as_deref(), nonce: nonce.as_deref(), sign: signature.as_deref(), body: bytes, from: &from },
+            crate::files::now(),
+        ),
+    };
+    let status = reply.status;
+    let reason = (status >= 400).then(|| serde_json::from_slice::<serde_json::Value>(&reply.body).ok().and_then(|v| v["error"].as_str().map(str::to_string))).flatten();
+    let mut response = tiny_http::Response::from_data(reply.body).with_status_code(reply.status);
+    let mut add = |name: &str, value: &str| {
+        if let Ok(h) = tiny_http::Header::from_bytes(name.as_bytes(), value.as_bytes()) {
+            response.add_header(h);
+        }
+    };
+    add("content-type", reply.kind);
+    if reply.kind.starts_with("text/html") {
+        // The page holds a token: it is not kept, and not shown inside another page.
+        add("cache-control", "no-store");
+        add("x-frame-options", "DENY");
+        add("content-security-policy", "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; img-src data:; frame-ancestors 'none'");
+    }
+    if let Some(s) = &reply.sign {
+        add(sign::SIGN, s);
+    }
+    if read.is_err() || too_many {
+        // `tiny_http` reads what is left of a body before it lets the request go,
+        // and from a client that went away that takes as long as a timeout. Another
+        // thread waits for that, so that the worker is free at once.
+        if load.start_detached() {
+            let load = load.clone();
+            std::thread::spawn(move || {
+                let _ = request.respond(response);
+                load.detached.fetch_sub(1, Ordering::SeqCst);
+            });
+        } else {
+            // Too many already wait on clients that went quiet: let this one go.
+            // Its connection is left open, and not answered, rather than held by a worker.
+            std::mem::forget(request);
+            server.files.host("Too many connections are stuck mid-request: one was let go without an answer.");
+        }
+    } else {
+        let _ = request.respond(response);
+    }
+    // The answer is out: the places are free again before anything is written.
+    drop(long);
+    drop(_busy);
+    if !too_common(&method, &path, status) {
+        let local = here && (path == "/" || path.starts_with("/local/"));
+        let who = who(device.as_deref(), linked, local);
+        // Someone who is not linked, asking what is not there or being refused,
+        // is written down once in a while with a count, not every time.
+        let anonymous = !local && !linked && !path.starts_with("/v1/enrol/");
+        let shape = route_shape(&path);
+        let noise = anonymous && (status >= 400 || shape == "(unknown)" || path == "/v1/hello");
+        let kind = if shape == "(unknown)" { "unknown route".to_string() } else { status.to_string() };
+        if !noise || server.noisy(&kind, &who, Instant::now()) {
+            load.say(server, request_line(&method, &path, status, started.elapsed(), &who, reason.as_deref()));
+        }
+    }
+}
+
+/// What the watcher last saw, to write down only what changed.
+#[derive(Default)]
+struct Noticed {
+    sunshine: Option<bool>,
+    /// Per linked device: connected, streaming.
+    allies: HashMap<String, (bool, bool)>,
+    /// Per linked device: whether Moonlight is paired.
+    paired: HashMap<String, Option<bool>>,
+}
+
+impl Server {
+    /// Whether to write this line in full: the first of its kind in a window
+    /// of ten seconds. Later ones are only counted, and a line that says how
+    /// many (and from whom last) follows when the window is over.
+    fn noisy(&self, kind: &str, who: &str, now: Instant) -> bool {
+        let mut noise = locked(&self.noise);
+        let Some((begun, hidden, last)) = noise.get_mut(kind) else {
+            noise.insert(kind.to_string(), (now, 0, who.to_string()));
+            return true;
+        };
+        if now.saturating_duration_since(*begun) < self.noise_window {
+            *hidden += 1;
+            *last = who.to_string();
+            return false;
+        }
+        let (count, last) = (std::mem::take(hidden), last.clone());
+        *begun = now;
+        drop(noise);
+        self.say_hidden(kind, count, &last);
+        true
+    }
+
+    fn say_hidden(&self, kind: &str, count: u32, last: &str) {
+        if count > 0 {
+            self.files.host(&format!("{count} more requests were refused or unknown ({kind}) in the last {} s, the last from {last}.", self.noise_window.as_secs()));
+        }
+    }
+
+    /// Say what was left out, once its window is over, even when nothing of that kind comes again.
+    fn flush_noise(&self, now: Instant) {
+        let mut done = Vec::new();
+        locked(&self.noise).retain(|kind, (begun, hidden, last)| {
+            let over = now.saturating_duration_since(*begun) >= self.noise_window;
+            if over && *hidden > 0 {
+                done.push((kind.clone(), *hidden, last.clone()));
+            }
+            !over
+        });
+        for (kind, count, last) in done {
+            self.say_hidden(&kind, count, &last);
+        }
+    }
+
+    /// Write down what changed since the last look: Sunshine going up or
+    /// down, an Ally being heard from or not for [`CONNECTED_FOR`] seconds, a
+    /// stream starting or ending, Moonlight being paired. Changes only: an
+    /// Ally's every pulse is not an event.
+    fn notice(&self, before: &mut Noticed, now: i64) {
+        let health = self.health();
+        if before.sunshine.replace(health.is_ok()) != Some(health.is_ok()) {
+            match &health {
+                Ok(()) => self.files.host("Sunshine is ready."),
+                Err(problem) => self.files.host(&format!("Sunshine is not ready: {problem}")),
+            }
+        }
+        let streaming = self.files.playing(now).is_some();
+        let linked = self.files.allies(now, streaming);
+        let paired = if linked.is_empty() { None } else { self.paired_names() };
+        for ally in &linked {
+            let id = label(&ally.id);
+            let state = (ally.connected, ally.streaming);
+            match before.allies.insert(ally.id.clone(), state) {
+                None => {
+                    let heard = match ally.last_seen {
+                        Some(at) => format!("last heard from {} s ago", (now - at).max(0)),
+                        None => "never heard from".to_string(),
+                    };
+                    let words = if ally.streaming { "streaming".to_string() } else if ally.connected { "connected".to_string() } else { format!("not connected ({heard})") };
+                    self.files.host(&format!("Ally {id}: {words}."));
+                }
+                Some(was) => {
+                    if was.0 != state.0 {
+                        if state.0 {
+                            self.files.host(&format!("Ally {id} was heard from: connected."));
+                        } else {
+                            self.files.host(&format!("Ally {id} was not heard from for {CONNECTED_FOR} s: no longer connected."));
+                        }
+                    }
+                    if was.1 != state.1 {
+                        self.files.host(&format!("Ally {id}: streaming {}.", if state.1 { "started" } else { "ended" }));
+                    }
+                }
+            }
+            let is_paired = paired.as_ref().map(|names| names.iter().any(|n| n.eq_ignore_ascii_case(&ally.name)));
+            if before.paired.insert(ally.id.clone(), is_paired) != Some(is_paired) {
+                match is_paired {
+                    Some(true) => self.files.host(&format!("Ally {id}: Moonlight is paired with Sunshine.")),
+                    Some(false) => self.files.host(&format!("Ally {id}: Moonlight is not paired with Sunshine yet.")),
+                    None => {}
+                }
+            }
+        }
+        before.allies.retain(|id, _| linked.iter().any(|a| &a.id == id));
+        before.paired.retain(|id, _| linked.iter().any(|a| &a.id == id));
+    }
+}
+
 /// Serve the API on an open listener until the process ends.
 pub fn serve(server: std::sync::Arc<Server>, http: tiny_http::Server) {
+    serve_with(server, http, Limits::default());
+}
+
+fn serve_with(server: std::sync::Arc<Server>, http: tiny_http::Server, limits: Limits) {
     let http = std::sync::Arc::new(http);
+    let load = std::sync::Arc::new(Load::new(limits));
+    let (queue, lines) = std::sync::mpsc::sync_channel::<String>(1024);
+    *locked(&load.lines) = Some(queue);
+    let writing = server.clone();
+    std::thread::spawn(move || {
+        for line in lines {
+            writing.files.host(&line);
+        }
+    });
+    let watching = server.clone();
+    std::thread::spawn(move || {
+        let mut before = Noticed::default();
+        loop {
+            watching.notice(&mut before, crate::files::now());
+            watching.flush_noise(Instant::now());
+            std::thread::sleep(NOTICE_EVERY);
+        }
+    });
     // An Ally waiting for requests holds one of these, so there are spares.
-    let workers: Vec<_> = (0..8)
+    let workers: Vec<_> = (0..limits.workers)
         .map(|_| {
-            let (server, http) = (server.clone(), http.clone());
+            let (server, http, load) = (server.clone(), http.clone(), load.clone());
             std::thread::spawn(move || {
-                while let Ok(mut request) = http.recv() {
-                    let header = |name: &str| {
-                        request.headers().iter().find(|h| h.field.as_str().as_str().eq_ignore_ascii_case(name)).map(|h| h.value.as_str().to_string())
-                    };
-                    let (device, time, nonce, signature) = (header(sign::DEVICE), header(sign::TIME), header(sign::NONCE), header(sign::SIGN));
-                    let (host, token) = (header("host"), header("x-carla-token"));
-                    let method = request.method().as_str().to_ascii_uppercase();
-                    let path = request.url().split('?').next().unwrap_or_default().to_string();
-                    // Nothing the Ally sends is large, except a save file, and
-                    // that much is only read from a device that is linked.
-                    let linked = device.as_deref().is_some_and(|d| server.knows(d));
-                    let save = path.starts_with("/v1/saves/") && path.ends_with("/write");
-                    let most = match (linked, save, path.as_str()) {
-                        (true, true, _) => sync::LARGEST_FILE + 4096,
-                        // The Ally's description of its saves: a few hundred KB at most.
-                        (true, _, p) if p.starts_with("/v1/saves/") && p.ends_with("/retire") => 1024 * 1024,
-                        // The result of a request to the Ally, such as its list of games.
-                        (true, _, "/v1/admin/done") => 2 * 1024 * 1024,
-                        _ => 64 * 1024,
-                    };
-                    let mut bytes = Vec::new();
-                    let read = std::io::Read::read_to_end(&mut std::io::Read::take(request.as_reader(), most), &mut bytes);
-                    let from = request.remote_addr().map(|a| a.ip().to_string()).unwrap_or_default();
-                    // The dashboard: for this machine's own browser only.
-                    let here = request.remote_addr().is_some_and(|a| a.ip().is_loopback());
-                    let page = if here && read.is_ok() { server.local(&method, &path, host.as_deref(), token.as_deref(), &bytes, crate::files::now()) } else { None };
-                    let reply = if let Some(page) = page {
-                        page
-                    } else if read.is_err() {
-                        Reply { status: 400, kind: "application/json", body: b"{\"error\":\"The request was not understood.\"}".to_vec(), sign: None }
-                    } else {
-                        server.handle(
-                            &Request {
-                                method: &method,
-                                path: &path,
-                                device: device.as_deref(),
-                                time: time.as_deref(),
-                                nonce: nonce.as_deref(),
-                                sign: signature.as_deref(),
-                                body: &bytes,
-                                from: &from,
-                            },
-                            crate::files::now(),
-                        )
-                    };
-                    let mut response = tiny_http::Response::from_data(reply.body).with_status_code(reply.status);
-                    let mut add = |name: &str, value: &str| {
-                        if let Ok(h) = tiny_http::Header::from_bytes(name.as_bytes(), value.as_bytes()) {
-                            response.add_header(h);
-                        }
-                    };
-                    add("content-type", reply.kind);
-                    if reply.kind.starts_with("text/html") {
-                        // The page holds a token: it is not kept, and not shown inside another page.
-                        add("cache-control", "no-store");
-                        add("x-frame-options", "DENY");
-                        add("content-security-policy", "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; img-src data:; frame-ancestors 'none'");
-                    }
-                    if let Some(s) = &reply.sign {
-                        add(sign::SIGN, s);
-                    }
-                    let _ = request.respond(response);
+                while let Ok(request) = http.recv() {
+                    work(&server, &load, request);
                 }
             })
         })
@@ -1123,6 +1648,10 @@ mod tests {
 
     /// A companion on this machine with two games, listening on a free port.
     pub(super) fn desk(name: &str, down: bool) -> Desk {
+        desk_with(name, down, IO_WAIT, Limits::default())
+    }
+
+    fn desk_with(name: &str, down: bool, wait: Duration, limits: Limits) -> Desk {
         // Every desk gets a folder of its own, even when two tests use the same name.
         static DESKS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let dir = std::env::temp_dir().join(format!("carla-companion-{name}-{}-{}", std::process::id(), DESKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
@@ -1146,7 +1675,7 @@ mod tests {
         // The measuring packets are answered on the same port number as the
         // API, as on a real desktop.
         let (http, udp) = loop {
-            let http = tiny_http::Server::http("127.0.0.1:0").unwrap();
+            let (http, _) = bind_within("127.0.0.1:0", wait).unwrap();
             let port = http.server_addr().to_ip().unwrap().port();
             if let Ok(udp) = std::net::UdpSocket::bind(("127.0.0.1", port)) {
                 break (http, udp);
@@ -1185,7 +1714,7 @@ mod tests {
         }));
         let answering = server.clone();
         std::thread::spawn(move || carla_core::link::discover::answer(&udp, &|| answering.hello()));
-        std::thread::spawn(move || serve(server, http));
+        std::thread::spawn(move || serve_with(server, http, limits));
         Desk { files, calls, port }
     }
 
@@ -2189,5 +2718,386 @@ mod tests {
         // Forgetting it takes what was kept about it along.
         desk.files.forget_device(&ally.id).unwrap();
         assert!(desk.files.ally_pulse(&ally.id).is_none() && desk.files.allies(later, false).is_empty());
+    }
+
+    // The log, and a server that stays answerable.
+
+    /// Wait for a line to reach the log: a request's line is written by a thread of
+    /// its own, after the answer is sent.
+    fn logged(files: &Files, needle: &str) -> String {
+        logged_all(files, &[needle])
+    }
+
+    /// Wait until every one of these is in the log. Wait for all that is asserted
+    /// on afterwards: lines of different requests, or of the writer thread and of
+    /// the worker, do not arrive in any order the test can rely on.
+    fn logged_all(files: &Files, needles: &[&str]) -> String {
+        for _ in 0..200 {
+            let text = files.host_log().text();
+            if needles.iter().all(|n| text.contains(n)) {
+                return text;
+            }
+            std::thread::sleep(Duration::from_millis(30));
+        }
+        panic!("{needles:?} never all reached the log:\n{}", files.host_log().text());
+    }
+
+    /// A server that is not listening, for calling its parts directly.
+    fn server_with(name: &str, scan: Box<dyn Fn() -> Vec<Found> + Send + Sync>) -> Server {
+        static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!("carla-companion-{name}-{}-{}", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let env = carla_core::library::saveplace::Env { saved_games: Some(dir.join("Saved Games")), ..Default::default() };
+        Server::new(Files::new(dir).with_env(env), Config::new("HOME PC"), Some(Box::new(FakeSunshine::default())), scan, "companion launch".into(), String::new(), || (Vec::new(), Vec::new()), |_| Vec::new(), || Ok(()))
+    }
+
+    #[test]
+    fn every_request_is_logged_with_its_route_and_who_asked_but_never_a_key_or_a_body() {
+        let desk = desk("log-requests", false);
+        let link = linked(&desk);
+        link.status().unwrap();
+        let me = label(&link.device_id);
+        let text = logged_all(&desk.files, &["GET /v1/status -> 200 in ", &format!("({me})"), &format!("A device was linked: {me}.")]);
+        assert!(text.contains(&format!("GET /v1/status -> 200 in ")) && text.contains(&format!("({me})")), "{text}");
+        assert!(text.contains(&format!("A device was linked: {me}.")), "{text}");
+
+        // A route that names a game or a save folder is written as its shape.
+        link.cover("steam:10").unwrap();
+        assert!(logged(&desk.files, "GET /v1/cover/:game -> 200").contains("GET /v1/cover/:game -> 200"));
+        assert!(!desk.files.host_log().text().contains("steam:10"));
+        link.saves("steam:10", "First Game").unwrap();
+        logged(&desk.files, "POST /v1/saves/find -> 200");
+
+        // What the Ally asked to start, and a pairing whose PIN is not kept.
+        link.prepare("steam:10").unwrap();
+        logged(&desk.files, "Prepare: First Game (steam:10) is ready to start when Moonlight connects");
+        link.pair("4821", "Ally").unwrap();
+        logged_all(&desk.files, &["Pairing with Moonlight worked.", "Pairing with Moonlight began", "POST /v1/stream/pair -> 200"]);
+        assert!(!desk.files.host_log().text().contains("4821"));
+
+        // A refusal says why, and who it was: a stranger with a made-up id, or a device whose signature fails.
+        let wrong = Link { key: vec![7; 32], ..link.clone() };
+        assert_eq!(wrong.status().err(), Some(Error::Refused));
+        let text = logged_all(&desk.files, &["does not match", "-> 401", "This device is not linked to the desktop."]);
+        assert!(text.contains(&format!("device {me} is linked, but the request's signature does not match")), "{text}");
+        assert!(text.contains("-> 401") && text.contains("This device is not linked to the desktop."), "{text}");
+        let stranger = Link { device_id: "ffeeddccbbaa9988".into(), ..link.clone() };
+        assert_eq!(stranger.status().err(), Some(Error::Refused));
+        let text = logged_all(&desk.files, &["device ffeedd is not linked here", "(stranger)"]);
+        assert!(text.contains("(stranger)"), "{text}");
+
+        // Nothing secret is ever in it.
+        let text = desk.files.host_log().text();
+        assert!(!text.contains(&hex_of(&link.key)) && !text.contains(&link.device_id), "{text}");
+    }
+
+    fn hex_of(bytes: &[u8]) -> String {
+        crate::files::hex(bytes)
+    }
+
+    #[test]
+    fn what_a_log_line_says_of_a_request() {
+        assert_eq!(route_shape("/v1/status"), "/v1/status");
+        assert_eq!(route_shape("/v1/saves/3fa9c0de/write"), "/v1/saves/:folder/write");
+        assert_eq!(route_shape("/v1/saves/3fa9c0de/surprise"), "/v1/saves/:folder/?");
+        assert_eq!(route_shape("/v1/saves/find"), "/v1/saves/find");
+        assert_eq!(route_shape("/v1/cover/steam:10"), "/v1/cover/:game");
+        assert_eq!(route_shape("/v1/games/update/gog:7"), "/v1/games/update/:game");
+        assert_eq!(route_shape("/v1/probe/20000"), "/v1/probe/:bytes");
+        assert_eq!(route_shape("/wp-login.php?x=1"), "(unknown)");
+        assert_eq!((who(Some("0123456789abcdef"), true, false), who(Some("0123456789abcdef"), false, false), who(None, false, false), who(None, false, true)), ("012345".to_string(), "stranger".to_string(), "unsigned".to_string(), "this PC".to_string()));
+
+        let quick = request_line("GET", "/v1/status", 200, Duration::from_millis(3), "012345", None);
+        assert_eq!(quick, "GET /v1/status -> 200 in 3 ms (012345)");
+        let slow = request_line("POST", "/v1/saves/abc123/write", 409, Duration::from_millis(2500), "012345", Some("Quest is still running."));
+        assert_eq!(slow, "POST /v1/saves/:folder/write -> 409 in 2500 ms (012345) SLOW: Quest is still running.");
+        // An Ally waiting for a request from the administrator is meant to wait.
+        assert!(!request_line("GET", "/v1/admin/next", 200, Duration::from_secs(20), "012345", None).contains("SLOW"));
+        // The dashboard's every-two-seconds question is not written down; a failure of it is.
+        assert!(too_common("GET", "/local/overview", 200) && !too_common("GET", "/local/overview", 403) && !too_common("POST", "/local/code", 200));
+    }
+
+    #[test]
+    fn the_watcher_writes_down_changes_only() {
+        let server = server_with("watch", Box::new(Vec::new));
+        let files = server.files.clone();
+        let device = files.add_device("Zorba", &[1; 32]).unwrap();
+        let id = label(&device.id);
+        let now = crate::files::now();
+        files.set_ally_seen(&device.id, &Seen { at: now, address: "192.168.1.5".into(), prepared: None });
+        let mut before = Noticed::default();
+        server.notice(&mut before, now);
+        server.notice(&mut before, now + 5);
+        server.notice(&mut before, now + 10);
+        let text = files.host_log().text();
+        assert_eq!(text.matches("Sunshine is ready.").count(), 1, "{text}");
+        assert_eq!(text.matches(&format!("Ally {id}: connected.")).count(), 1, "pulses are not events:\n{text}");
+        // Not heard from for a while: said once, when it turns.
+        server.notice(&mut before, now + 120);
+        server.notice(&mut before, now + 125);
+        let text = files.host_log().text();
+        assert_eq!(text.matches(&format!("Ally {id} was not heard from for 90 s")).count(), 1, "{text}");
+        // Heard from again, and then a stream.
+        files.set_ally_seen(&device.id, &Seen { at: now + 130, address: "192.168.1.5".into(), prepared: Some(now + 130) });
+        server.notice(&mut before, now + 131);
+        files.set_playing(Some(&crate::files::Playing { game_id: "steam:10".into(), title: "First Game".into(), at: now + 131 }));
+        server.notice(&mut before, now + 132);
+        files.set_playing(None);
+        server.notice(&mut before, now + 400);
+        let text = files.host_log().text();
+        for line in [format!("Ally {id} was heard from: connected."), format!("Ally {id}: streaming started."), format!("Ally {id}: streaming ended.")] {
+            assert_eq!(text.matches(&line).count(), 1, "{line}\n{text}");
+        }
+        // The device's name is the player's own words: it is not written down.
+        assert!(!text.contains("Zorba"), "{text}");
+    }
+
+    #[test]
+    fn asking_for_the_games_while_the_disks_are_scanned_does_not_wait_for_the_scan() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let scans = Arc::new(AtomicUsize::new(0));
+        let counting = scans.clone();
+        let scan = Box::new(move || {
+            // The first look is quick, later ones take a while.
+            if counting.fetch_add(1, Ordering::SeqCst) > 0 {
+                std::thread::sleep(Duration::from_millis(400));
+            }
+            vec![("steam", Scanned { source_id: "10".into(), title: "First Game".into(), ..Scanned::default() })]
+        });
+        let server = Arc::new(server_with("scan", scan));
+        assert_eq!(server.games_listing().len(), 1);
+        assert_eq!(scans.load(Ordering::SeqCst), 1);
+
+        // Four asking at once for a fresh look share one scan.
+        let askers: Vec<_> = (0..4).map(|_| {
+            let server = server.clone();
+            std::thread::spawn(move || server.games(true).len())
+        }).collect();
+        std::thread::sleep(Duration::from_millis(100));
+        // While it runs, the Ally's list is answered at once from what is known.
+        let asked = Instant::now();
+        assert_eq!(server.games_listing().len(), 1);
+        assert!(asked.elapsed() < Duration::from_millis(200), "waited {:?} for the scan", asked.elapsed());
+        for asker in askers {
+            assert_eq!(asker.join().unwrap(), 1);
+        }
+        assert_eq!(scans.load(Ordering::SeqCst), 2, "one scan for all four");
+    }
+
+    #[test]
+    fn long_requests_cannot_take_every_worker_and_all_busy_is_noticed() {
+        let load = Load::new(Limits { workers: 3, long: 1, body: Duration::from_secs(1) });
+        let first = load.start_long();
+        assert!(first.is_some() && load.start_long().is_none(), "only one long request at a time");
+        drop(first);
+        assert!(load.start_long().is_some(), "the place is given back");
+        let (a, crowded) = load.start();
+        assert!(!crowded);
+        let (b, crowded) = load.start();
+        assert!(!crowded);
+        let (c, crowded) = load.start();
+        assert!(crowded, "the third of three");
+        assert!(load.warn_due() && !load.warn_due(), "said once in a while, not for every request");
+        drop((a, b, c));
+        assert!(takes_long("/v1/saves/abc/write") && takes_long("/v1/admin/next") && takes_long("/local/find"));
+        assert!(!takes_long("/v1/status") && !takes_long("/v1/games") && !takes_long("/v1/link/pulse") && !takes_long("/v1/stream/prepare"));
+    }
+
+    struct Trickle {
+        left: usize,
+        pause: Duration,
+    }
+
+    impl std::io::Read for Trickle {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if self.left == 0 {
+                return Ok(0);
+            }
+            std::thread::sleep(self.pause);
+            self.left -= 1;
+            buf[0] = b'x';
+            Ok(1)
+        }
+    }
+
+    #[test]
+    fn a_body_that_trickles_in_is_given_up_on() {
+        let quick = read_body(&mut Trickle { left: 5, pause: Duration::ZERO }, 100, Duration::from_secs(1)).unwrap();
+        assert_eq!(quick.len(), 5);
+        assert_eq!(read_body(&mut Trickle { left: 500, pause: Duration::ZERO }, 100, Duration::from_secs(1)).unwrap().len(), 100, "no more than allowed is read");
+        let slow = read_body(&mut Trickle { left: 100, pause: Duration::from_millis(20) }, 1000, Duration::from_millis(100));
+        assert_eq!(slow.err().map(|e| e.kind()), Some(std::io::ErrorKind::TimedOut));
+    }
+
+    /// A raw connection to a desk that says what it is told to, for clients that misbehave.
+    fn connect(port: u16) -> std::net::TcpStream {
+        std::net::TcpStream::connect(("127.0.0.1", port)).unwrap()
+    }
+
+    /// How long a plain, well-behaved request takes to be answered.
+    fn hello_within(port: u16, most: Duration) -> Duration {
+        use std::io::{Read, Write};
+        let started = Instant::now();
+        let mut stream = connect(port);
+        stream.set_read_timeout(Some(most)).unwrap();
+        write!(stream, "GET /v1/hello HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n").unwrap();
+        let mut reply = String::new();
+        stream.read_to_string(&mut reply).unwrap_or_else(|e| panic!("no answer within {most:?}: {e}"));
+        assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
+        started.elapsed()
+    }
+
+    #[test]
+    fn a_client_that_connects_and_says_nothing_does_not_stop_the_others() {
+        let desk = desk_with("silent", false, Duration::from_millis(500), Limits { workers: 2, long: 1, body: Duration::from_millis(500) });
+        let _silent: Vec<_> = (0..6).map(|_| connect(desk.port)).collect();
+        assert!(hello_within(desk.port, Duration::from_secs(3)) < Duration::from_secs(3));
+    }
+
+    #[test]
+    fn a_body_that_trickles_in_does_not_hold_a_worker_for_ever() {
+        use std::io::Write;
+        // One worker only, so that a stuck one would stop everything.
+        let desk = desk_with("trickle", false, Duration::from_secs(5), Limits { workers: 1, long: 1, body: Duration::from_millis(400) });
+        let mut slow = connect(desk.port);
+        write!(slow, "POST /v1/link/pulse HTTP/1.1\r\nHost: x\r\nContent-Length: 5000\r\n\r\n").unwrap();
+        let dripping = std::thread::spawn(move || {
+            for _ in 0..100 {
+                if slow.write_all(b"x").is_err() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        });
+        // A well-behaved client is answered once the time limit of the stuck one is over.
+        std::thread::sleep(Duration::from_millis(100));
+        let took = hello_within(desk.port, Duration::from_secs(8));
+        assert!(took < Duration::from_secs(3), "answered after {took:?}");
+        let text = logged(&desk.files, "-> 408");
+        assert!(text.contains("The request did not arrive in time."), "{text}");
+        dripping.join().unwrap();
+    }
+
+    /// Sockets only have timeouts on Windows, which is where the companion runs.
+    #[cfg(windows)]
+    #[test]
+    fn a_client_that_went_away_in_the_middle_of_a_request_frees_its_worker() {
+        use std::io::Write;
+        let desk = desk_with("went-away", false, Duration::from_millis(500), Limits { workers: 1, long: 1, body: Duration::from_secs(60) });
+        // Says a body of 5000 bytes is coming, sends 10 of them, and is never heard from again.
+        let mut dead = connect(desk.port);
+        write!(dead, "POST /v1/link/pulse HTTP/1.1\r\nHost: x\r\nContent-Length: 5000\r\n\r\n0123456789").unwrap();
+        std::thread::sleep(Duration::from_millis(150));
+        // The body deadline is a minute: it is the socket's own timeout that lets go.
+        let took = hello_within(desk.port, Duration::from_secs(8));
+        assert!(took < Duration::from_secs(3), "answered after {took:?}");
+        assert!(logged(&desk.files, "-> 408").contains("The request did not arrive in time."));
+        drop(dead);
+    }
+
+    #[test]
+    fn strangers_cannot_use_up_the_places_for_long_requests() {
+        use std::io::Write;
+        // One place for long requests, and four unsigned clients that each start a save write and trickle it.
+        let desk = desk_with("strangers", false, Duration::from_secs(5), Limits { workers: 8, long: 1, body: Duration::from_secs(5) });
+        let link = linked(&desk);
+        let drips: Vec<_> = (0..4)
+            .map(|_| {
+                let mut stream = connect(desk.port);
+                write!(stream, "POST /v1/saves/x/write HTTP/1.1\r\nHost: x\r\nContent-Length: 65536\r\n\r\n").unwrap();
+                std::thread::spawn(move || {
+                    for _ in 0..30 {
+                        if stream.write_all(b"x").is_err() {
+                            break;
+                        }
+                        std::thread::sleep(Duration::from_millis(100));
+                    }
+                })
+            })
+            .collect();
+        std::thread::sleep(Duration::from_millis(200));
+        // A linked device still gets the place, and is answered.
+        assert!(link.saves("steam:10", "First Game").unwrap().is_none());
+        for drip in drips {
+            drip.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn a_scanner_is_logged_once_in_a_while_with_a_count_and_the_linked_are_always_logged() {
+        let desk = desk("scanner", false);
+        let link = linked(&desk);
+        for _ in 0..30 {
+            use std::io::{Read, Write};
+            let mut stream = connect(desk.port);
+            write!(stream, "GET /v1/status HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n").unwrap();
+            let mut reply = String::new();
+            let _ = stream.read_to_string(&mut reply);
+        }
+        link.status().unwrap();
+        link.status().unwrap();
+        // The second signed line is written just after its answer: wait for it too.
+        for _ in 0..100 {
+            if desk.files.host_log().text().matches("GET /v1/status -> 200").count() >= 2 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(30));
+        }
+        let text = desk.files.host_log().text();
+        assert_eq!(text.lines().filter(|l| l.contains("GET /v1/status -> 401")).count(), 1, "{text}");
+        assert_eq!(text.lines().filter(|l| l.contains("GET /v1/status -> 200") && l.contains(&format!("({})", label(&link.device_id)))).count(), 2, "{text}");
+    }
+
+    #[test]
+    fn what_was_left_out_of_the_log_is_counted_when_its_window_is_over() {
+        let mut server = server_with("noise", Box::new(Vec::new));
+        server.noise_window = Duration::from_secs(10);
+        let t0 = Instant::now();
+        assert!(server.noisy("401", "stranger", t0));
+        for _ in 0..999 {
+            assert!(!server.noisy("401", "stranger", t0 + Duration::from_secs(1)));
+        }
+        assert!(server.noisy("404", "unsigned", t0), "another kind has its own window");
+        server.flush_noise(t0 + Duration::from_secs(5));
+        assert!(!server.files.host_log().text().contains("more requests"), "not before the window is over");
+        server.flush_noise(t0 + Duration::from_secs(11));
+        let text = server.files.host_log().text();
+        assert!(text.contains("999 more requests were refused or unknown (401)") && text.contains("the last from stranger"), "{text}");
+        assert!(text.lines().count() <= 3, "{text}");
+    }
+
+    #[test]
+    fn a_scan_that_began_before_an_install_is_not_kept() {
+        let server = Arc::new(server_with("cleared", Box::new(|| {
+            std::thread::sleep(Duration::from_millis(250));
+            vec![("steam", Scanned { source_id: "10".into(), title: "First Game".into(), ..Scanned::default() })]
+        })));
+        let scanning = server.clone();
+        let scan = std::thread::spawn(move || scanning.games(true).len());
+        std::thread::sleep(Duration::from_millis(80));
+        *locked(&server.cleared) = Instant::now();
+        assert_eq!(scan.join().unwrap(), 1, "answered to whoever asked");
+        assert!(locked(&server.games).is_none(), "but not kept");
+    }
+
+    #[test]
+    fn body_time_grows_with_what_may_come_and_is_short_for_what_is_small() {
+        let base = Duration::from_secs(30);
+        assert_eq!(body_time(base, 4096), Duration::from_secs(5));
+        assert_eq!(body_time(base, 1024 * 1024 + 1), Duration::from_secs(60 - 29));
+        assert_eq!(body_time(base, (sync::LARGEST_FILE + 4096) as usize), Duration::from_secs(62));
+        assert_eq!(body_time(Duration::from_millis(400), 4096), Duration::from_millis(400));
+        let load = Load::new(Limits::default());
+        assert!((0..DETACHED_AT_ONCE).all(|_| load.start_detached()) && !load.start_detached(), "only so many threads wait on quiet clients");
+    }
+
+    #[test]
+    fn the_timeouts_of_accepted_sockets_are_checked_not_assumed() {
+        let (_http, timeouts) = bind_within("127.0.0.1:0", Duration::from_millis(700)).unwrap();
+        #[cfg(windows)]
+        assert_eq!(timeouts, Ok(()));
+        #[cfg(not(windows))]
+        assert!(timeouts.is_err(), "nothing sets them here, and that is said");
     }
 }

@@ -53,6 +53,60 @@ The page is not part of the signed API, so it is guarded another way:
 
 Everything shown is put on the page as text, never as markup.
 
+## Log and console
+
+The companion runs in the background with no window, so what it does is
+written to `host.log` in its folder (`%LOCALAPPDATA%\CarlaOS\companion`, up to
+256 KB; when it is full the oldest half is dropped). Each line starts with the
+time to the millisecond, so "the call took 38 seconds" shows. It says:
+
+- when the companion started (version, port) and when Sunshine is ready or not;
+- every request of the Ally: method, route, status, how long it took and
+  who asked, as the first six letters of the device id (`stranger` for an id
+  that is not linked here, `unsigned` for none). A route that names a game or
+  a save folder is written as its shape (`/v1/saves/:folder/write`). A request
+  that takes a second or more is marked `SLOW`, and a refusal says why
+  (403, 409, 503 and the rest, with the reason the Ally was given);
+- changes only, never each pulse: an Ally heard from, not heard from for 90
+  seconds (`CONNECTED_FOR`), a stream starting and ending, Moonlight being
+  paired, a device linked or forgotten;
+- what the Ally asked to start, the screen switch, the game started and
+  closed (the lines of `launcher.log` are copied here, so one file tells the
+  story), and a note when every request worker is busy.
+
+Three ways to read it:
+
+- **The dashboard**: the "Log" section shows the newest 100 lines, refreshes
+  by itself and has a **Copy** button for pasting into a message.
+- **The terminal**, the console of the companion: `carla-companion log`
+  prints the newest 100 lines, `--lines N` changes that, `--launcher` shows
+  `launcher.log` instead, and `carla-companion log --follow` keeps printing new
+  lines every half second until you press Ctrl+C. It can run in a terminal
+  next to the running companion. `carla-companion log path` prints where the
+  file is.
+- The file itself.
+
+Never written: request bodies, headers or query strings, link keys, device
+keys, tokens, signatures, PINs, the Sunshine password, the contents of a
+save. The names a player typed (an Ally's name) are not written either, only
+ids. IPv4 addresses and the Windows account name are hidden by the log itself.
+The dashboard's own every-two-seconds requests are not logged unless they fail.
+
+## Staying answerable
+
+The API is served by eight worker threads, so one request that waits holds one
+of them. To keep the Ally's status, games and pulse answered:
+
+- a client that stops sending or reading mid-request is let go after 10
+  seconds, a body that trickles in is given up on after 30, and the worker is
+  free again (the `408` is in the log);
+- at most four workers are on requests that can take long (saves, pairing,
+  installs, a look for games, an Ally waiting for a request from the
+  administrator); a fifth is answered `503` at once;
+- a scan of the disks is shared by everyone asking at once, and the Ally's
+  list of games is answered from the last scan while one runs; Sunshine's
+  state is answered from the last answer while Sunshine is being asked.
+
 ## Not proven yet
 
 - Nothing here has run on Windows or against a real Sunshine: the window

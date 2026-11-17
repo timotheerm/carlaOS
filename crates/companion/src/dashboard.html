@@ -171,6 +171,7 @@ header.top { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; mar
 .count { font-size: 2.6rem; font-weight: 800; line-height: 1; letter-spacing: -0.02em; }
 .chips { display: flex; gap: 0.4rem; flex-wrap: wrap; margin-top: 0.7rem; }
 
+.log { margin: 0; max-height: 22rem; overflow: auto; padding: 0.8rem 1rem; border-radius: 1rem; background: var(--surface-2); font: 0.8rem/1.45 ui-monospace, "Cascadia Mono", Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
 .banner { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; padding: 0.9rem 1.25rem; margin-bottom: 1.25rem; background: var(--accent-soft); color: var(--on-accent); border-radius: var(--radius); }
 .banner p { flex: 1; min-width: 12rem; font-weight: 700; }
 .toast { position: fixed; left: 50%; bottom: 1.5rem; transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 0.8rem 1.3rem; border-radius: var(--pill); font-weight: 700; box-shadow: var(--shadow); max-width: calc(100vw - 2rem); text-align: center; z-index: 5; }
@@ -224,6 +225,11 @@ footer { margin-top: 1.5rem; color: var(--text-quiet); font-size: 0.85rem; text-
       <h2 id="h-add"><span>Add a game</span><span class="grow"></span><button class="btn small" id="find-button" type="button">Look for games on this PC</button></h2>
       <p id="find-help" style="color: var(--text-quiet); margin-bottom: 0.9rem;">For a game that Steam, Epic and GOG do not list: a native port, an unofficial Windows game, an emulator's launcher. Nothing is started while looking.</p>
       <ul class="rows" id="found"></ul>
+    </section>
+    <section class="card span-12" aria-labelledby="h-log">
+      <h2 id="h-log"><span>Log</span><span class="grow"></span><button class="btn small quiet" id="log-refresh" type="button">Refresh</button><button class="btn small" id="log-copy" type="button">Copy</button></h2>
+      <p id="log-help" style="color: var(--text-quiet); margin-bottom: 0.9rem;">What the companion on this PC did lately, newest last: what the Ally asked, the Ally coming and going, Sunshine, streams. No keys, PINs or saves are ever written to it. To watch it live in a terminal: <b>carla-companion log --follow</b></p>
+      <pre id="log-text" class="log" tabindex="0" aria-label="Log of the companion">Loading…</pre>
     </section>
   </div>
   <footer id="footer"></footer>
@@ -507,6 +513,43 @@ function offered(list) {
   if (!list.length) $("found").replaceChildren(h("li", null, "Nothing new was found. Add a program by hand with: carla-companion add NAME PROGRAM"));
 }
 $("find-button").addEventListener("click", (e) => act(e.currentTarget, "POST", "/local/find", null, offered));
+/* The log: the newest lines of what the companion did. */
+let logText = null;
+async function loadLog() {
+  const box = $("log-text");
+  try {
+    const answer = await call("GET", "/local/log");
+    const text = answer.lines.join("\n");
+    if (text === logText) return;
+    // Stay at the newest line, unless someone scrolled up to read.
+    const atEnd = box.scrollHeight - box.scrollTop - box.clientHeight < 24;
+    logText = text;
+    box.textContent = text || "Nothing has been written to the log yet.";
+    if (atEnd) box.scrollTop = box.scrollHeight;
+  } catch (e) {
+    if (e.message !== "reloading") box.textContent = e.message;
+  }
+}
+$("log-refresh").addEventListener("click", () => { logText = null; loadLog(); });
+$("log-copy").addEventListener("click", async () => {
+  // Elements first: nothing is read from the event once something was awaited.
+  const box = $("log-text");
+  const text = logText;
+  if (!text) { toast("There is nothing in the log to copy yet."); return; }
+  try {
+    await navigator.clipboard.writeText(text);
+    toast("The log is copied. Paste it into a message.");
+  } catch {
+    const range = document.createRange();
+    range.selectNodeContents(box);
+    const selection = getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+    toast("Press Ctrl+C to copy the selected log.");
+  }
+});
+loadLog();
+setInterval(() => { if (!document.hidden) loadLog(); }, 4000);
 document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
 refresh();
 // Every two seconds while someone is looking; nothing while nobody is.
