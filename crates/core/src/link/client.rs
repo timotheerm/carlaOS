@@ -10,6 +10,7 @@ use super::health::Pulse;
 use super::probe::{self, Burst, BurstAsk, BurstPlan, Echo};
 use super::quality::Line;
 use super::{EnrolAsk, EnrolReveal, FitAsk, ScreenFit};
+use crate::library::saveplace::SavePlace;
 use super::{random_hex, sign, EnrolDone, EnrolFinish, EnrolOffer, EnrolStart, Hello, Install, Installing, Pair, Prepare, Problem, RemoteGame, RemoteLibrary, SaveFile, SavesFind, SavesFound, Status, Updating};
 use crate::library::downloads::Download;
 use crate::library::sync::{self, Manifest};
@@ -375,8 +376,15 @@ impl Link {
     /// The desktop's copy of a game's saves, when its administrator said
     /// where that game keeps them there.
     pub fn saves(&self, game_id: &str, title: &str) -> Result<Option<RemoteSaves<'_>>> {
-        let found: Option<SavesFound> = self.post("/v1/saves/find", &SavesFind { game_id: game_id.to_string(), title: title.to_string() }, SLOW)?;
-        Ok(found.map(|found| RemoteSaves { link: self, key: found.key, manifest: found.manifest }))
+        self.saves_placed(game_id, title, None)
+    }
+
+    /// As `saves`, also telling the desktop where the game's saves are known
+    /// to be, so that a desktop with no folder yet can suggest one.
+    pub fn saves_placed(&self, game_id: &str, title: &str, place: Option<&SavePlace>) -> Result<Option<RemoteSaves<'_>>> {
+        let wanted = SavesFind { game_id: game_id.to_string(), title: title.to_string(), place: place.cloned() };
+        let found: Option<SavesFound> = self.post("/v1/saves/find", &wanted, SLOW)?;
+        Ok(found.map(|found| RemoteSaves { link: self, key: found.key, manifest: found.manifest, place: found.place }))
     }
 }
 
@@ -399,6 +407,8 @@ pub struct RemoteSaves<'a> {
     link: &'a Link,
     key: String,
     manifest: Manifest,
+    /// Where the desktop's folder is, in words that hold on any machine.
+    pub place: Option<SavePlace>,
 }
 
 impl RemoteSaves<'_> {

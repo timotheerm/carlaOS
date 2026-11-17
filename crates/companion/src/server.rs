@@ -1,7 +1,7 @@
 //! The companion's API. See `carla_core::link` for how requests are trusted.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -19,6 +19,7 @@ use carla_core::library::saves::Backups;
 use carla_core::library::sync::{self, Side as _};
 use carla_core::library::downloads::{Download, Started};
 use carla_core::library::owned::App;
+use carla_core::library::saveplace;
 use carla_core::link::{self, EnrolDone, EnrolFinish, EnrolOffer, EnrolStart, Hello, Install, Installing, Pair, Prepare, Problem, RemoteGame, RemoteLibrary, SaveFile, SavesFind, SavesFound, State, Status, Updating};
 use carla_core::{API_VERSION, VERSION};
 use serde::Serialize;
@@ -720,11 +721,33 @@ impl Server {
         let title = wanted.title.trim().to_lowercase();
         let by_id = folders.iter().find(|f| f.game_id.as_deref() == Some(wanted.game_id.as_str()));
         let Some(found) = by_id.or_else(|| folders.iter().find(|f| !title.is_empty() && f.title.to_lowercase() == title)) else {
+            // No folder here: at most a suggestion is noted. Nothing is read,
+            // created or synced until the administrator accepts it.
+            if let Some(place) = &wanted.place {
+                self.suggest_saves(&wanted, place, now);
+            }
             return json(&None::<SavesFound>);
         };
         self.saves_free(now)?;
         let manifest = sync::manifest(&found.folder).map_err(|e| (503, e))?;
-        json(&Some(SavesFound { key: found.key.clone(), manifest }))
+        json(&Some(SavesFound { key: found.key.clone(), manifest, place: found.place.clone() }))
+    }
+
+    /// Note where this desktop's own folder for a game probably is, from
+    /// where the Ally says it is on another desktop.
+    fn suggest_saves(&self, wanted: &SavesFind, place: &saveplace::SavePlace, now: i64) {
+        let listed = self.find(&wanted.game_id);
+        let game_folder = listed.as_ref().map(|(_, g)| g.install_path.clone());
+        let Some(folder) = saveplace::resolve(place, &self.files.place_env(), game_folder.as_deref()).filter(|f| !saveplace::loads_code(f, Some(place))) else { return };
+        // Only where the folder, or the one it would be made in, is really there.
+        if !folder.is_dir() && !folder.parent().is_some_and(Path::is_dir) {
+            return;
+        }
+        let (game_id, title) = match &listed {
+            Some((source, g)) => (Some(format!("{source}:{}", g.source_id)), g.title.clone()),
+            None => (None, wanted.title.clone()),
+        };
+        let _ = self.files.suggest(game_id.as_deref(), &title, &folder, place, now);
     }
 
     /// One step of bringing a save folder in step: `key/what`.
@@ -1029,7 +1052,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("cover.jpg"), b"picture bytes").unwrap();
-        let files = Files::new(dir.clone());
+        // Its own profile, so that no test reads the real one.
+        let env = carla_core::library::saveplace::Env { saved_games: Some(dir.join("profile").join("Saved Games")), ..Default::default() };
+        let files = Files::new(dir.clone()).with_env(env);
         let found_dir = dir.clone();
         let config = Config::new("HOME PC");
         let calls = Arc::new(Mutex::new(Vec::new()));
@@ -1409,6 +1434,192 @@ mod tests {
         assert_eq!(desk.files.clear_save_folder(&entry.key).unwrap().as_deref(), Some("Third Game"));
         assert!(link.saves("gog:30", "Third Game").unwrap().is_none());
         assert!(remote.read("slot1.sav").is_err());
+    }
+
+    #[test]
+    fn a_second_desktop_learns_where_the_saves_are_and_waits_to_be_told_to_use_it() {
+        use carla_core::library::saveplace::{SavePlace, SaveRoot};
+        use carla_core::library::sync::{bring_in_step, Folder, Way};
+        let first = desk("place-first", false);
+        let second = desk("place-second", false);
+        let (link1, link2) = (linked(&first), linked(&second));
+        let saved_games = |d: &Desk| d.files.dir().join("profile").join("Saved Games");
+
+        // Desktop 1: the administrator names the folder; it is also known by its place.
+        let one = saved_games(&first).join("Third Game");
+        std::fs::create_dir_all(&one).unwrap();
+        std::fs::write(one.join("slot1.sav"), b"desk one").unwrap();
+        let entry = first.files.set_save_folder(Some("gog:30"), "Third Game", &one).unwrap();
+        let place = SavePlace { root: SaveRoot::SavedGames, rel: "Third Game".into() };
+        assert_eq!(entry.place.as_ref(), Some(&place));
+        // The Ally learns it when desktop 1 answers.
+        let learnt = link1.saves_placed("gog:30", "Third Game", None).unwrap().unwrap();
+        assert_eq!(learnt.place.as_ref(), Some(&place));
+
+        // A desktop that already has a folder ignores the place.
+        assert!(link1.saves_placed("gog:30", "Third Game", Some(&SavePlace { root: SaveRoot::SavedGames, rel: "Elsewhere".into() })).unwrap().is_some());
+        assert!(first.files.suggestions().is_empty());
+        assert_eq!(first.files.save_folders()[0].folder, one);
+
+        // Desktop 2 has no such folder yet, nor the Saved Games folder: nothing is noted.
+        assert!(link2.saves_placed("gog:30", "Third Game", Some(&place)).unwrap().is_none());
+        assert!(second.files.suggestions().is_empty());
+
+        // Hostile places are refused, even where the root exists.
+        std::fs::create_dir_all(saved_games(&second)).unwrap();
+        for rel in ["../x", "..", "/abs", "C:/Windows", "a\\b", "", &"a".repeat(5000), &vec!["a"; 40].join("/")] {
+            let bad = SavePlace { root: SaveRoot::SavedGames, rel: rel.to_string() };
+            assert!(link2.saves_placed("gog:30", "Third Game", Some(&bad)).unwrap().is_none());
+        }
+        assert!(link2.saves_placed("gog:30", "Third Game", Some(&SavePlace { root: SaveRoot::ProgramData, rel: "Third Game".into() })).unwrap().is_none());
+        assert!(second.files.suggestions().is_empty());
+
+        // Now its parent exists: a suggestion is noted, nothing is created or offered.
+        assert!(link2.saves_placed("gog:30", "Third Game", Some(&place)).unwrap().is_none());
+        let wanted = saved_games(&second).join("Third Game");
+        let list = second.files.suggestions();
+        assert_eq!((list.len(), list[0].folder.clone(), list[0].game_id.as_deref()), (1, wanted.clone(), Some("gog:30")));
+        assert!(!wanted.exists() && second.files.save_folders().is_empty());
+        assert!(link2.saves_placed("gog:30", "Third Game", Some(&place)).unwrap().is_none());
+        assert_eq!(second.files.suggestions().len(), 1, "one per game");
+
+        // Accepting needs the folder to exist; then the usual sync takes over.
+        let key = list[0].key.clone();
+        assert!(second.files.accept_suggestion(&key, None).is_err());
+        assert!(second.files.accept_suggestion("nothing", None).is_err());
+        std::fs::create_dir_all(&wanted).unwrap();
+        let accepted = second.files.accept_suggestion(&key, None).unwrap();
+        assert_eq!((accepted.folder.clone(), accepted.place.clone()), (wanted.clone(), Some(place.clone())));
+        assert!(second.files.suggestions().is_empty());
+
+        let ally_dir = first.files.dir().join("ally");
+        let here = ally_dir.join("saves");
+        std::fs::create_dir_all(&here).unwrap();
+        std::fs::write(here.join("slot1.sav"), b"ally newest").unwrap();
+        let ally = Folder { folder: here, backups: Backups::new(&ally_dir.join("copies"), "gog:30"), now: now_for_tests() };
+        let remote = link2.saves_placed("gog:30", "Third Game", Some(&place)).unwrap().unwrap();
+        assert_eq!(remote.place.as_ref(), Some(&place));
+        let done = bring_in_step(&ally, &remote, None).unwrap();
+        assert_eq!(done.way, Way::Send);
+        assert_eq!(std::fs::read(wanted.join("slot1.sav")).unwrap(), b"ally newest");
+    }
+
+    #[test]
+    fn suggestions_are_capped_dismissed_and_old_files_still_load() {
+        use carla_core::library::saveplace::{SavePlace, SaveRoot};
+        let dir = std::env::temp_dir().join(format!("carla-suggest-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let files = Files::new(dir.clone());
+        let place = SavePlace { root: SaveRoot::SavedGames, rel: "G".into() };
+        for n in 0..250 {
+            files.suggest(Some(&format!("gog:{n}")), &"t".repeat(500), &dir, &place, n).unwrap();
+        }
+        let list = files.suggestions();
+        assert_eq!(list.len(), 200);
+        assert!(list.iter().all(|s| s.title.len() == 80 && s.at >= 50));
+        let key = list[0].key.clone();
+        assert!(files.dismiss_suggestion(&key).unwrap().is_some());
+        assert!(files.dismiss_suggestion(&key).unwrap().is_none());
+        // A list of folders from before places existed loads.
+        std::fs::write(dir.join("saves.json"), r#"[{"key":"k","game_id":"gog:1","title":"Old","folder":"C:/Saves/Old"}]"#).unwrap();
+        let old = files.save_folders();
+        assert_eq!((old.len(), old[0].place.clone()), (1, None));
+        // So does a find request from an Ally that does not know places.
+        let wanted: SavesFind = serde_json::from_str(r#"{"game_id":"gog:1","title":"Old"}"#).unwrap();
+        assert!(wanted.place.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn suggestion_files(tag: &str) -> (Files, PathBuf) {
+        use carla_core::library::saveplace::Env;
+        let dir = std::env::temp_dir().join(format!("carla-sugg-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("Saved Games")).unwrap();
+        let env = Env { saved_games: Some(dir.join("Saved Games")), ..Default::default() };
+        (Files::new(dir.join("data")).with_env(env), dir)
+    }
+
+    #[test]
+    fn suggestions_hold_no_hidden_characters_and_are_written_safely() {
+        use carla_core::library::saveplace::{SavePlace, SaveRoot};
+        let (files, dir) = suggestion_files("text");
+        let place = SavePlace { root: SaveRoot::SavedGames, rel: "Fine\nGame\u{1b}[31m\u{202e}x".into() };
+        files.suggest(Some("gog:\n1\u{202e}"), "Ti\ntle\u{1b}[2J\u{202e}gnp", &dir, &place, 5).unwrap();
+        let s = &files.suggestions()[0];
+        for text in [s.title.as_str(), s.game_id.as_deref().unwrap(), s.place.rel.as_str()] {
+            assert!(!text.chars().any(|c| c.is_control() || c == '\u{202e}'), "{text:?}");
+        }
+        assert_eq!(s.title, "Title[2Jgnp");
+
+        // Writing the same list again changes nothing, even where a write would fail.
+        let file = files.dir().join("save-suggestions.json");
+        let mut readonly = std::fs::metadata(&file).unwrap().permissions();
+        readonly.set_readonly(true);
+        std::fs::set_permissions(&file, readonly.clone()).unwrap();
+        files.suggest(Some("gog:\n1\u{202e}"), "Ti\ntle\u{1b}[2J\u{202e}gnp", &dir, &place, 5).unwrap();
+        #[allow(clippy::permissions_set_readonly_false)]
+        readonly.set_readonly(false);
+        std::fs::set_permissions(&file, readonly).unwrap();
+
+        // Many at once: none is lost, and no half-written file is left.
+        let files = std::sync::Arc::new(files);
+        let threads: Vec<_> = (0..8)
+            .map(|t| {
+                let (files, dir, place) = (files.clone(), dir.clone(), place.clone());
+                std::thread::spawn(move || {
+                    for n in 0..10 {
+                        files.suggest(Some(&format!("gog:{t}-{n}")), "Game", &dir, &place, 100 + n).unwrap();
+                    }
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().unwrap();
+        }
+        assert_eq!(files.suggestions().len(), 81);
+        assert!(std::fs::read_dir(files.dir()).unwrap().flatten().all(|e| !e.file_name().to_string_lossy().ends_with(".new")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_suggestion_in_a_place_that_runs_programs_cannot_be_accepted() {
+        use carla_core::library::saveplace::{SavePlace, SaveRoot};
+        let (files, dir) = suggestion_files("code");
+        std::fs::create_dir_all(dir.join("Saved Games").join("Startup").join("G")).unwrap();
+        std::fs::create_dir_all(dir.join("Saved Games").join("Fine")).unwrap();
+        let bad = SavePlace { root: SaveRoot::SavedGames, rel: "Startup/G".into() };
+        files.suggest(Some("gog:1"), "Bad", &dir.join("Saved Games").join("Startup").join("G"), &bad, 1).unwrap();
+        let bad_key = files.suggestions()[0].key.clone();
+        assert!(files.accept_suggestion(&bad_key, None).is_err());
+        assert!(files.save_folders().is_empty());
+        // A folder that is not where its place says is refused too.
+        let fine = SavePlace { root: SaveRoot::SavedGames, rel: "Fine".into() };
+        files.suggest(Some("gog:2"), "Moved", &dir, &fine, 2).unwrap();
+        let moved_key = files.suggestions().iter().find(|s| s.title == "Moved").unwrap().key.clone();
+        assert!(files.accept_suggestion(&moved_key, None).is_err());
+        files.suggest(Some("gog:3"), "Fine", &dir.join("Saved Games").join("Fine"), &fine, 3).unwrap();
+        let fine_key = files.suggestions().iter().find(|s| s.title == "Fine").unwrap().key.clone();
+        assert!(files.accept_suggestion(&fine_key, None).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_junction_below_the_root_cannot_be_accepted() {
+        use carla_core::library::saveplace::{SavePlace, SaveRoot};
+        let (files, dir) = suggestion_files("junction");
+        std::fs::create_dir_all(dir.join("elsewhere").join("x")).unwrap();
+        let link = dir.join("Saved Games").join("jn");
+        let made = std::process::Command::new("cmd").args(["/C", "mklink", "/J"]).arg(&link).arg(dir.join("elsewhere")).output().unwrap();
+        assert!(made.status.success(), "mklink failed: {}", String::from_utf8_lossy(&made.stdout));
+        let place = SavePlace { root: SaveRoot::SavedGames, rel: "jn/x".into() };
+        files.suggest(Some("gog:9"), "Linked", &link.join("x"), &place, 1).unwrap();
+        let key = files.suggestions()[0].key.clone();
+        assert!(files.accept_suggestion(&key, None).is_err());
+        assert!(files.save_folders().is_empty());
+        let _ = std::process::Command::new("cmd").args(["/C", "rmdir"]).arg(&link).output();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

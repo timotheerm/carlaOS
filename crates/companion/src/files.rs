@@ -4,9 +4,12 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use carla_core::library::emulation::{self, Console};
+use carla_core::library::saveplace::{self, Env, SavePlace};
 use carla_core::display::Mode;
 use carla_core::link::health::{AllyView, Asking, Health, Pulse, CONNECTED_FOR};
 use carla_core::link::{self, enrol};
@@ -149,7 +152,32 @@ pub struct SaveFolder {
     pub game_id: Option<String>,
     pub title: String,
     pub folder: PathBuf,
+    /// Where the folder is in words that hold on any machine, so that another
+    /// desktop can suggest its own folder. Absent in files from before.
+    #[serde(default)]
+    pub place: Option<SavePlace>,
 }
+
+/// A folder a desktop thinks a game keeps its saves in, from where the
+/// Ally says they are on another one. Only a suggestion: nothing is synced
+/// until the administrator accepts it here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Suggestion {
+    /// The key the game's save folder would get: `saves accept KEY`.
+    pub key: String,
+    #[serde(default)]
+    pub game_id: Option<String>,
+    pub title: String,
+    pub folder: PathBuf,
+    pub place: SavePlace,
+    pub at: i64,
+}
+
+/// One change of the suggestions at a time: two at once would lose one.
+static SUGGESTIONS: Mutex<()> = Mutex::new(());
+
+/// Suggestions kept; the oldest go first.
+pub const MOST_SUGGESTIONS: usize = 200;
 
 /// The game the next stream is for.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -232,11 +260,23 @@ pub const STREAM_SILENCE: i64 = 30;
 #[derive(Debug, Clone)]
 pub struct Files {
     dir: PathBuf,
+    /// The well-known folders, when not this machine's own (tests).
+    env: Option<Env>,
 }
 
 impl Files {
     pub fn new(dir: PathBuf) -> Self {
-        Self { dir }
+        Self { dir, env: None }
+    }
+
+    pub fn with_env(mut self, env: Env) -> Self {
+        self.env = Some(env);
+        self
+    }
+
+    /// The well-known folders of this machine.
+    pub fn place_env(&self) -> Env {
+        self.env.clone().unwrap_or_else(Env::real)
     }
 
     pub fn dir(&self) -> &Path {
@@ -250,10 +290,20 @@ impl Files {
     fn write<T: Serialize>(&self, name: &str, value: &T) -> Result<(), String> {
         let problem = |e: std::io::Error| format!("The companion could not save {name}: {e}.");
         fs::create_dir_all(&self.dir).map_err(problem)?;
-        // Write beside and rename, so a reader never sees half a file.
-        let beside = self.dir.join(format!("{name}.new"));
-        fs::write(&beside, serde_json::to_string_pretty(value).expect("serialisable")).map_err(problem)?;
-        fs::rename(&beside, self.dir.join(name)).map_err(problem)
+        let text = serde_json::to_string_pretty(value).expect("serialisable");
+        // Nothing changed: leave the file alone.
+        if fs::read_to_string(self.dir.join(name)).is_ok_and(|now| now == text) {
+            return Ok(());
+        }
+        // Write beside and rename, so a reader never sees half a file. The
+        // name is unique, so two writers never share a half-written file.
+        static TEMPS: AtomicU64 = AtomicU64::new(0);
+        let beside = self.dir.join(format!("{name}.{}.{}.new", std::process::id(), TEMPS.fetch_add(1, Ordering::Relaxed)));
+        fs::write(&beside, text).map_err(problem)?;
+        fs::rename(&beside, self.dir.join(name)).map_err(|e| {
+            let _ = fs::remove_file(&beside);
+            problem(e)
+        })
     }
 
     fn remove(&self, name: &str) {
@@ -400,6 +450,11 @@ impl Files {
 
     /// Say where a game keeps its saves here. Saying it again replaces it.
     pub fn set_save_folder(&self, game_id: Option<&str>, title: &str, folder: &Path) -> Result<SaveFolder, String> {
+        self.set_save_folder_in(game_id, title, folder, None)
+    }
+
+    /// As `set_save_folder`, knowing the folder the game is installed in.
+    pub fn set_save_folder_in(&self, game_id: Option<&str>, title: &str, folder: &Path, game_folder: Option<&Path>) -> Result<SaveFolder, String> {
         let title = title.trim();
         if title.is_empty() || title.len() > 80 {
             return Err("The game needs a name of at most 80 letters.".to_string());
@@ -413,13 +468,69 @@ impl Files {
         // Reading it through also shows whether it is small enough.
         carla_core::library::sync::manifest(folder)?;
         let key = carla_core::library::manual_key(&game_id.map(str::to_string).unwrap_or_else(|| format!("title:{title}")));
-        let entry = SaveFolder { key, game_id: game_id.map(str::to_string), title: title.to_string(), folder: folder.to_path_buf() };
+        let entry = SaveFolder { key, game_id: game_id.map(str::to_string), title: title.to_string(), folder: folder.to_path_buf(), place: saveplace::portable(folder, &self.place_env(), game_folder) };
         let mut folders = self.save_folders();
         folders.retain(|f| f.key != entry.key);
         folders.push(entry.clone());
         folders.sort_by_key(|f| f.title.to_lowercase());
         self.write("saves.json", &folders)?;
+        // Settled: a suggestion for this game is no longer needed.
+        let _ = self.dismiss_suggestion(&entry.key);
         Ok(entry)
+    }
+
+    pub fn suggestions(&self) -> Vec<Suggestion> {
+        self.read("save-suggestions.json").unwrap_or_default()
+    }
+
+    /// Remember that the Ally says a game's saves are in `place`, which here
+    /// is `folder`. One per game; a new one replaces the old.
+    pub fn suggest(&self, game_id: Option<&str>, title: &str, folder: &Path, place: &SavePlace, at: i64) -> Result<(), String> {
+        // Shown in a terminal later: no control or direction-changing characters.
+        let clip = |s: &str, n: usize| carla_core::library::find::visible(s).trim().chars().take(n).collect::<String>();
+        let title = clip(title, 80);
+        if title.is_empty() {
+            return Ok(());
+        }
+        let game_id = game_id.map(|g| clip(g, 200));
+        let place = SavePlace { root: place.root, rel: clip(&place.rel, 1200) };
+        let _lock = SUGGESTIONS.lock().unwrap_or_else(|e| e.into_inner());
+        let key = carla_core::library::manual_key(&game_id.clone().unwrap_or_else(|| format!("title:{title}")));
+        let mut list = self.suggestions();
+        list.retain(|s| s.key != key);
+        list.push(Suggestion { key, game_id, title, folder: folder.to_path_buf(), place, at });
+        if list.len() > MOST_SUGGESTIONS {
+            list.sort_by_key(|s| std::cmp::Reverse(s.at));
+            list.truncate(MOST_SUGGESTIONS);
+        }
+        self.write("save-suggestions.json", &list)
+    }
+
+    /// Forget a suggestion. Returns its title when it was there.
+    pub fn dismiss_suggestion(&self, key: &str) -> Result<Option<String>, String> {
+        let _lock = SUGGESTIONS.lock().unwrap_or_else(|e| e.into_inner());
+        let mut list = self.suggestions();
+        let found = list.iter().position(|s| s.key == key).map(|i| list.remove(i).title);
+        if found.is_some() {
+            self.write("save-suggestions.json", &list)?;
+        }
+        Ok(found)
+    }
+
+    /// The administrator confirms a suggestion: the folder is named for real,
+    /// with the same checks as `saves set`. It must exist.
+    pub fn accept_suggestion(&self, key: &str, game_folder: Option<&Path>) -> Result<SaveFolder, String> {
+        let s = self.suggestions().into_iter().find(|s| s.key == key).ok_or("No suggestion has that key (see carla-companion saves suggestions).")?;
+        if !s.folder.is_dir() {
+            return Err(format!("{} does not exist here. Create it or give the real folder with saves set.", s.folder.display()));
+        }
+        // The place is resolved again, here and now: the folder must still be
+        // what it says, below no link, and not somewhere programs load from.
+        let again = saveplace::resolve(&s.place, &self.place_env(), game_folder).filter(|f| *f == s.folder);
+        let Some(folder) = again.filter(|f| !saveplace::loads_code(f, Some(&s.place))) else {
+            return Err(format!("{} is not a folder this desktop will keep saves in step in. Give the real one with saves set.", s.folder.display()));
+        };
+        self.set_save_folder_in(s.game_id.as_deref(), &s.title, &folder, game_folder)
     }
 
     /// Stop keeping a game's saves in step. Returns its title when it was

@@ -72,6 +72,12 @@ const HELP: &str = "CarlaOS desktop companion
                              suggest where a game keeps its saves, from folder names
   carla-companion saves find NAME
                              watch while you play and save, then suggest the folder
+  carla-companion saves suggestions
+                             list folders suggested from where the Ally keeps a game's saves
+  carla-companion saves accept KEY
+                             keep that game's saves in step, in the suggested folder
+  carla-companion saves dismiss KEY
+                             forget a suggestion
   carla-companion saves clear KEY
                              stop keeping a game's saves in step
   carla-companion saves copies KEY
@@ -620,6 +626,11 @@ fn configured(files: &Files) -> Result<Config, String> {
     files.config().ok_or_else(|| "The companion is not set up yet. Run it without arguments first.".to_string())
 }
 
+/// The folder a store game is installed in on this desktop.
+fn game_folder_of(id: &str) -> Option<PathBuf> {
+    installed().into_iter().find(|(source, g)| format!("{source}:{}", g.source_id) == id).map(|(_, g)| g.install_path)
+}
+
 /// The commands about keeping saves in step. Only here, at the desktop, can
 /// a folder be named: the Ally can never point the companion at one.
 fn saves(files: &Files, args: &[String]) -> Result<i32, String> {
@@ -650,7 +661,7 @@ fn saves(files: &Files, args: &[String]) -> Result<i32, String> {
             let by_hand = files.extras().into_iter().map(|e| (format!("manual:{}", e.key), e.title));
             let known = store.chain(by_hand).find(|(id, title)| id.to_lowercase() == wanted || title.to_lowercase() == wanted);
             let saved = match &known {
-                Some((id, title)) => files.set_save_folder(Some(id), title, std::path::Path::new(folder))?,
+                Some((id, title)) => files.set_save_folder_in(Some(id), title, std::path::Path::new(folder), game_folder_of(id).as_deref())?,
                 None => files.set_save_folder(None, name, std::path::Path::new(folder))?,
             };
             println!("Saves of {} are now kept in step with the Ally, from {}.", saved.title, saved.folder.display());
@@ -660,6 +671,40 @@ fn saves(files: &Files, args: &[String]) -> Result<i32, String> {
             println!("On the Ally the game needs its save folder too: Settings, Manage games.");
             Ok(0)
         }
+        Some("suggestions") => {
+            let list = files.suggestions();
+            if list.is_empty() {
+                println!("No folder is suggested. Once the Ally knows where a game keeps its saves on another desktop, a likely folder shows up here.");
+            }
+            for s in list {
+                let shown = |t: &str| carla_core::library::find::visible(t);
+                println!("{}  {}  {}", shown(&s.key), shown(&s.title), shown(&s.folder.to_string_lossy()));
+            }
+            Ok(0)
+        }
+        Some("accept") => {
+            let key = args.get(1).ok_or("Say which suggestion: carla-companion saves accept KEY [--yes] (see carla-companion saves suggestions).")?;
+            let found = files.suggestions().into_iter().find(|s| &s.key == key).ok_or("No suggestion has that key (see carla-companion saves suggestions).")?;
+            let game_folder = found.game_id.as_deref().and_then(game_folder_of);
+            let shown = |t: &str| carla_core::library::find::visible(t);
+            if !args.iter().skip(2).any(|a| a == "--yes") {
+                println!("Would keep the saves of {} in step with the Ally, from {}.", shown(&found.title), shown(&found.folder.to_string_lossy()));
+                println!("Nothing was changed. Check that this is the game's save folder, then run again with --yes:");
+                println!("  carla-companion saves accept {} --yes", shown(&found.key));
+                return Ok(1);
+            }
+            let saved = files.accept_suggestion(key, game_folder.as_deref())?;
+            println!("Saves of {} are now kept in step with the Ally, from {}.", saved.title, saved.folder.display());
+            println!("On the Ally the game needs its save folder too: Settings, Manage games.");
+            Ok(0)
+        }
+        Some("dismiss") => match files.dismiss_suggestion(args.get(1).ok_or("Say which suggestion: carla-companion saves dismiss KEY.")?)? {
+            Some(title) => {
+                println!("The suggestion for {title} is forgotten.");
+                Ok(0)
+            }
+            None => Err("No suggestion has that key (see carla-companion saves suggestions).".to_string()),
+        },
         Some(word @ ("guess" | "find")) => find_saves(files, word == "find", args.get(1).ok_or("Say which game: carla-companion saves guess \"NAME\" or saves find \"NAME\".")?),
         Some("clear") => match files.clear_save_folder(args.get(1).ok_or("Say which game: carla-companion saves clear KEY (see carla-companion saves).")?)? {
             Some(title) => {
