@@ -23,6 +23,7 @@ use std::sync::Arc;
 use std::path::PathBuf;
 
 use carla_core::library::emulation::{self, Console};
+use carla_core::library::find;
 use carla_core::library::{achievements, downloads, owned, scan_store, steam, STORES};
 use carla_core::link::{discover, enrol, wake, SUNSHINE_APP};
 use carla_core::update::{self, Part};
@@ -48,10 +49,15 @@ const HELP: &str = "CarlaOS desktop companion
   carla-companion devices    list the linked devices
   carla-companion forget ID  stop accepting a linked device
   carla-companion games      list the games added by hand
-  carla-companion add NAME PROGRAM [--args OPTIONS] [--cover PICTURE]
+  carla-companion find [FOLDER...]
+                             look for games to add (in the usual game folders, or
+                             in FOLDER) and print a ready-to-paste add line for each
+  carla-companion add NAME PROGRAM [--args OPTIONS] [--cover PICTURE] [--watch EXE]
                              add a game that Steam does not list; put quotes
                              around a name or path that has spaces. PROGRAM
-                             may be a shortcut: it is followed to its program
+                             may be a shortcut, or a .bat or .cmd file. --watch
+                             names the real game's program (Game-Win64-Shipping.exe)
+                             when PROGRAM is a launcher that exits once it runs
   carla-companion drop KEY   take a game added by hand off the list
   carla-companion consoles   list the consoles set up here (an emulator and a folder of games)
   carla-companion console add NAME EMULATOR FOLDER [--endings iso,chd] [--options OPTIONS]
@@ -929,24 +935,32 @@ fn run(args: &[String]) -> Result<i32, String> {
             }
             for e in extras {
                 let gone = if e.exe.is_file() { "" } else { "  (program not found, hidden from the Ally)" };
-                println!("{}  {}  {}{gone}", e.key, e.title, e.exe.display());
+                let watching = e.watch.as_deref().map(|w| format!("  (watching {w})")).unwrap_or_default();
+                println!("{}  {}  {}{watching}{gone}", e.key, e.title, e.exe.display());
+            }
+            Ok(0)
+        }
+        Some("find") => {
+            let given: Vec<PathBuf> = args[1..].iter().map(PathBuf::from).collect();
+            if let Some(not) = given.iter().find(|g| !g.is_dir()) {
+                return Err(format!("{} is not a folder on this desktop.", not.display()));
+            }
+            let places = if given.is_empty() { find::default_roots() } else { Vec::new() };
+            let added: Vec<String> = files.extras().iter().map(|e| carla_core::library::discover::lower(&e.exe)).collect();
+            let found: Vec<find::Candidate> = find::find(&places, &given).into_iter().filter(|c| !added.contains(&carla_core::library::discover::lower(&c.exe))).collect();
+            if found.is_empty() {
+                println!("Nothing new was found. Name the game's folder: carla-companion find \"D:\\Games\\My Game\"");
+            }
+            for (n, c) in found.iter().enumerate() {
+                let shown = find::visible;
+                let line = find::add_line(c).unwrap_or_else(|| format!("(candidate {}: this name has characters that are unsafe to paste; add it from the dashboard or rename the folder)", n + 1));
+                println!("{}. {}  ({}, score {})\n    {}\n    {}\n    {}\n", n + 1, shown(&c.title), kind_word(c.kind), c.score, shown(&c.exe.to_string_lossy()), shown(&c.note), line);
             }
             Ok(0)
         }
         Some("add") => {
-            let usage = "Say the name and the program: carla-companion add \"NAME\" \"C:\\path\\game.exe\" [--args \"...\"] [--cover \"C:\\path\\picture.jpg\"]";
-            let (title, exe) = (args.get(1).ok_or(usage)?, args.get(2).ok_or(usage)?);
-            let (mut game_args, mut cover) = (String::new(), None);
-            let mut rest = args[3..].iter();
-            while let Some(flag) = rest.next() {
-                let value = rest.next().ok_or(usage)?;
-                match flag.as_str() {
-                    "--args" => game_args = value.clone(),
-                    "--cover" => cover = Some(std::path::PathBuf::from(value)),
-                    _ => return Err(usage.to_string()),
-                }
-            }
-            let added = files.add_extra(title, std::path::Path::new(exe), &game_args, cover.as_deref())?;
+            let add = parse_add(args)?;
+            let added = files.add_extra(&add.title, &add.exe, &add.args, add.cover.as_deref(), add.watch.as_deref())?;
             println!("{} was added. It appears on the Ally within five minutes, or at once after \"Look for games again\" there.", added.title);
             Ok(0)
         }
@@ -1017,6 +1031,42 @@ fn run(args: &[String]) -> Result<i32, String> {
     }
 }
 
+/// What `carla-companion add` was asked.
+#[derive(Debug, PartialEq, Eq)]
+struct AddArgs {
+    title: String,
+    exe: PathBuf,
+    args: String,
+    cover: Option<PathBuf>,
+    watch: Option<String>,
+}
+
+/// Read `add NAME PROGRAM [--args OPTIONS] [--cover PICTURE] [--watch EXE]`.
+fn parse_add(args: &[String]) -> Result<AddArgs, String> {
+    let usage = "Say the name and the program: carla-companion add \"NAME\" \"C:\\path\\game.exe\" [--args \"...\"] [--cover \"C:\\path\\picture.jpg\"] [--watch \"Game-Win64-Shipping.exe\"]";
+    let (title, exe) = (args.get(1).ok_or(usage)?, args.get(2).ok_or(usage)?);
+    let mut add = AddArgs { title: title.clone(), exe: PathBuf::from(exe), args: String::new(), cover: None, watch: None };
+    let mut rest = args[3..].iter();
+    while let Some(flag) = rest.next() {
+        let value = rest.next().ok_or(usage)?;
+        match flag.as_str() {
+            "--args" => add.args = value.clone(),
+            "--cover" => add.cover = Some(PathBuf::from(value)),
+            "--watch" => add.watch = Some(carla_core::library::launch::watch_name(value).ok_or("--watch needs a program name such as Game-Win64-Shipping.exe.")?),
+            _ => return Err(usage.to_string()),
+        }
+    }
+    Ok(add)
+}
+
+fn kind_word(kind: find::FoundKind) -> &'static str {
+    match kind {
+        find::FoundKind::Game => "the game",
+        find::FoundKind::Launcher => "a launcher",
+        find::FoundKind::Shortcut => "a shortcut",
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let code = match run(&args) {
@@ -1030,4 +1080,45 @@ fn main() {
         }
     };
     std::process::exit(code);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn words(line: &[&str]) -> Vec<String> {
+        line.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn add_reads_its_options_and_refuses_what_it_does_not_know() {
+        let plain = parse_add(&words(&["add", "Quest", "D:/Games/Quest/Launcher.exe"])).unwrap();
+        assert_eq!((plain.title.as_str(), plain.args.as_str(), plain.cover.clone(), plain.watch.clone()), ("Quest", "", None, None));
+        let full = parse_add(&words(&["add", "Quest", "x.exe", "--args", "-windowed", "--watch", "D:/Games/Quest/Quest-Win64-Shipping.exe", "--cover", "c.jpg"])).unwrap();
+        assert_eq!((full.args.as_str(), full.watch.as_deref(), full.cover), ("-windowed", Some("Quest-Win64-Shipping.exe"), Some(PathBuf::from("c.jpg"))));
+        assert!(parse_add(&words(&["add", "Quest"])).is_err());
+        assert!(parse_add(&words(&["add", "Quest", "x.exe", "--watch"])).is_err());
+        assert!(parse_add(&words(&["add", "Quest", "x.exe", "--watch", "  "])).is_err());
+        assert!(parse_add(&words(&["add", "Quest", "x.exe", "--bogus", "1"])).is_err());
+    }
+
+    #[test]
+    fn the_line_find_prints_is_one_add_accepts() {
+        let c = find::Candidate {
+            title: "Pixel Quest".into(),
+            exe: PathBuf::from("D:/Games/Pixel Quest/Launcher.exe"),
+            folder: PathBuf::from("D:/Games/Pixel Quest"),
+            kind: find::FoundKind::Launcher,
+            score: 30,
+            note: String::new(),
+            watch_hint: Some("Quest.exe".into()),
+        };
+        let line = find::add_line(&c).unwrap();
+        assert_eq!(line, "carla-companion add \"Pixel Quest\" \"D:/Games/Pixel Quest/Launcher.exe\" --watch \"Quest.exe\"");
+        assert!(find::add_line(&find::Candidate { title: "Foo $(calc)".into(), ..c }).is_none());
+        // As a shell would split it: the quotes group, and are not kept.
+        let split = carla_core::library::launch::split_args(&line);
+        let add = parse_add(&split[1..]).unwrap();
+        assert_eq!((add.title.as_str(), add.exe, add.watch.as_deref()), ("Pixel Quest", PathBuf::from("D:/Games/Pixel Quest/Launcher.exe"), Some("Quest.exe")));
+    }
 }

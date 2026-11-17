@@ -116,7 +116,7 @@ fn play(files: &Files, pending: Pending, curtain: bool) -> i32 {
         }
     };
     files.log(&format!("Started {}.", install.title));
-    let mut watch = Watch::new(&install, child);
+    let mut watch = Watch::new(&install, child).watching(pending.watch.as_deref());
     // Requests meant for an earlier game are not for this one.
     files.take_end(now());
     files.take_reveal(now());
@@ -210,6 +210,7 @@ mod tests {
             install_path: PathBuf::from("games"),
             exe: None,
             args: String::new(),
+            watch: None,
             screen: None,
             at: now(),
         }

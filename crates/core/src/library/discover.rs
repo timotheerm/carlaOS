@@ -24,11 +24,11 @@ use super::ports::{self, recognise};
 use super::{pe, shortcut, Kind};
 
 /// Folders this deep below a game's own folder are looked through.
-const DEPTH: usize = 3;
+pub(super) const DEPTH: usize = 3;
 /// More files than this in one folder and the rest is left alone.
-const MOST_FILES: usize = 4000;
+pub(super) const MOST_FILES: usize = 4000;
 /// More than this is more than anyone wants to look through.
-const MOST_FOUND: usize = 200;
+pub(super) const MOST_FOUND: usize = 200;
 
 /// A program that looks like a game.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -80,7 +80,7 @@ pub fn lower(path: &Path) -> String {
     path.to_string_lossy().replace('/', "\\").to_lowercase()
 }
 
-fn stem(path: &Path) -> String {
+pub(super) fn stem(path: &Path) -> String {
     path.file_stem().map(|s| s.to_string_lossy().to_lowercase()).unwrap_or_default()
 }
 
@@ -89,7 +89,7 @@ fn is_program(path: &Path) -> bool {
 }
 
 /// Programs that come with a game and are not the game.
-fn helper(path: &Path) -> bool {
+pub(super) fn helper(path: &Path) -> bool {
     let name = stem(path);
     let starts = ["unins", "setup", "install", "vc_redist", "vcredist", "dxsetup", "dxwebsetup", "dotnet", "crashpad", "crashreport", "unitycrashhandler", "ue4prereq", "ueprereq", "qtwebengine", "cefsharp", "python", "7z", "oalinst", "physx", "directx", "notification_helper", "createdump", "updater", "update", "patcher"];
     let has = ["crashhandler", "crashreporter", "errorreport", "redist", "uninstall"];
@@ -131,7 +131,7 @@ fn programs(dir: &Path, depth: usize, left: &mut usize, out: &mut Vec<PathBuf>) 
     }
 }
 
-fn squash(name: &str) -> String {
+pub(super) fn squash(name: &str) -> String {
     name.chars().filter(char::is_ascii_alphanumeric).map(|c| c.to_ascii_lowercase()).collect()
 }
 
