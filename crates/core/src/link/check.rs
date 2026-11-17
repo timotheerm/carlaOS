@@ -14,8 +14,11 @@
 use serde::{Deserialize, Serialize};
 
 use super::client::Error;
+use super::codec;
+use super::health::{Grade, Health};
 use super::quality::{self, Measure, Setting};
-use super::{State, Status};
+use super::{ScreenFit, State, Status};
+use crate::display::Mode;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -41,6 +44,8 @@ pub enum Fix {
     Update,
     /// The link itself is gone: a new code from the desktop is needed.
     Relink,
+    /// Install Moonlight on the Ally.
+    Moonlight,
 }
 
 impl Fix {
@@ -51,6 +56,7 @@ impl Fix {
             Fix::Wake => "Wake it",
             Fix::Update => "Update the desktop",
             Fix::Relink => "Link it again",
+            Fix::Moonlight => "Install Moonlight",
         }
     }
 }
@@ -74,6 +80,9 @@ pub struct Report {
     /// What was repaired on the way, in words, when repairs were asked for.
     #[serde(default)]
     pub repaired: Vec<String>,
+    /// The connection in figures, when it could be measured.
+    #[serde(default)]
+    pub health: Option<Health>,
 }
 
 impl Report {
@@ -97,6 +106,9 @@ impl Report {
     /// The report as lines of text, for a terminal.
     pub fn words(&self) -> String {
         let mut lines = vec![format!("{}:", self.name)];
+        if let Some(health) = &self.health {
+            lines.push(format!("  {}", health.words()));
+        }
         for step in &self.steps {
             let mark = match step.outcome {
                 Outcome::Ok => "ok  ",
@@ -141,6 +153,36 @@ pub struct Facts<'a> {
     pub paired: Option<bool>,
     pub measure: Option<Measure>,
     pub setting: Setting,
+    /// Whether each of Sunshine's ports opened from the Ally. `None` when
+    /// they were not tried.
+    pub ports: Option<Vec<(u16, bool)>>,
+    /// The Ally's own screen, and what the desktop would give a stream of
+    /// its size. `None` when the desktop is too old to say.
+    pub screen: Option<Mode>,
+    pub fit: Option<ScreenFit>,
+    /// The names of the Ally's graphics chips.
+    pub graphics: Vec<String>,
+    /// Unix seconds, for dating the measurement.
+    pub now: i64,
+}
+
+impl Facts<'_> {
+    fn address(&self) -> &str {
+        self.answer.as_ref().map(|(_, a, _)| a.as_str()).unwrap_or_default()
+    }
+
+    /// The codec the two machines can be expected to settle on.
+    pub fn codec(&self) -> Option<codec::Fit> {
+        let status = self.answer.as_ref().ok().map(|(s, ..)| s)?;
+        (!status.graphics.is_empty() || !self.graphics.is_empty()).then(|| codec::fit(&status.graphics, &self.graphics))
+    }
+
+    /// The connection in figures, when it was measured.
+    pub fn health(&self) -> Option<Health> {
+        let m = self.measure?;
+        let choice = quality::choose(self.setting, Some(m), super::wake::is_tailscale(self.address()));
+        Some(Health::of(m, choice, self.screen, self.address(), self.codec(), self.now))
+    }
 }
 
 fn step(key: &str, title: &str, outcome: Outcome, detail: impl Into<String>, fix: Option<Fix>) -> Step {
@@ -154,6 +196,69 @@ fn skipped(key: &str, title: &str, why: &str) -> Step {
 /// Delay past which a home network is worth a note: a stream still plays
 /// but feels slower than it should.
 const SLOW_AT_HOME_MS: u32 = 20;
+
+fn ports_step(facts: &Facts, sunshine_up: bool) -> Step {
+    let title = "Sunshine can be reached";
+    match &facts.ports {
+        _ if !sunshine_up => skipped("ports", title, "Needs Sunshine running on the desktop first."),
+        None => skipped("ports", title, "Not tried."),
+        Some(ports) if ports.iter().all(|(_, open)| *open) => step("ports", title, Outcome::Ok, "Its ports open from the Ally, so nothing on the way blocks a stream from starting.", None),
+        Some(ports) => {
+            let shut: Vec<String> = ports.iter().filter(|(_, open)| !open).map(|(port, _)| port.to_string()).collect();
+            step(
+                "ports",
+                title,
+                Outcome::Fail,
+                format!(
+                    "Sunshine runs on the desktop, but its port {} cannot be reached from the Ally. The desktop's firewall is in the way: run carla-companion firewall there once.",
+                    shut.join(" and ")
+                ),
+                None,
+            )
+        }
+    }
+}
+
+fn picture_step(facts: &Facts) -> Step {
+    let title = "Picture fit";
+    let mut outcome = Outcome::Ok;
+    let mut parts = Vec::new();
+    match (facts.fit, facts.screen) {
+        (Some(ScreenFit { virtual_screen: true, .. }), Some(want)) => {
+            parts.push(format!("The desktop gives each stream a screen of its own at the Ally's size, {} by {}.", want.width, want.height));
+        }
+        (Some(ScreenFit { mode: Some(mode), .. }), Some(want)) if (mode.width, mode.height) == (want.width, want.height) => {
+            parts.push(format!("The desktop's screen switches to the Ally's size, {}, for a stream.", mode.words()));
+        }
+        (Some(ScreenFit { mode: Some(mode), .. }), Some(_)) => {
+            outcome = Outcome::Warn;
+            parts.push(format!(
+                "The desktop's screen does not have the Ally's size; the nearest is {}, so the picture is scaled. A virtual screen fits exactly: carla-companion stream virtual install on the desktop.",
+                mode.words()
+            ));
+        }
+        (Some(ScreenFit { mode: None, .. }), Some(_)) => {
+            outcome = Outcome::Warn;
+            parts.push(
+                "The desktop's screen has no size of the Ally's shape, so the picture is scaled and may have bars. A virtual screen fits exactly: carla-companion stream virtual install on the desktop."
+                    .to_string(),
+            );
+        }
+        _ => {}
+    }
+    match facts.codec() {
+        Some(fit) if fit.known => parts.push(format!("{}; Moonlight and Sunshine settle that themselves.", fit.words())),
+        Some(fit) => {
+            outcome = Outcome::Warn;
+            parts.push(format!("{}: a graphics chip was not recognised. H.264 needs about half as much again of the connection for the same picture.", fit.words()));
+        }
+        None => {}
+    }
+    if parts.is_empty() {
+        return skipped("picture", title, "The desktop is too old to say. Update it.");
+    }
+    step("picture", title, outcome, parts.join(" "), None)
+}
 
 /// Work out the steps from what was found.
 pub fn steps(facts: &Facts) -> Vec<Step> {
@@ -207,10 +312,12 @@ pub fn steps(facts: &Facts) -> Vec<Step> {
         let why = "Needs the desktop to answer first.";
         out.push(skipped("version", "Same CarlaOS", why));
         out.push(skipped("sunshine", "Sunshine", why));
+        out.push(skipped("ports", "Sunshine can be reached", why));
         out.push(moonlight_step(facts));
         out.push(skipped("paired", "Paired for streaming", why));
         out.push(waking_step(facts));
         out.push(skipped("connection", "Connection", why));
+        out.push(skipped("picture", "Picture fit", why));
         return out;
     };
 
@@ -244,6 +351,7 @@ pub fn steps(facts: &Facts) -> Vec<Step> {
         ),
     });
 
+    out.push(ports_step(facts, status.state != State::NotReady));
     out.push(moonlight_step(facts));
     out.push(match (facts.moonlight, facts.paired) {
         (false, _) => skipped("paired", "Paired for streaming", "Needs Moonlight on the Ally first."),
@@ -260,27 +368,18 @@ pub fn steps(facts: &Facts) -> Vec<Step> {
 
     out.push(waking_step(facts));
 
-    out.push(match facts.measure {
-        Some(m) => {
-            let away = super::wake::is_tailscale(facts.answer.as_ref().map(|(_, a, _)| a.as_str()).unwrap_or_default());
-            let choice = quality::choose(facts.setting, Some(m), away);
-            let measured = choice.measured();
-            let slow_at_home = !m.away && m.latency_ms > SLOW_AT_HOME_MS;
-            let picture = if choice.automatic { format!("A stream now would get {}.", choice.level.words()) } else { format!("Streams are set to {}.", choice.level.words()) };
-            if slow_at_home {
-                step(
-                    "connection",
-                    "Connection",
-                    Outcome::Warn,
-                    format!("Measured {measured}. {picture} That is slow for a home network; a cable to the desktop, or the Ally nearer the router, helps."),
-                    None,
-                )
-            } else {
-                step("connection", "Connection", Outcome::Ok, format!("Measured {measured}. {picture}"), None)
-            }
+    out.push(match facts.health() {
+        Some(health) => {
+            let fixed = if health.picture.automatic { String::new() } else { " The picture is fixed by the administrator.".to_string() };
+            let advice = health.advice.first().map(|a| format!(" {a}")).unwrap_or_default();
+            // A slow home network still plays, but is worth a note.
+            let slow_at_home = facts.measure.is_some_and(|m| !m.away && m.latency_ms > SLOW_AT_HOME_MS);
+            let outcome = if health.grade <= Grade::Playable || slow_at_home { Outcome::Warn } else { Outcome::Ok };
+            step("connection", "Connection", outcome, format!("{}{fixed}{advice}", health.summary), None)
         }
         None => step("connection", "Connection", Outcome::Warn, "Could not be measured. Streams use a careful picture until it can be.", None),
     });
+    out.push(picture_step(facts));
     out
 }
 
@@ -292,8 +391,8 @@ fn moonlight_step(facts: &Facts) -> Step {
             "moonlight",
             "Moonlight on the Ally",
             Outcome::Fail,
-            "Not installed. Install Moonlight (moonlight-stream.org) on the Ally once; CarlaOS does the rest.",
-            None,
+            "Not installed. CarlaOS can install it on the Ally; Windows asks once to allow that.",
+            Some(Fix::Moonlight),
         )
     }
 }
@@ -327,6 +426,7 @@ mod tests {
             hardware: String::new(),
             addresses: vec![],
             macs: vec![],
+            graphics: vec!["AMD Radeon RX 9070 XT".into()],
         }
     }
 
@@ -337,13 +437,18 @@ mod tests {
             can_wake: true,
             moonlight: true,
             paired: Some(true),
-            measure: Some(Measure { latency_ms: 3, jitter_ms: 1, kbps: Some(200_000), away: false }),
+            measure: Some(Measure::plain(3, 1, Some(200_000), false)),
             setting: Setting::default(),
+            ports: Some(vec![(47984, true), (47989, true)]),
+            screen: Some(Mode::new(1920, 1080, 120)),
+            fit: Some(ScreenFit { virtual_screen: true, mode: Some(Mode::new(1920, 1080, 120)) }),
+            graphics: vec!["AMD Radeon(TM) Graphics".into()],
+            now: 100,
         }
     }
 
     fn report(steps: Vec<Step>) -> Report {
-        Report { id: "home".into(), name: "HOME PC".into(), steps, repaired: vec![] }
+        Report { id: "home".into(), name: "HOME PC".into(), steps, repaired: vec![], health: None }
     }
 
     fn outcome(steps: &[Step], key: &str) -> Outcome {
@@ -353,7 +458,7 @@ mod tests {
     #[test]
     fn a_healthy_desktop_passes_every_step() {
         let steps = steps(&facts(Ok((status(State::Ready, "0.5.0"), "192.168.1.20".into(), 4))));
-        assert_eq!(steps.len(), 7);
+        assert_eq!(steps.len(), 9);
         assert!(steps.iter().all(|s| s.outcome == Outcome::Ok), "{steps:#?}");
         let r = report(steps);
         assert_eq!(r.outcome(), Outcome::Ok);
@@ -408,7 +513,7 @@ mod tests {
     #[test]
     fn different_versions_and_a_slow_home_network_are_notes_not_failures() {
         let mut f = facts(Ok((status(State::Busy, "0.4.0"), "192.168.1.20".into(), 40)));
-        f.measure = Some(Measure { latency_ms: 35, jitter_ms: 5, kbps: Some(30_000), away: false });
+        f.measure = Some(Measure::plain(35, 5, Some(30_000), false));
         let steps = steps(&f);
         assert_eq!(outcome(&steps, "version"), Outcome::Warn);
         assert_eq!(outcome(&steps, "connection"), Outcome::Warn);
@@ -420,10 +525,70 @@ mod tests {
     #[test]
     fn a_delay_through_tailscale_is_expected() {
         let mut f = facts(Ok((status(State::Ready, "0.5.0"), "100.101.1.2".into(), 45)));
-        f.measure = Some(Measure { latency_ms: 45, jitter_ms: 5, kbps: Some(30_000), away: true });
+        f.measure = Some(Measure::plain(45, 5, Some(30_000), true));
         let steps = steps(&f);
         assert_eq!(outcome(&steps, "connection"), Outcome::Ok);
         assert!(steps[0].detail.contains("Tailscale"));
+    }
+
+    #[test]
+    fn a_firewall_in_front_of_sunshine_is_named() {
+        let mut f = facts(Ok((status(State::Ready, "0.5.0"), "192.168.1.20".into(), 4)));
+        f.ports = Some(vec![(47984, false), (47989, true)]);
+        let steps = steps(&f);
+        let ports = steps.iter().find(|s| s.key == "ports").unwrap();
+        assert_eq!(ports.outcome, Outcome::Fail);
+        assert!(ports.detail.contains("port 47984") && ports.detail.contains("carla-companion firewall"));
+        // With Sunshine down the ports say nothing new.
+        let mut f = facts(Ok((status(State::NotReady, "0.5.0"), "192.168.1.20".into(), 4)));
+        f.ports = Some(vec![(47984, false), (47989, false)]);
+        assert_eq!(outcome(&super::steps(&f), "ports"), Outcome::Skipped);
+    }
+
+    #[test]
+    fn the_connection_is_given_in_figures_and_lost_packets_are_a_warning() {
+        use crate::link::probe::Echo;
+        let mut f = facts(Ok((status(State::Ready, "0.5.0"), "192.168.1.20".into(), 4)));
+        let echo = |lost| Echo { sent: 100, lost, best_us: 1_500, median_us: 2_100, p95_us: 4_000, jitter_us: 400 };
+        f.measure = Some(Measure { echo: Some(echo(0)), ..Measure::plain(3, 1, Some(200_000), false) });
+        let health = f.health().unwrap();
+        assert_eq!((health.grade, health.ping_us, health.at), (Grade::Excellent, 2_100, 100));
+        assert_eq!(health.codec.as_ref().map(|c| c.words()), Some("HEVC expected (AMD Radeon RX 9070 XT to AMD Radeon(TM) Graphics)".to_string()));
+        let connection = steps(&f).into_iter().find(|s| s.key == "connection").unwrap();
+        assert_eq!(connection.outcome, Outcome::Ok);
+        assert!(connection.detail.starts_with("Excellent: 2.1 ms there and back"), "{}", connection.detail);
+
+        f.measure = Some(Measure { echo: Some(echo(4)), ..Measure::plain(3, 1, Some(200_000), false) });
+        let connection = steps(&f).into_iter().find(|s| s.key == "connection").unwrap();
+        assert_eq!(connection.outcome, Outcome::Warn);
+        assert!(connection.detail.contains("4.0 % of packets lost") && connection.detail.contains("network cable"), "{}", connection.detail);
+    }
+
+    #[test]
+    fn a_screen_that_does_not_fit_and_an_unknown_chip_are_notes() {
+        let mut f = facts(Ok((status(State::Ready, "0.5.0"), "192.168.1.20".into(), 4)));
+        let picture = |f: &Facts| steps(f).into_iter().find(|s| s.key == "picture").unwrap();
+        assert_eq!(picture(&f).outcome, Outcome::Ok);
+        assert!(picture(&f).detail.contains("a screen of its own") && picture(&f).detail.contains("HEVC expected"));
+        f.fit = Some(ScreenFit { virtual_screen: false, mode: Some(Mode::new(1920, 1080, 60)) });
+        assert_eq!(picture(&f).outcome, Outcome::Ok);
+        f.fit = Some(ScreenFit { virtual_screen: false, mode: Some(Mode::new(2560, 1440, 60)) });
+        assert_eq!(picture(&f).outcome, Outcome::Warn);
+        f.fit = Some(ScreenFit { virtual_screen: false, mode: None });
+        assert!(picture(&f).detail.contains("stream virtual install"));
+        f.fit = Some(ScreenFit { virtual_screen: true, mode: None });
+        f.graphics = vec!["Matrox G200".into()];
+        assert_eq!(picture(&f).outcome, Outcome::Warn);
+        assert!(picture(&f).detail.contains("H.264 assumed"));
+    }
+
+    #[test]
+    fn a_missing_moonlight_can_be_installed_from_the_check() {
+        let mut f = facts(Ok((status(State::Ready, "0.5.0"), "192.168.1.20".into(), 4)));
+        f.moonlight = false;
+        let r = report(steps(&f));
+        assert_eq!(r.first_fix(), Some(Fix::Moonlight));
+        assert_eq!(Fix::Moonlight.words(), "Install Moonlight");
     }
 
     #[test]

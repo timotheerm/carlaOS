@@ -138,7 +138,7 @@ impl Store {
         db.execute_batch(SCHEMA).map_err(err)?;
         // Columns added after the first release. SQLite has no "add column if
         // missing", so look first.
-        let added = [("installs", "pending_update", "TEXT"), ("hosts", "addresses", "TEXT NOT NULL DEFAULT '[]'"), ("hosts", "macs", "TEXT NOT NULL DEFAULT '[]'"), ("games", "save_path", "TEXT"), ("hosts", "admin", "INTEGER NOT NULL DEFAULT 0"), ("hosts", "quality", "TEXT NOT NULL DEFAULT 'auto'"), ("hosts", "streamed", "TEXT"),
+        let added = [("installs", "pending_update", "TEXT"), ("hosts", "addresses", "TEXT NOT NULL DEFAULT '[]'"), ("hosts", "macs", "TEXT NOT NULL DEFAULT '[]'"), ("games", "save_path", "TEXT"), ("hosts", "admin", "INTEGER NOT NULL DEFAULT 0"), ("hosts", "quality", "TEXT NOT NULL DEFAULT 'auto'"), ("hosts", "streamed", "TEXT"), ("hosts", "health", "TEXT"),
             // Pictures the administrator chose. They win over what a store or a
             // desktop offers, and a look through the library leaves them alone.
             ("games", "cover_own", "TEXT"),
@@ -656,6 +656,18 @@ impl Store {
         Ok(())
     }
 
+    /// The connection to a desktop as it was last measured.
+    pub fn host_health(&self, id: &str) -> Result<Option<crate::link::health::Health>> {
+        let json: Option<Option<String>> = self.db.query_row("SELECT health FROM hosts WHERE id = ?1", params![id], |r| r.get(0)).optional().map_err(err)?;
+        Ok(json.flatten().and_then(|s| serde_json::from_str(&s).ok()))
+    }
+
+    pub fn set_host_health(&mut self, id: &str, health: &crate::link::health::Health) -> Result<()> {
+        let json = serde_json::to_string(health).expect("serialisable");
+        self.db.execute("UPDATE hosts SET health = ?2 WHERE id = ?1", params![id, json]).map_err(err)?;
+        Ok(())
+    }
+
     pub fn set_host_streamed(&mut self, id: &str, streamed: &Streamed) -> Result<()> {
         let json = serde_json::to_string(streamed).expect("serialisable");
         self.db.execute("UPDATE hosts SET streamed = ?2 WHERE id = ?1", params![id, json]).map_err(err)?;
@@ -1127,6 +1139,13 @@ mod tests {
         store.set_host_quality("home", Setting::Fixed(Level::Light)).unwrap();
         store.set_host_streamed("home", &Streamed { choice, at: 12 }).unwrap();
         assert_eq!(store.host_quality("home").unwrap(), (Setting::Fixed(Level::Light), Some(Streamed { choice, at: 12 })));
+        // The last measurement is kept beside it, for the desktop's card.
+        assert_eq!(store.host_health("home").unwrap(), None);
+        let measured = crate::link::quality::Measure::plain(4, 1, Some(90_000), false);
+        let health = crate::link::health::Health::of(measured, choice, None, "192.168.1.20", None, 30);
+        store.set_host_health("home", &health).unwrap();
+        assert_eq!(store.host_health("home").unwrap(), Some(health));
+        assert_eq!(store.host_health("nowhere").unwrap(), None);
         store.sync("home", "steam", &[scanned("10", "Here And There"), scanned("20", "Only There")], 6).unwrap();
 
         let games = store.list().unwrap();

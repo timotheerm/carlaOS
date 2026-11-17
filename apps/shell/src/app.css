@@ -2906,3 +2906,95 @@ button {
 .hero {
   background: color-mix(in srgb, var(--surface) 34%, transparent);
 }
+
+/* The connection to a desktop in figures. */
+.health {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 1.75rem;
+  padding: 1.4rem 1.75rem;
+  border-radius: var(--radius-card);
+  background: linear-gradient(135deg, var(--accent-soft), var(--surface) 70%);
+  box-shadow: var(--shadow);
+}
+
+.health__ping {
+  display: grid;
+  justify-items: center;
+  min-width: 9rem;
+  padding: 0.9rem 1.2rem;
+  border-radius: var(--radius-card);
+  background: var(--surface);
+  border: 0.22rem solid var(--ok);
+  line-height: 1;
+}
+
+.health__ping strong {
+  font-size: 3.4rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.health__ping span {
+  margin-top: 0.3rem;
+  font-weight: 700;
+  color: var(--text-quiet);
+}
+
+.health--playable .health__ping,
+.health--poor .health__ping {
+  border-color: var(--warn);
+}
+
+.health__grade {
+  margin: 0 0 0.6rem;
+  font-size: var(--text-title);
+  font-weight: 800;
+}
+
+.health__grade span {
+  font-size: var(--text-body);
+  font-weight: 600;
+  color: var(--text-quiet);
+}
+
+.health__figures {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem 2rem;
+  margin: 0;
+}
+
+.health__figures dt {
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--text-quiet);
+}
+
+.health__figures dd {
+  margin: 0;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.health__advice {
+  margin: 0.8rem 0 0;
+  color: var(--text-quiet);
+  font-weight: 600;
+}
+
+/* The number both screens show while a link waits to be allowed. */
+.matchnumber {
+  margin: 0;
+  padding: 1.2rem;
+  border-radius: var(--radius-card);
+  background: var(--surface);
+  border: 0.18rem solid var(--accent);
+  text-align: center;
+  font-size: var(--text-display);
+  font-weight: 800;
+  letter-spacing: 0.35em;
+  text-indent: 0.35em;
+  font-variant-numeric: tabular-nums;
+}

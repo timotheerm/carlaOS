@@ -3,7 +3,7 @@
 import { useEffect, useLayoutEffect, useState } from "react";
 import { backend } from "../cleanup/backend";
 import type { AdminStatus } from "../cleanup/types";
-import type { CheckFix, CheckReport, FoundHost, Host, HostPicture } from "../data/types";
+import type { CheckFix, CheckReport, FoundHost, Health, Host, HostPicture } from "../data/types";
 import { library, message } from "../library/store";
 import { focusFirst, keepFocus } from "../nav/focus";
 import { CodePad, PinPad } from "../ui/pin";
@@ -57,8 +57,60 @@ function PictureSetting({ host, notify }: { host: Host; notify: (text: string) =
   );
 }
 
+const GRADES: Record<Health["grade"], string> = { excellent: "Excellent", good: "Good", playable: "Playable", poor: "Poor" };
+
+// Tenths under ten milliseconds, where they matter.
+export function ms(us: number): string {
+  return us < 10_000 ? `${(Math.floor(us / 100) / 10).toFixed(1)} ms` : `${Math.round(us / 1000)} ms`;
+}
+
+function measuredAgo(at: number): string {
+  const s = Math.max(0, Math.floor(Date.now() / 1000) - at);
+  return s < 90 ? "just now" : s < 5400 ? `${Math.round(s / 60)} minutes ago` : `${Math.round(s / 3600)} hours ago`;
+}
+
+// The connection to a desktop in figures: the delay first and largest,
+// because that is what a player feels.
+export function HealthCard({ health }: { health: Health }) {
+  const loss = health.loss_permille;
+  const figures: [string, string][] = [
+    ["Jitter", ms(health.jitter_us)],
+    ["Packets lost", loss === null ? "Not counted" : `${(loss / 10).toFixed(1)} %`],
+    ["Connection", health.link_kbps === null ? "Not known" : `${Math.round(health.link_kbps / 1000)} Mbit/s`],
+    ["Picture", `${health.picture.height}p at ${health.picture.fps}, ${Math.round(health.picture.kbps / 1000)} Mbit/s`],
+  ];
+  if (health.codec) figures.push(["Video", health.codec.known ? health.codec.codec.replace("h264", "H.264").toUpperCase() : "H.264 assumed"]);
+  return (
+    <section className={`health health--${health.grade}`} aria-label={health.summary}>
+      <div className="health__ping" aria-hidden="true">
+        <strong>{ms(health.ping_us).replace(" ms", "")}</strong>
+        <span>ms</span>
+      </div>
+      <div className="health__body" aria-hidden="true">
+        <p className="health__grade">
+          {GRADES[health.grade]} <span>· {health.route === "away" ? "through Tailscale" : "home network"} · measured {measuredAgo(health.at)}</span>
+        </p>
+        <dl className="health__figures">
+          {figures.map(([name, value]) => (
+            <div key={name}>
+              <dt>{name}</dt>
+              <dd>{value}</dd>
+            </div>
+          ))}
+        </dl>
+        {health.advice.map((a) => (
+          <p key={a} className="health__advice">
+            {a}
+          </p>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 type Step =
   | { at: "list" }
+  | { at: "allow"; address: string; name: string; check: string | null }
   | { at: "searching" }
   | { at: "found"; found: FoundHost[] }
   | { at: "address" }
@@ -109,13 +161,15 @@ const FIX_WORDS: Record<CheckFix, string> = {
   pair: "Pair streaming again",
   wake: "Wake it",
   update: "Update the desktop",
-  relink: "Link it again with a new code",
+  relink: "Link it again",
+  moonlight: "Install Moonlight",
 };
 const FIX_WORKING: Record<CheckFix, string> = {
   pair: "Pairing Moonlight with Sunshine there…",
   wake: "Waking it, this can take a minute…",
   update: "Asking it to update…",
   relink: "",
+  moonlight: "Installing Moonlight. Windows asks once to allow it…",
 };
 
 // Every link in the chain a stream needs, in order, with the one press that
@@ -175,6 +229,7 @@ function CheckDesktop({ host, relink, done }: { host: Host; relink: () => void; 
               ))}
             </div>
           )}
+          {report.health && <HealthCard health={report.health} />}
           <ol className="checks">
             {report.steps.map((s) => (
               <li key={s.key} className={`check check--${s.outcome}`}>
@@ -196,7 +251,7 @@ function CheckDesktop({ host, relink, done }: { host: Host; relink: () => void; 
               onClick={() => (fix === "relink" ? relink() : run(library.repairHost(host.id, fix), FIX_WORKING[fix]))}
             >
               <span>{FIX_WORDS[fix]}</span>
-              <span className="setting__value">{fix === "relink" ? "Needs the code the desktop shows" : "Then checks again"}</span>
+              <span className="setting__value">{fix === "relink" ? "Open CarlaOS Desktop Host on the desktop first" : "Then checks again"}</span>
             </button>
           ))}
         </>
@@ -282,6 +337,54 @@ export function LinkDesktops({ hosts, notify }: { hosts: Host[]; notify: (text: 
     }
   };
 
+  // Link by being allowed at the desktop: nothing is typed. A desktop that
+  // is too old for that, or has linking closed, is asked for its code.
+  const allow = async (to: string, name: string) => {
+    setProblem(null);
+    setStep({ at: "allow", address: to, name, check: null });
+    try {
+      const check = await library.linkAsk(to);
+      setStep({ at: "allow", address: to, name, check });
+      setStep({ at: "done", ...(await library.linkWait(to)) });
+    } catch (e) {
+      setProblem(message(e));
+      setStep({ at: "code", address: to, name });
+    }
+  };
+
+  if (step.at === "allow") {
+    return (
+      <div className="settings">
+        <div className="pagehead">
+          <h1>Allow it on {step.name}</h1>
+          <p>
+            {step.check === null
+              ? `Asking ${step.name}…`
+              : `${step.name} is asking whether to link this Ally. Check that it shows the same number, then answer yes there.`}
+          </p>
+        </div>
+        {step.check !== null && (
+          <p className="matchnumber" role="status" aria-label={`The number is ${step.check.split("").join(" ")}`}>
+            {step.check}
+          </p>
+        )}
+        <button
+          className="setting"
+          data-focus
+          data-autofocus
+          data-fid="allow:cancel"
+          onClick={() => {
+            void library.linkCancel();
+            setStep({ at: "list" });
+          }}
+        >
+          <span>Cancel</span>
+          <span className="setting__value">Nothing is linked</span>
+        </button>
+      </div>
+    );
+  }
+
   if (step.at === "searching") {
     return (
       <p className="working" role="status">
@@ -297,8 +400,8 @@ export function LinkDesktops({ hosts, notify }: { hosts: Host[]; notify: (text: 
           <h1>Add a desktop</h1>
           <p>
             {step.found.length
-              ? "Choose the desktop, then enter the code it shows."
-              : "No desktop answered. Start the CarlaOS companion on the desktop and look again."}
+              ? "Choose the desktop. It then asks, on its own screen, whether to allow this Ally."
+              : "No desktop answered. Open CarlaOS Desktop Host on the desktop and look again."}
           </p>
         </div>
         {step.found.map((f, i) => (
@@ -310,12 +413,13 @@ export function LinkDesktops({ hosts, notify }: { hosts: Host[]; notify: (text: 
             data-fid={`link:${f.id}`}
             onClick={() => {
               setProblem(null);
-              setStep({ at: "code", address: f.address, name: f.name });
+              if (f.approve) void allow(f.address, f.name);
+              else setStep({ at: "code", address: f.address, name: f.name });
             }}
           >
             <span>{f.name}</span>
             <span className="setting__value">
-              {hosts.some((h) => h.id === f.id) ? "Linked already · link again" : f.address}
+              {hosts.some((h) => h.id === f.id) ? "Linked already · link again" : f.approve ? `${f.address} · ready to link, no code needed` : `${f.address} · needs its code`}
             </span>
           </button>
         ))}
@@ -385,7 +489,7 @@ export function LinkDesktops({ hosts, notify }: { hosts: Host[]; notify: (text: 
       <CodePad
         length={6}
         title={`Code from ${step.name ?? step.address}`}
-        lede="Type the six digits the CarlaOS companion shows on the desktop."
+        lede="Type the six digits CarlaOS Desktop Host shows on the desktop. Open it there from the Start menu if no code is showing."
         note={problem}
         busy={linking}
         onComplete={(code) => void link(step.address, code)}
@@ -469,6 +573,23 @@ export function LinkDesktops({ hosts, notify }: { hosts: Host[]; notify: (text: 
             {host.address ? ` · ${host.address}` : ""}
           </p>
         </div>
+        {host.health && <HealthCard health={host.health} />}
+        <button
+          className="setting"
+          data-focus
+          data-fid="desk:measure"
+          onClick={() => {
+            if (busy) return;
+            setBusy(true);
+            library.measureHost(host.id).then(
+              (h) => notify(h.summary),
+              (e) => notify(message(e)),
+            ).finally(() => setBusy(false));
+          }}
+        >
+          <span>Measure the connection</span>
+          <span className="setting__value">{busy ? "Measuring…" : "Ping, jitter and lost packets, in a few seconds"}</span>
+        </button>
         <button
           className="setting"
           data-focus
@@ -561,12 +682,14 @@ export function LinkDesktops({ hosts, notify }: { hosts: Host[]; notify: (text: 
       </div>
       <button className="setting" data-focus data-autofocus data-fid="link:add" onClick={() => void search()}>
         <span>Add a desktop</span>
-        <span className="setting__value">Needs the code it shows</span>
+        <span className="setting__value">Open CarlaOS Desktop Host on it first</span>
       </button>
       {hosts.map((h) => (
         <button key={h.id} className="setting" data-focus data-fid={`desk:${h.id}`} onClick={() => setStep({ at: "host", id: h.id })}>
           <span>{h.name}</span>
-          <span className="setting__value">{h.address ? `${h.address} · manage` : "Manage"}</span>
+          <span className="setting__value">
+            {h.health ? `${GRADES[h.health.grade]} · ${ms(h.health.ping_us)} · manage` : h.address ? `${h.address} · manage` : "Manage"}
+          </span>
         </button>
       ))}
     </div>

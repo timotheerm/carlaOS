@@ -5,7 +5,11 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
-use super::enrol::{valid_code, Exchange, Side};
+use super::enrol::{self, valid_code, Exchange, Shared, Side};
+use super::health::Pulse;
+use super::probe::{self, Burst, BurstAsk, BurstPlan, Echo};
+use super::quality::Line;
+use super::{EnrolAsk, EnrolReveal, FitAsk, ScreenFit};
 use super::{random_hex, sign, EnrolDone, EnrolFinish, EnrolOffer, EnrolStart, Hello, Install, Installing, Pair, Prepare, Problem, RemoteGame, RemoteLibrary, SaveFile, SavesFind, SavesFound, Status, Updating};
 use crate::library::downloads::Download;
 use crate::library::sync::{self, Manifest};
@@ -118,6 +122,62 @@ pub fn enrol(address: &str, port: u16, code: &str, device_name: &str) -> Result<
     Ok((hello, Link { address: address.to_string(), port, device_id: done.device_id, key: shared.device_key() }))
 }
 
+/// A link that waits for someone at the desktop to allow it.
+pub struct Asking {
+    address: String,
+    port: u16,
+    enrol_id: String,
+    shared: Shared,
+    hello: Hello,
+    /// The number the desktop shows too. The administrator compares them.
+    pub check: String,
+}
+
+/// Ask a desktop to link without a code: someone there allows it. Works
+/// while linking is open on the desktop (`Hello::approve`).
+pub fn enrol_ask(address: &str, port: u16, device_name: &str) -> Result<Asking> {
+    let hello = hello(address, port)?;
+    let exchange = Exchange::start(Side::Ally, enrol::APPROVE);
+    let message = exchange.message();
+    // Commit first, show the message only once the desktop has sent its
+    // own: neither side can then pick a message that steers the number.
+    let ask = EnrolAsk { device_name: device_name.to_string(), commit: enrol::commit(&message) };
+    let offer: EnrolOffer = open(address, port, "/v1/enrol/ask", Some(&serde_json::to_vec(&ask).expect("serialisable")))?;
+    let shared = exchange.finish(&offer.message).ok_or_else(|| Error::Host("The desktop gave an answer CarlaOS did not understand.".to_string()))?;
+    let reveal = EnrolReveal { enrol_id: offer.enrol_id.clone(), message };
+    let _: serde_json::Value = open(address, port, "/v1/enrol/reveal", Some(&serde_json::to_vec(&reveal).expect("serialisable")))?;
+    Ok(Asking { address: address.to_string(), port, enrol_id: offer.enrol_id, check: shared.check(), shared, hello })
+}
+
+impl Asking {
+    /// Ask whether it was allowed yet. `None` while nobody has answered at
+    /// the desktop; ask again in a moment.
+    pub fn finish(&self) -> Result<Option<(Hello, Link)>> {
+        let finish = EnrolFinish { enrol_id: self.enrol_id.clone(), proof: self.shared.proof(Side::Ally) };
+        let done: EnrolDone = match open(&self.address, self.port, "/v1/enrol/finish", Some(&serde_json::to_vec(&finish).expect("serialisable"))) {
+            Ok(done) => done,
+            Err(Error::Host(text)) if text == enrol::WAITING => return Ok(None),
+            Err(e) => return Err(e),
+        };
+        if !self.shared.proof_ok(Side::Desktop, &done.proof) {
+            return Err(Error::Untrusted);
+        }
+        Ok(Some((self.hello.clone(), Link { address: self.address.clone(), port: self.port, device_id: done.device_id, key: self.shared.device_key() })))
+    }
+}
+
+/// How long opening a connection to a port takes; `None` when it does not
+/// open. For telling whether Sunshine can be reached through the firewall.
+pub fn port_open(address: &str, port: u16, limit: Duration) -> Option<Duration> {
+    use std::net::ToSocketAddrs;
+    let target = (address, port).to_socket_addrs().ok()?.next()?;
+    let asked = std::time::Instant::now();
+    std::net::TcpStream::connect_timeout(&target, limit).ok().map(|_| asked.elapsed())
+}
+
+/// The ports Moonlight first speaks to Sunshine on.
+pub const SUNSHINE_PORTS: [u16; 2] = [47984, 47989];
+
 /// A linked desktop: where it is and the key shared with it.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Link {
@@ -219,6 +279,38 @@ impl Link {
         Ok(asked.elapsed())
     }
 
+    fn udp(&self) -> Option<std::net::SocketAddr> {
+        use std::net::ToSocketAddrs;
+        (self.address.as_str(), self.port).to_socket_addrs().ok()?.next()
+    }
+
+    /// Time packets of a video packet's size to the desktop and back.
+    pub fn echo(&self, count: u32) -> Option<Echo> {
+        probe::echo(self.udp()?, count, Duration::from_millis(10))
+    }
+
+    /// Have the desktop send packets at `kbps` for `ms` and count what
+    /// arrives. `latency` is the delay there and back.
+    pub fn burst(&self, kbps: u32, ms: u32, latency: Duration) -> Option<Burst> {
+        let target = self.udp()?;
+        let socket = std::net::UdpSocket::bind(if target.is_ipv4() { "0.0.0.0:0" } else { "[::]:0" }).ok()?;
+        // A packet out first: this Ally's firewall then lets the answers in.
+        probe::echo_on(&socket, target, 3, Duration::from_millis(5))?;
+        let ask = BurstAsk { port: socket.local_addr().ok()?.port(), kbps, ms };
+        let plan: BurstPlan = self.post("/v1/probe/burst", &ask, PROBE).ok()?;
+        Some(probe::receive_burst(&socket, target, plan, kbps, latency))
+    }
+
+    /// Tell the desktop how this Ally and the connection are.
+    pub fn pulse(&self, pulse: &Pulse) -> Result<()> {
+        self.post::<serde_json::Value>("/v1/link/pulse", pulse, QUICK).map(|_| ())
+    }
+
+    /// What screen the desktop would give a stream of this size.
+    pub fn fit(&self, screen: crate::display::Mode) -> Result<ScreenFit> {
+        self.post("/v1/stream/fit", &FitAsk { screen }, QUICK)
+    }
+
     /// Tell the desktop what the connection is like from here, for its
     /// dashboard. A desktop from before this existed answers with a problem.
     pub fn report(&self, report: &super::AllyReport) -> Result<super::Reported> {
@@ -299,6 +391,20 @@ impl Link {
     pub fn saves(&self, game_id: &str, title: &str) -> Result<Option<RemoteSaves<'_>>> {
         let found: Option<SavesFound> = self.post("/v1/saves/find", &SavesFind { game_id: game_id.to_string(), title: title.to_string() }, SLOW)?;
         Ok(found.map(|found| RemoteSaves { link: self, key: found.key, manifest: found.manifest }))
+    }
+}
+
+impl Line for Link {
+    fn download(&self, bytes: usize) -> Option<Duration> {
+        self.probe(bytes).ok()
+    }
+
+    fn echo(&self, count: u32) -> Option<Echo> {
+        Link::echo(self, count)
+    }
+
+    fn burst(&self, kbps: u32, ms: u32, latency: Duration) -> Option<Burst> {
+        Link::burst(self, kbps, ms, latency)
     }
 }
 

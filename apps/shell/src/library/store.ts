@@ -6,7 +6,7 @@ import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { games as sampleGames, hosts as sampleHosts } from "../data/sample";
 import { sampleArt, sampleDetails, sampleMatches } from "../data/sample";
-import type { ArtChoice, ArtSearch, CheckFix, CheckReport, Console, ConsoleHint, Details, Discovered, Download, Inspected, Storage, FoundHost, Game, Host, HostPicture, HostState, Kind, Match, NewGame, SaveSync, Saves, Session, Waiting, Power, PowerView } from "../data/types";
+import type { ArtChoice, ArtSearch, CheckFix, CheckReport, Console, ConsoleHint, Details, Discovered, Download, Inspected, Storage, FoundHost, Game, Health, Host, HostPicture, HostState, Kind, Match, NewGame, SaveSync, Saves, Session, Waiting, Power, PowerView } from "../data/types";
 import { inTauri } from "../native";
 import { when } from "../ui/parts";
 
@@ -49,9 +49,28 @@ type HostView = {
   route: "local" | "remote" | null;
   can_wake: boolean;
   version?: string | null;
+  health?: Health | null;
 };
 type Linked = { host: HostView; games: number; warning: string | null };
-type Found = { address: string; hello: { name: string; id: string } };
+type Found = { address: string; hello: { name: string; id: string; approve?: boolean } };
+
+// What a measurement looks like in the preview outside the Ally.
+const previewHealth = (): Health => ({
+  at: Math.floor(Date.now() / 1000) - 20,
+  route: "home",
+  address: "192.168.1.20",
+  grade: "excellent",
+  summary: "Excellent: 1.8 ms there and back, wavering by 0.3 ms, no packets lost. Streams get 1080p at 60 pictures a second.",
+  ping_us: 1800,
+  best_us: 1400,
+  p95_us: 3100,
+  jitter_us: 300,
+  loss_permille: 0,
+  link_kbps: 310_000,
+  picture: { level: "sharp", automatic: true, width: 1920, height: 1080, fps: 60, kbps: 25_000, pacing: false },
+  codec: { codec: "hevc", known: true, desktop: "AMD Radeon RX 9070 XT", ally: "AMD Radeon(TM) Graphics" },
+  advice: [],
+});
 
 type DetailsView = Omit<Details, "achievementsFrom"> & { achievements_from: string | null };
 type Fetched = { name: string; description: string; cover: string | null };
@@ -135,6 +154,7 @@ const fromHost = (h: HostView): Host => ({
   address: h.address,
   canWake: h.can_wake,
   version: h.version ?? null,
+  health: h.health ?? null,
 });
 
 // How often desktops are asked how they are while the library is on screen.
@@ -206,6 +226,7 @@ function previewCheck(id: string): CheckReport {
     id,
     name,
     repaired: [],
+    health: awake ? previewHealth() : null,
     steps: awake
       ? [
           { key: "answer", title: "Answers", outcome: "ok", detail: `At ${host?.address ?? "192.168.1.20"}, on the home network, in ${host?.latencyMs ?? 4} ms.`, fix: null },
@@ -216,7 +237,8 @@ function previewCheck(id: string): CheckReport {
             ? { key: "paired", title: "Paired for streaming", outcome: "ok", detail: "Moonlight on the Ally and Sunshine on the desktop know each other.", fix: null }
             : { key: "paired", title: "Paired for streaming", outcome: "fail", detail: "Moonlight on the Ally is not paired with Sunshine there, so streams cannot start. CarlaOS pairs them over the link; nobody types a PIN.", fix: "pair" },
           { key: "waking", title: "Waking from the Ally", outcome: "ok", detail: "The Ally can wake it when a game from it is chosen.", fix: null },
-          { key: "connection", title: "Connection", outcome: "ok", detail: "Measured 310 Mbit/s, 3 ms. A stream now would get 1080p, 60 pictures a second, 25 Mbit/s.", fix: null },
+          { key: "connection", title: "Connection", outcome: "ok", detail: previewHealth().summary, fix: null },
+          { key: "picture", title: "Picture fit", outcome: "ok", detail: "The desktop gives each stream a screen of its own at the Ally's size, 1920 by 1080. HEVC expected (AMD Radeon RX 9070 XT to AMD Radeon(TM) Graphics); Moonlight and Sunshine settle that themselves.", fix: null },
         ]
       : [
           { key: "answer", title: "Answers", outcome: "fail", detail: "It did not answer. It is probably asleep or off; CarlaOS can wake it.", fix: host?.canWake === false ? null : "wake" },
@@ -298,9 +320,43 @@ export const library = {
   async discover(): Promise<FoundHost[]> {
     if (!inTauri) {
       await new Promise((r) => setTimeout(r, 400));
-      return [{ address: "192.168.1.20", name: "HOME PC", id: "home" }].filter((f) => !state.hosts.some((h) => h.id === f.id && h.address));
+      return [{ address: "192.168.1.20", name: "HOME PC", id: "home", approve: true }].filter((f) => !state.hosts.some((h) => h.id === f.id && h.address));
     }
-    return (await invoke<Found[]>("hosts_discover")).map((f) => ({ address: f.address, name: f.hello.name, id: f.hello.id }));
+    return (await invoke<Found[]>("hosts_discover")).map((f) => ({ address: f.address, name: f.hello.name, id: f.hello.id, approve: f.hello.approve === true }));
+  },
+
+  /** Ask a desktop to link without a code. Resolves with the number both screens show. */
+  async linkAsk(address: string): Promise<string> {
+    if (inTauri) return invoke<string>("hosts_link_ask", { address });
+    await new Promise((r) => setTimeout(r, 400));
+    return "4821";
+  },
+
+  /** Wait for the link that was asked for to be allowed at the desktop. */
+  async linkWait(address: string): Promise<{ id: string; name: string; games: number; warning: string | null }> {
+    if (!inTauri) {
+      await new Promise((r) => setTimeout(r, 2500));
+      const host: Host = { ...sampleHosts[0], id: "home", address, state: "ready", lastSeen: "now", health: previewHealth() };
+      set({ hosts: [...state.hosts.filter((h) => h.id !== host.id), host] });
+      return { id: host.id, name: host.name, games: state.games.filter((g) => g.places.includes(host.id)).length, warning: null };
+    }
+    const linked = await invoke<Linked>("hosts_link_wait");
+    const host = fromHost(linked.host);
+    set({ hosts: [...state.hosts.filter((h) => h.id !== host.id), host] });
+    await reload();
+    return { id: host.id, name: host.name, games: linked.games, warning: linked.warning };
+  },
+
+  /** Stop waiting for a link to be allowed. */
+  async linkCancel() {
+    if (inTauri) await invoke("hosts_link_cancel").catch(() => undefined);
+  },
+
+  /** Measure the connection to a desktop now. A few seconds. Administrator only. */
+  async measureHost(id: string): Promise<Health> {
+    const health = inTauri ? await invoke<Health>("hosts_measure", { id }) : await new Promise<Health>((r) => setTimeout(() => r({ ...previewHealth(), at: Math.floor(Date.now() / 1000) }), 1500));
+    set({ hosts: state.hosts.map((h) => (h.id === id ? { ...h, health } : h)) });
+    return health;
   },
 
   /** Link a desktop with the code it shows. Resolves with a warning, if any. */

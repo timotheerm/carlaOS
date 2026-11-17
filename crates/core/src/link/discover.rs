@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
 use std::time::{Duration, Instant};
 
-use super::{Hello, PORT};
+use super::{probe, Hello, PORT};
 
 pub const QUESTION: &[u8] = b"carlaos? v1";
 
@@ -46,14 +46,18 @@ pub fn search_on(target: SocketAddr, wait: Duration) -> Vec<Found> {
     found.into_values().collect()
 }
 
-/// The companion's side: answer every question with `hello`, for ever.
-pub fn answer(socket: &UdpSocket, hello: &Hello) {
-    let reply = serde_json::to_vec(hello).expect("Hello is always serialisable");
-    let mut buffer = [0u8; 64];
+/// The companion's side, for ever: answer every question with what
+/// `hello` says now, and send measuring packets straight back (see `probe`).
+pub fn answer(socket: &UdpSocket, hello: &dyn Fn() -> Hello) {
+    let mut buffer = [0u8; probe::PACKET + 64];
     loop {
         match socket.recv_from(&mut buffer) {
             Ok((len, from)) if &buffer[..len] == QUESTION => {
+                let reply = serde_json::to_vec(&hello()).expect("Hello is always serialisable");
                 let _ = socket.send_to(&reply, from);
+            }
+            Ok((len, from)) if probe::is_echo(&buffer[..len]) => {
+                let _ = socket.send_to(&buffer[..len], from);
             }
             Ok(_) => {}
             Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut | std::io::ErrorKind::ConnectionReset) => {}
@@ -70,10 +74,13 @@ mod tests {
     fn a_companion_answers_a_search() {
         let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let target = socket.local_addr().unwrap();
-        let hello = Hello { name: "HOME PC".into(), id: "abc".into(), version: "0.1.0".into(), api_version: 1 };
+        let hello = Hello { name: "HOME PC".into(), id: "abc".into(), version: "0.1.0".into(), api_version: 1, approve: true };
         let theirs = hello.clone();
-        std::thread::spawn(move || answer(&socket, &theirs));
+        std::thread::spawn(move || answer(&socket, &move || theirs.clone()));
         let found = search_on(target, Duration::from_millis(600));
         assert_eq!(found, [Found { address: "127.0.0.1".into(), hello }]);
+        // The same socket sends measuring packets back, for timing the path.
+        let timed = probe::echo(target, 10, Duration::from_millis(2)).unwrap();
+        assert_eq!((timed.sent, timed.lost), (10, 0));
     }
 }

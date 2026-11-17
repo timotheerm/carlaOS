@@ -11,6 +11,7 @@ mod files;
 mod launcher;
 mod screen;
 mod server;
+mod setup;
 mod stage;
 mod sunshine;
 mod virtual_screen;
@@ -33,11 +34,17 @@ use sunshine::{Streamer, Sunshine};
 
 const HELP: &str = "CarlaOS desktop companion
 
-  carla-companion            set up if needed, show a code for linking an Ally, and run
+  carla-companion            set up if needed, open linking for an Ally, and run
   carla-companion dashboard  open the dashboard: the Ally, the connection, the
                              stream and this PC at a glance
-  carla-companion setup      ask the set-up questions again
-  carla-companion code       show a new code for linking an Ally
+  carla-companion setup      set up again, asking for the name too
+  carla-companion code       open linking again and show a new code
+  carla-companion allies [--json]
+                             the linked Allies: connected or not, ping, jitter,
+                             lost packets and the picture streams get
+  carla-companion firewall   let the Ally through this desktop's firewall
+  carla-companion sunshine   show whether Sunshine is ready, and its user name
+                             and password when the companion chose them
   carla-companion devices    list the linked devices
   carla-companion forget ID  stop accepting a linked device
   carla-companion games      list the games added by hand
@@ -192,7 +199,7 @@ fn answering(port: u16) -> bool {
 fn dashboard(files: &Files) -> Result<i32, String> {
     let config = match files.config() {
         Some(config) => config,
-        None => setup(files)?,
+        None => setup(files, false)?,
     };
     if !answering(config.port) {
         let exe = std::env::current_exe().map_err(|e| e.to_string())?;
@@ -254,36 +261,89 @@ mod autostart {
     }
 }
 
-fn setup(files: &Files) -> Result<Config, String> {
-    let mut config = files.config().unwrap_or_else(|| Config::new(&computer_name()));
-    println!("Setting up the CarlaOS companion on this desktop.\n");
-    config.name = ask("Name shown on the Ally", &config.name);
-    println!("\nThe companion drives Sunshine for you. Give it the user name and password");
-    println!("you chose when you first opened Sunshine (https://localhost:47990).");
-    loop {
-        let user = ask("Sunshine user name", &config.sunshine_user);
-        let password = ask("Sunshine password", "");
-        if password.is_empty() && config.sunshine_password().is_some() && user == config.sunshine_user {
-            break; // keep what was there
+/// Get Sunshine working for the companion, asking as little as possible:
+/// nothing when Sunshine is new or already set up, and at most for its user
+/// name and password when someone set it up by hand before.
+fn sunshine_ready(config: &mut Config) -> Result<(), String> {
+    if cfg!(windows) && setup::sunshine_exe().is_none() && !sunshine::answers(&config.sunshine_url) {
+        println!("Sunshine does the streaming and is not installed yet. Installing it now (Windows asks to allow it)...");
+        setup::install_sunshine()?;
+        println!("Sunshine is installed. Waiting for it to start...");
+        setup::wait_for_sunshine(&config.sunshine_url, std::time::Duration::from_secs(90));
+    }
+    match setup::claim(config)? {
+        setup::Claimed::Already => {}
+        setup::Claimed::Fresh => {
+            println!("Sunshine was new, so the companion chose a user name and password for it.");
+            println!("Nobody has to type them. To open Sunshine's own page yourself: carla-companion sunshine shows them.");
         }
-        config.set_sunshine(&user, &password)?;
-        match streamer(&config).and_then(|s| s.ensure_app(&launcher_command())) {
-            Ok(()) => {
-                println!("Sunshine accepted it. The \"{SUNSHINE_APP}\" application is in place.");
-                break;
-            }
-            Err(e) => {
-                println!("\n{e}");
-                if ask("Try again? (y/n)", "y").to_lowercase().starts_with('n') {
-                    break;
+        setup::Claimed::Silent => {
+            return Err("Sunshine is not running on this desktop. Start it (Start menu, Sunshine), then open CarlaOS Desktop Host again.".to_string());
+        }
+        setup::Claimed::Taken => {
+            println!("Sunshine already has a user name and password, chosen when it was first opened.");
+            println!("Type them here, or just press Enter and CarlaOS sets new ones (Windows asks to allow it).");
+            loop {
+                let user = ask("Sunshine user name", "");
+                if user.is_empty() {
+                    let exe = setup::sunshine_exe().ok_or("Sunshine's program was not found, so its password cannot be set anew. Type the user name and password instead.")?;
+                    let password = setup::new_password();
+                    if setup::reset_credentials(&exe, setup::USER, &password) {
+                        config.set_sunshine(setup::USER, &password)?;
+                        setup::wait_for_sunshine(&config.sunshine_url, std::time::Duration::from_secs(60));
+                    }
+                } else {
+                    config.set_sunshine(&user, &ask("Sunshine password", ""))?;
+                }
+                match streamer(config).and_then(|s| s.check()) {
+                    Ok(()) => break,
+                    Err(e) => {
+                        println!("\n{e}");
+                        if ask("Try again? (y/n)", "y").to_lowercase().starts_with('n') {
+                            return Err("Sunshine is not set up for the companion yet. Open CarlaOS Desktop Host again to finish.".to_string());
+                        }
+                    }
                 }
             }
         }
     }
+    streamer(config)?.ensure_app(&launcher_command())?;
+    println!("Sunshine is ready. The \"{SUNSHINE_APP}\" application is in place.");
+    Ok(())
+}
+
+/// Let the Ally through this desktop's firewall, once.
+fn firewall_ready() {
+    let Ok(exe) = std::env::current_exe() else { return };
+    if !cfg!(windows) || setup::firewall_open(&exe) {
+        return;
+    }
+    println!("Opening the firewall for the Ally, from your home network and Tailscale only (Windows asks to allow it)...");
+    match setup::open_firewall(&exe) {
+        Ok(()) => println!("The firewall is open for the Ally."),
+        Err(e) => println!("{e}"),
+    }
+}
+
+/// Set this desktop up. Without `questions` nothing is asked that the
+/// companion can work out or do by itself.
+fn setup(files: &Files, questions: bool) -> Result<Config, String> {
+    let mut config = files.config().unwrap_or_else(|| Config::new(&computer_name()));
+    println!("Setting up CarlaOS on this desktop. It is called \"{}\" on the Ally.\n", config.name);
+    if questions {
+        config.name = ask("Name shown on the Ally", &config.name);
+    }
+    // Saved first, so a set-up that stops half way carries on from here.
     files.save_config(&config)?;
+    let sunshine = sunshine_ready(&mut config);
+    files.save_config(&config)?;
+    firewall_ready();
     match autostart::set(true) {
         Ok(()) => println!("The companion will start with Windows, without a window."),
         Err(e) => println!("The companion could not be set to start with Windows. {e}"),
+    }
+    if let Err(e) = sunshine {
+        println!("\n{e}");
     }
     println!();
     Ok(config)
@@ -291,11 +351,83 @@ fn setup(files: &Files) -> Result<Config, String> {
 
 fn show_code(files: &Files) -> Result<(), String> {
     let code = files.new_code()?;
-    println!("Code for linking an Ally:\n\n    {} {}\n", &code.code[..3], &code.code[3..]);
-    println!("On the Ally: Settings, Desktops, Add a desktop, choose this desktop, then type these six digits.");
-    println!("The Ally first asks for its own four-digit administrator PIN. That one is chosen on the Ally; it is not this code.");
-    println!("The code works for {} minutes.", enrol::CODE_LIFETIME / 60);
+    println!("Linking an Ally is open for {} minutes.\n", enrol::CODE_LIFETIME / 60);
+    println!("On the Ally: Settings, Desktops, Add a desktop, and choose this desktop.");
+    println!("This window then asks you to allow it. Nothing has to be typed.");
+    println!("(The Ally first asks for its own four-digit administrator PIN, chosen on the Ally.)\n");
+    println!("If the Ally asks for a code instead, it is:\n\n    {} {}\n", &code.code[..3], &code.code[3..]);
     Ok(())
+}
+
+/// Ask whoever sits at this window to allow each device that wants to be
+/// linked, for as long as the window is open.
+fn attend(files: &Files) {
+    let mut linked = files.devices().len();
+    loop {
+        if let Some(asking) = files.asking(files::now()) {
+            println!("\n\"{}\" (at {}) wants to be linked to this desktop.", asking.device_name, asking.from);
+            println!("It shows the number  {}  on its screen.", asking.check);
+            let allow = ask("Is that your Ally, showing that number? (y/n)", "").to_lowercase().starts_with('y');
+            match files.answer_asking(&asking.enrol_id, allow, files::now()) {
+                Ok(true) if allow => println!("Allowed. The Ally finishes by itself in a moment."),
+                Ok(true) => println!("Refused. Nothing was linked, and linking is closed. Open this program again to link an Ally."),
+                _ => println!("That took too long. Choose this desktop on the Ally again."),
+            }
+        }
+        let now_linked = files.devices().len();
+        if now_linked > linked {
+            println!("\nAn Ally is linked. This window can be closed: the companion carries on in the background.");
+        }
+        linked = now_linked;
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+}
+
+/// `carla-companion allies`: the linked Allies and how the connection to
+/// each is, as the Ally last measured it.
+fn allies(files: &Files, json: bool) -> Result<i32, String> {
+    let now = files::now();
+    if json {
+        println!("{}", serde_json::to_string_pretty(&serde_json::json!({ "allies": files.allies(now, files.streaming(now)) })).expect("serialisable"));
+        return Ok(0);
+    }
+    let list = files.allies(now, files.streaming(now));
+    if list.is_empty() {
+        println!("No Ally is linked. Open CarlaOS Desktop Host to link one.");
+    }
+    let ago = |at: i64| match (now - at).max(0) {
+        s if s < 90 => format!("{s} s ago"),
+        s if s < 5400 => format!("{} min ago", s / 60),
+        s => format!("{} h ago", s / 3600),
+    };
+    for ally in list {
+        let state = if ally.streaming { "streaming now" } else if ally.connected { "connected" } else { "not connected" };
+        let seen = ally.last_seen.map(|at| format!(", heard from {}", ago(at))).unwrap_or_default();
+        println!("{}  ({})  {state}{}{seen}", ally.name, ally.id, ally.address.map(|a| format!(" at {a}")).unwrap_or_default());
+        match &ally.health {
+            Some(h) => {
+                let route = if h.route == carla_core::link::health::Route::Away { "through Tailscale" } else { "home network" };
+                println!("  {}  (measured {}, {route})", h.words(), ago(h.at));
+                let codec = h.codec.as_ref().map(|c| format!(", {}", c.words())).unwrap_or_default();
+                println!("  Streams get {}x{} at {} pictures a second, {} Mbit/s{codec}", h.picture.width, h.picture.height, h.picture.fps, h.picture.kbps / 1000);
+                for advice in &h.advice {
+                    println!("  Tip: {advice}");
+                }
+            }
+            None => println!("  The connection has not been measured yet. The Ally does that by itself while CarlaOS is open on it."),
+        }
+        if let Some(p) = &ally.pulse {
+            let moonlight = match (p.moonlight, p.paired) {
+                (false, _) => "Moonlight not installed",
+                (true, Some(false)) => "Moonlight not paired",
+                (true, _) => "Moonlight ready",
+            };
+            let battery = p.battery.map(|b| format!(" · battery {b} %{}", if p.charging == Some(true) { ", charging" } else { "" })).unwrap_or_default();
+            let playing = p.playing.as_ref().map(|t| format!(" · playing {t}")).unwrap_or_default();
+            println!("  CarlaOS {} · {moonlight}{battery}{playing}", p.version);
+        }
+    }
+    Ok(0)
 }
 
 /// Put this desktop to sleep in a moment, so the reply to the Ally still
@@ -454,14 +586,21 @@ fn update_here() -> Result<(), String> {
 fn serve(files: &Files, config: Config) -> Result<(), String> {
     let port = config.port;
     let http = tiny_http::Server::http((Ipv4Addr::UNSPECIFIED, port)).map_err(|e| e.to_string())?;
-    let server = Arc::new(build(files, config));
+    // One socket finds this desktop, answers the measuring packets and sends
+    // the bursts, so answers always come from the port they were asked at.
+    let udp = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, port)).ok();
+    let mut built = build(files, config).with_graphics(carla_core::link::codec::graphics());
+    if let Some(socket) = udp.as_ref().and_then(|s| s.try_clone().ok()) {
+        built = built.with_probe(socket);
+    }
+    let server = Arc::new(built);
     // A screen left switched by a stream that was cut off is put back.
     screen::watch(files.clone());
     // Likewise a virtual screen; and the driver's own one is taken away.
     virtual_screen::watch(files.clone());
-    if let Ok(socket) = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, port)) {
-        let hello = server.hello();
-        std::thread::spawn(move || discover::answer(&socket, &hello));
+    if let Some(socket) = udp {
+        let answering = server.clone();
+        std::thread::spawn(move || discover::answer(&socket, &|| answering.hello()));
     }
     server::serve(server, http);
     Ok(())
@@ -682,12 +821,14 @@ fn run(args: &[String]) -> Result<i32, String> {
         None => {
             let config = match files.config() {
                 Some(config) => config,
-                None => setup(&files)?,
+                None => setup(&files, false)?,
             };
             show_code(&files)?;
-            println!("\nLeave this window open, or close it once the Ally is linked:");
-            println!("the companion also runs in the background after you sign in to Windows.");
+            println!("Leave this window open until the Ally is linked. After that the companion");
+            println!("runs in the background by itself, also after you sign in to Windows.");
             println!("The dashboard that opens now shows the same code, and the Ally once it is linked.");
+            let attending = files.clone();
+            std::thread::spawn(move || attend(&attending));
             let port = config.port;
             std::thread::spawn(move || {
                 // Once this window's own companion, or the one in the background, answers.
@@ -695,20 +836,45 @@ fn run(args: &[String]) -> Result<i32, String> {
                 open_dashboard(port);
             });
             if serve(&files, config).is_err() {
-                // Already running in the background, which serves the code.
-                pause();
+                // Already running in the background, which does the linking;
+                // this window only answers its questions.
+                loop {
+                    std::thread::sleep(std::time::Duration::from_secs(3600));
+                }
             }
             Ok(0)
         }
         Some("dashboard") => dashboard(&files),
         Some("setup") => {
-            setup(&files)?;
+            setup(&files, true)?;
             println!("Done. If the companion is already running, sign out and in again (or restart it) to use the new settings.");
             Ok(0)
         }
         Some("code") => {
             configured(&files)?;
             show_code(&files)?;
+            Ok(0)
+        }
+        Some("allies") => allies(&files, args.get(1).is_some_and(|a| a == "--json")),
+        Some("firewall") => {
+            let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+            if setup::firewall_open(&exe) {
+                println!("The firewall is already open for the Ally.");
+            } else {
+                setup::open_firewall(&exe)?;
+                println!("The firewall is open for the Ally, from your home network and Tailscale only.");
+            }
+            Ok(0)
+        }
+        Some("sunshine") => {
+            let mut config = configured(&files)?;
+            let ready = sunshine_ready(&mut config);
+            files.save_config(&config)?;
+            ready?;
+            if config.sunshine_user == setup::USER {
+                println!("Sunshine's own page is https://localhost:47990");
+                println!("User name: {}\nPassword:  {}", config.sunshine_user, config.sunshine_password().unwrap_or_default());
+            }
             Ok(0)
         }
         Some("devices") => {

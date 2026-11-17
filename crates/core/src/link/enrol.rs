@@ -12,6 +12,21 @@ pub const CODE_LIFETIME: i64 = 600;
 /// Wrong tries before a code is thrown away.
 pub const CODE_TRIES: u32 = 5;
 
+/// What stands in for the code when a link is allowed at the desktop. It is
+/// no secret: what protects such a link is the number both screens show.
+pub const APPROVE: &str = "carlaos-approve-v1";
+/// How long someone has to allow a link at the desktop.
+pub const APPROVE_LIFETIME: i64 = 180;
+/// The desktop's answer while nobody has allowed or refused yet.
+pub const WAITING: &str = "Waiting for someone at the desktop to allow it.";
+
+/// What the Ally sends before its key-exchange message: proof of which
+/// message it will send, without showing it.
+pub fn commit(message: &str) -> String {
+    use sha2::Digest;
+    hex(&Sha256::digest(format!("carlaos-commit-v1:{message}").as_bytes()))
+}
+
 const ALLY: &[u8] = b"carlaos-ally";
 const DESKTOP: &[u8] = b"carlaos-desktop";
 
@@ -89,6 +104,14 @@ impl Shared {
         unhex(proof).is_some_and(|p| self.derive(label).verify_slice(&p).is_ok())
     }
 
+    /// Four digits that both screens show when a link is allowed at the
+    /// desktop. They only match when nobody sits in between.
+    pub fn check(&self) -> String {
+        let bytes = self.derive("check").finalize().into_bytes();
+        let n = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+        format!("{:04}", n % 10_000)
+    }
+
     /// The key every later request is signed with.
     pub fn device_key(&self) -> Vec<u8> {
         self.derive("device-key").finalize().into_bytes().to_vec()
@@ -115,6 +138,22 @@ mod tests {
         assert_eq!(ally.device_key().len(), 32);
         // A proof cannot be bounced back as the other side's.
         assert!(!ally.proof_ok(Side::Desktop, &ally.proof(Side::Ally)));
+    }
+
+    #[test]
+    fn a_link_allowed_at_the_desktop_shows_the_same_number_on_both_screens() {
+        let (ally, desktop) = exchange(APPROVE, APPROVE);
+        assert_eq!(ally.check(), desktop.check());
+        assert!(ally.check().len() == 4 && ally.check().bytes().all(|b| b.is_ascii_digit()));
+        assert_eq!(ally.device_key(), desktop.device_key());
+        // Someone in between holds a different key with each side.
+        let (_, other) = exchange(APPROVE, APPROVE);
+        assert_ne!(other.device_key(), desktop.device_key());
+        // The commitment names one message and no other.
+        let message = Exchange::start(Side::Ally, APPROVE).message();
+        assert_eq!(commit(&message), commit(&message));
+        assert_ne!(commit(&message), commit(&Exchange::start(Side::Ally, APPROVE).message()));
+        assert_eq!(commit(&message).len(), 64);
     }
 
     #[test]

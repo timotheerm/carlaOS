@@ -599,7 +599,7 @@ mod tests {
         // A stream: the game, the Ally, its picture, and a chart of the delay.
         link.prepare_for("steam:10", Some(carla_core::display::Mode::new(1920, 1080, 60))).unwrap();
         desk.files.set_playing(Some(&crate::files::Playing { game_id: "steam:10".into(), title: "First Game".into(), at: crate::files::now() }));
-        let picture = Picture { width: 1920, height: 1080, fps: 60, kbps: 25_000 };
+        let picture = Picture { width: 1920, height: 1080, fps: 60, kbps: 25_000, pacing: false };
         for latency_ms in [5, 6, 4] {
             let report = AllyReport { latency_ms, streaming: true, picture: Some(picture), level: Some("sharp".into()), automatic: true, ..report.clone() };
             assert!(link.report(&report).unwrap().playing);

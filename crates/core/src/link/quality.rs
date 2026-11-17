@@ -15,6 +15,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use super::moonlight::Picture;
+use super::probe::{Burst, Echo};
 use crate::display::{self, Mode};
 
 /// The pictures CarlaOS streams, lightest first.
@@ -51,7 +52,7 @@ impl Level {
             Level::Sharp => (1920, 1080, 60, 25_000),
             Level::Smooth => (1920, 1080, 120, 40_000),
         };
-        Picture { width, height, fps, kbps }
+        Picture { width, height, fps, kbps, pacing: false }
     }
 
     /// The picture made for one screen: its own shape, and its own size
@@ -67,7 +68,7 @@ impl Level {
         let (fps, kbps) = if slow { (60, Level::Sharp.picture().kbps) } else { (base.fps, base.kbps) };
         // A larger picture needs more to look the same, a smaller one less.
         let scaled = u64::from(kbps) * u64::from(width) * u64::from(height) / (u64::from(base.width) * u64::from(base.height));
-        Picture { width, height, fps, kbps: (scaled as u32).clamp(kbps / 2, kbps * 3 / 2) }
+        Picture { width, height, fps, kbps: (scaled as u32).clamp(kbps / 2, kbps * 3 / 2), pacing: false }
     }
 
     /// The picture in words, for the administrator.
@@ -143,6 +144,102 @@ pub struct Measure {
     pub kbps: Option<u32>,
     /// Through Tailscale rather than the home network.
     pub away: bool,
+    /// Packets of a video packet's size, timed there and back. `None` when
+    /// the desktop is from before it answered them, or they do not get through.
+    #[serde(default)]
+    pub echo: Option<Echo>,
+    /// A second of packets at a picture's rate, counted on arrival.
+    #[serde(default)]
+    pub burst: Option<Burst>,
+}
+
+impl Measure {
+    /// What only a delay and a speed say, as CarlaOS measured before it
+    /// sent packets of its own.
+    pub fn plain(latency_ms: u32, jitter_ms: u32, kbps: Option<u32>, away: bool) -> Self {
+        Self { latency_ms, jitter_ms, kbps, away, echo: None, burst: None }
+    }
+
+    /// Lost packets in every thousand, when packets were sent.
+    pub fn loss_permille(&self) -> Option<u32> {
+        let echo = self.echo.map(|e| e.loss_permille());
+        let burst = self.burst.map(|b| b.loss_permille());
+        echo.into_iter().chain(burst).max()
+    }
+
+    /// The delay there and back in millionths of a second: exact when
+    /// packets were timed, otherwise from the whole milliseconds.
+    pub fn latency_us(&self) -> u32 {
+        self.echo.map_or(self.latency_ms.saturating_mul(1000), |e| e.median_us)
+    }
+
+    pub fn jitter_us(&self) -> u32 {
+        self.echo.map_or(self.jitter_ms.saturating_mul(1000), |e| e.jitter_us)
+    }
+
+    /// What the connection carries without losing packets: the download's
+    /// speed, lowered to what arrived of a burst that lost some.
+    pub fn carries_kbps(&self) -> Option<u32> {
+        match (self.kbps, self.burst) {
+            (kbps, Some(b)) if b.loss_permille() > BURST_LOSS => Some(kbps.unwrap_or(u32::MAX).min(b.got_kbps / 10 * 9)),
+            (kbps, _) => kbps,
+        }
+    }
+}
+
+/// A burst that lost more than this many packets in a thousand was more
+/// than the connection carries.
+const BURST_LOSS: u32 = 10;
+
+/// How thoroughly to measure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Depth {
+    /// Under a second, before a stream and in the background.
+    Quick,
+    /// A few seconds, when the administrator asks for a check.
+    Full,
+}
+
+/// The ways a connection can be asked. Each answers `None` when it cannot.
+pub trait Line {
+    /// Ask for `bytes` over the signed link and say how long it took.
+    fn download(&self, bytes: usize) -> Option<Duration>;
+    /// Send `count` packets a hundredth of a second apart and time them.
+    fn echo(&self, count: u32) -> Option<Echo>;
+    /// Have the desktop send packets at `kbps` for `ms` and count them.
+    fn burst(&self, kbps: u32, ms: u32, latency: Duration) -> Option<Burst>;
+}
+
+fn whole_ms(us: u32) -> u32 {
+    // A delay under a millisecond is still a delay: never shown as none.
+    if us == 0 { 0 } else { us.div_ceil(1000) }
+}
+
+/// Measure a connection every way it can be. `None` when the desktop
+/// cannot be measured at all.
+pub fn survey(line: &dyn Line, away: bool, depth: Depth) -> Option<Measure> {
+    let echo = line.echo(if depth == Depth::Full { 100 } else { 20 });
+    let mut measure = match (measure(&|bytes| line.download(bytes), away), echo) {
+        (Some(m), _) => m,
+        // Packets get through although the download did not.
+        (None, Some(_)) => Measure::plain(0, 0, None, away),
+        (None, None) => return None,
+    };
+    if let Some(e) = echo {
+        measure.latency_ms = whole_ms(e.median_us);
+        measure.jitter_ms = whole_ms(e.jitter_us);
+        measure.echo = Some(e);
+    }
+    if let (Depth::Full, Some(e), Some(kbps)) = (depth, echo, measure.kbps) {
+        // Half as much again as the heaviest picture, when the download
+        // says there is room for it; otherwise what the download carried.
+        let most = Level::Smooth.picture().kbps * 3 / 2;
+        let ask = most.min(kbps / 10 * 9);
+        if ask >= Level::Lightest.picture().kbps {
+            measure.burst = line.burst(ask, 1000, Duration::from_micros(u64::from(e.p95_us)));
+        }
+    }
+    Some(measure)
 }
 
 /// The largest answer a desktop is asked to send for a measurement.
@@ -185,6 +282,8 @@ pub fn measure(probe: &dyn Fn(usize) -> Option<Duration>, away: bool) -> Option<
         jitter_ms: (slowest - latency).as_millis().min(u32::MAX as u128) as u32,
         kbps,
         away,
+        echo: None,
+        burst: None,
     })
 }
 
@@ -192,6 +291,16 @@ pub fn measure(probe: &dyn Fn(usize) -> Option<Duration>, away: bool) -> Option<
 const UNSTEADY_MS: u32 = 40;
 /// Past this delay 120 pictures a second cannot be felt.
 const SMOOTH_LATENCY_MS: u32 = 15;
+/// Lost packets in a thousand past which a picture is made lighter, so
+/// that each loss spoils less of it; and past which lighter still.
+const LOSSY: u32 = 20;
+const VERY_LOSSY: u32 = 50;
+/// 120 pictures a second leave eight thousandths of a second for each: a
+/// delay that wavers by more than half of that shows as stutter.
+const SMOOTH_JITTER_US: u32 = 4_000;
+/// A delay that wavers more than this is evened out by Moonlight, at the
+/// price of a few thousandths of a second.
+const PACE_JITTER_US: u32 = 3_000;
 
 /// What was decided for one stream, and from what.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -204,12 +313,18 @@ pub struct Choice {
 
 impl Choice {
     pub fn picture(&self) -> Picture {
-        self.level.picture()
+        Picture { pacing: self.pacing(), ..self.level.picture() }
     }
 
     /// The picture for the screen it will be shown on.
     pub fn picture_on(&self, screen: Option<Mode>) -> Picture {
-        self.level.picture_on(screen)
+        Picture { pacing: self.pacing(), ..self.level.picture_on(screen) }
+    }
+
+    /// Whether Moonlight should even out when pictures are shown: yes on a
+    /// connection whose delay wavers, and away from home.
+    pub fn pacing(&self) -> bool {
+        self.measure.is_some_and(|m| m.away || m.jitter_us() > PACE_JITTER_US)
     }
 
     /// What was measured, in words. Empty when nothing was.
@@ -222,9 +337,23 @@ impl Choice {
                     Some(kbps) => format!("{:.1} Mbit/s", kbps as f64 / 1000.0),
                     None => "speed unknown".to_string(),
                 };
-                format!("{speed}, {} ms{}", m.latency_ms, if m.away { ", away from home" } else { "" })
+                let lost = match m.loss_permille() {
+                    Some(0) => ", no packets lost".to_string(),
+                    Some(l) => format!(", {}.{} % of packets lost", l / 10, l % 10),
+                    None => String::new(),
+                };
+                format!("{speed}, {}{lost}{}", ms_words(m.latency_us()), if m.away { ", away from home" } else { "" })
             }
         }
+    }
+}
+
+/// A delay in words: tenths under ten milliseconds, where they matter.
+pub fn ms_words(us: u32) -> String {
+    if us < 10_000 {
+        format!("{}.{} ms", us / 1000, us % 1000 / 100)
+    } else {
+        format!("{} ms", (us + 500) / 1000)
     }
 }
 
@@ -244,10 +373,16 @@ pub fn choose(setting: Setting, measure: Option<Measure>, away: bool) -> Choice 
                 Level::Sharp
             }
         }
-        Some(Measure { kbps: Some(kbps), jitter_ms, latency_ms, away }) => {
-            let mut top = if smooth && !away && latency_ms <= SMOOTH_LATENCY_MS { Level::Smooth } else { Level::Sharp };
-            if jitter_ms > UNSTEADY_MS {
+        Some(m @ Measure { kbps: Some(_), jitter_ms, latency_ms, away, .. }) => {
+            let kbps = m.carries_kbps().unwrap_or(0);
+            let loss = m.loss_permille().unwrap_or(0);
+            let steady = m.jitter_us() <= SMOOTH_JITTER_US && loss <= LOSSY / 4;
+            let mut top = if smooth && !away && latency_ms <= SMOOTH_LATENCY_MS && steady { Level::Smooth } else { Level::Sharp };
+            if jitter_ms > UNSTEADY_MS || loss > LOSSY {
                 top = top.min(Level::Balanced);
+            }
+            if loss > VERY_LOSSY {
+                top = top.min(Level::Light);
             }
             LEVELS.into_iter().rev().find(|level| *level <= top && kbps >= level.needs_kbps()).unwrap_or(Level::Lightest)
         }
@@ -320,7 +455,7 @@ mod tests {
 
     #[test]
     fn the_picture_follows_the_connection() {
-        let on = |kbps| Measure { latency_ms: 5, jitter_ms: 2, kbps: Some(kbps), away: false };
+        let on = |kbps| Measure::plain(5, 2, Some(kbps), false);
         assert_eq!(auto(on(300_000)), Level::Sharp);
         assert_eq!(auto(on(45_000)), Level::Sharp);
         assert_eq!(auto(on(30_000)), Level::Balanced);
@@ -335,14 +470,14 @@ mod tests {
 
     #[test]
     fn an_unsteady_connection_gets_a_lighter_picture() {
-        let shaky = Measure { latency_ms: 20, jitter_ms: 90, kbps: Some(200_000), away: false };
+        let shaky = Measure::plain(20, 90, Some(200_000), false);
         assert_eq!(auto(shaky), Level::Balanced);
     }
 
     #[test]
     fn a_hundred_and_twenty_only_when_allowed_at_home_on_a_quick_connection() {
         let allowed = Setting::Auto { smooth: true };
-        let home = Measure { latency_ms: 3, jitter_ms: 1, kbps: Some(500_000), away: false };
+        let home = Measure::plain(3, 1, Some(500_000), false);
         assert_eq!(choose(allowed, Some(home), false).level, Level::Smooth);
         assert_eq!(choose(Setting::default(), Some(home), false).level, Level::Sharp);
         assert_eq!(choose(allowed, Some(Measure { away: true, ..home }), true).level, Level::Sharp);
@@ -352,7 +487,7 @@ mod tests {
 
     #[test]
     fn the_administrator_can_fix_the_picture() {
-        let poor = Measure { latency_ms: 80, jitter_ms: 100, kbps: Some(1_000), away: true };
+        let poor = Measure::plain(80, 100, Some(1_000), true);
         let fixed = choose(Setting::Fixed(Level::Sharp), Some(poor), true);
         assert_eq!((fixed.level, fixed.automatic), (Level::Sharp, false));
     }

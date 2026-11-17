@@ -142,6 +142,45 @@ impl Sunshine {
     }
 }
 
+fn bare(timeout: Duration) -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .timeout_global(Some(timeout))
+        .http_status_as_error(false)
+        // A Sunshine nobody has set up sends every page to its welcome page.
+        .max_redirects(0)
+        .max_redirects_will_error(false)
+        .tls_config(TlsConfig::builder().disable_verification(true).build())
+        .build()
+        .into()
+}
+
+/// Does anything answer at Sunshine's address on this machine?
+pub fn answers(url: &str) -> bool {
+    local(url) && bare(SHORT).get(&format!("{}/api/apps", url.trim_end_matches('/'))).call().is_ok()
+}
+
+/// On a Sunshine that nobody has given a user name and password yet, choose
+/// them. Such a Sunshine accepts the first ones it is sent, which is what its
+/// own welcome page does. False when Sunshine already has some.
+pub fn claim_fresh(url: &str, user: &str, password: &str) -> Result<bool, String> {
+    if !local(url) {
+        return Err("The companion only talks to Sunshine on this machine (https://localhost:47990).".to_string());
+    }
+    let base = url.trim_end_matches('/');
+    // With a user name set, Sunshine asks who is there (401). Without one
+    // it points at its welcome page instead.
+    let probe = bare(SHORT).get(&format!("{base}/api/apps")).call().map_err(|_| NOT_RUNNING.to_string())?;
+    if !probe.status().is_redirection() {
+        return Ok(false);
+    }
+    let body = json!({ "currentUsername": "", "currentPassword": "", "newUsername": user, "newPassword": password, "confirmNewPassword": password });
+    let mut reply = bare(SHORT).post(&format!("{base}/api/password")).header("content-type", "application/json").send(body.to_string().as_bytes()).map_err(|_| NOT_RUNNING.to_string())?;
+    let text = reply.body_mut().read_to_string().unwrap_or_default();
+    let saved = reply.status().as_u16() == 200 && serde_json::from_str::<Value>(&text).is_ok_and(|v| v.get("status").and_then(Value::as_bool) != Some(false));
+    // Believe it only when the new ones then work.
+    Ok(saved && Sunshine::new(url, user, password).is_ok_and(|s| s.check().is_ok()))
+}
+
 const SHORT: Duration = Duration::from_secs(5);
 /// Sunshine holds the PIN request open while Moonlight finishes.
 const PAIRING: Duration = Duration::from_secs(60);

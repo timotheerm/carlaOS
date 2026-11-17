@@ -8,6 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use carla_core::library::emulation::{self, Console};
 use carla_core::display::Mode;
+use carla_core::link::health::{AllyView, Asking, Health, Pulse, CONNECTED_FOR};
 use carla_core::link::{self, enrol};
 use carla_core::remote::{Command, Done};
 use carla_core::secret;
@@ -181,6 +182,32 @@ pub struct Playing {
     pub at: i64,
 }
 
+/// When and from where a linked Ally was last heard.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Seen {
+    pub at: i64,
+    pub address: String,
+    /// When it last asked for a stream.
+    #[serde(default)]
+    pub prepared: Option<i64>,
+}
+
+/// What a linked Ally last said about itself, and the last measurement it
+/// sent, which a later pulse without one does not wipe out.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Pulsed {
+    pub at: i64,
+    pub pulse: Pulse,
+    pub health: Option<Health>,
+}
+
+/// What someone at the desktop said to a device that asks to be linked.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct Answered {
+    enrol_id: String,
+    allow: bool,
+}
+
 /// A request for an Ally that nobody fetched within this time is dropped.
 pub const ASK_LIFETIME: i64 = 60;
 
@@ -251,6 +278,10 @@ impl Files {
         let before = devices.len();
         devices.retain(|d| d.id != id);
         self.write("devices.json", &devices)?;
+        if id.bytes().all(|b| b.is_ascii_alphanumeric()) {
+            self.remove(&format!("ally-seen-{id}.json"));
+            self.remove(&format!("ally-pulse-{id}.json"));
+        }
         Ok(devices.len() != before)
     }
 
@@ -425,6 +456,92 @@ impl Files {
 
     pub fn clear_code(&self) {
         self.remove("enrol.json");
+        self.remove("enrol-ask.json");
+        self.remove("enrol-answer.json");
+    }
+
+    /// Until when an Ally can be linked: while a code is live. Looking does
+    /// not use the code up.
+    pub fn linking_until(&self, now: i64) -> Option<i64> {
+        let code: Code = self.read("enrol.json")?;
+        (now < code.expires && code.tries < enrol::CODE_TRIES).then_some(code.expires)
+    }
+
+    /// A device asks to be linked by being allowed here.
+    pub fn set_asking(&self, asking: &Asking) -> Result<(), String> {
+        self.remove("enrol-answer.json");
+        self.write("enrol-ask.json", asking)
+    }
+
+    /// The device that is waiting to be allowed, if any still is.
+    pub fn asking(&self, now: i64) -> Option<Asking> {
+        let asking: Asking = self.read("enrol-ask.json")?;
+        (now - asking.at <= enrol::APPROVE_LIFETIME && self.asking_answer(&asking.enrol_id).is_none()).then_some(asking)
+    }
+
+    /// Allow or refuse the device that is asking. False when it is no
+    /// longer the one asking.
+    pub fn answer_asking(&self, enrol_id: &str, allow: bool, now: i64) -> Result<bool, String> {
+        if self.asking(now).is_none_or(|a| a.enrol_id != enrol_id) {
+            return Ok(false);
+        }
+        self.write("enrol-answer.json", &Answered { enrol_id: enrol_id.to_string(), allow })?;
+        Ok(true)
+    }
+
+    /// What was answered to a device that asked, if anything was yet.
+    pub fn asking_answer(&self, enrol_id: &str) -> Option<bool> {
+        self.read::<Answered>("enrol-answer.json").filter(|a| a.enrol_id == enrol_id).map(|a| a.allow)
+    }
+
+    /// Note that a linked Ally was heard from.
+    pub fn set_ally_seen(&self, device: &str, seen: &Seen) {
+        let _ = self.write(&format!("ally-seen-{device}.json"), seen);
+    }
+
+    pub fn ally_seen(&self, device: &str) -> Option<Seen> {
+        self.read(&format!("ally-seen-{device}.json"))
+    }
+
+    /// Keep what an Ally said about itself. A pulse without a measurement
+    /// (a game is running there) keeps the measurement from before.
+    pub fn set_ally_pulse(&self, device: &str, pulse: Pulse, now: i64) -> Result<(), String> {
+        let health = pulse.health.clone().or_else(|| self.ally_pulse(device).and_then(|p| p.health));
+        self.write(&format!("ally-pulse-{device}.json"), &Pulsed { at: now, pulse, health })
+    }
+
+    pub fn ally_pulse(&self, device: &str) -> Option<Pulsed> {
+        self.read(&format!("ally-pulse-{device}.json"))
+    }
+
+    /// Every linked Ally as a dashboard shows it. `streaming` says whether
+    /// a stream is running now: it goes to the Ally that asked for one last.
+    pub fn allies(&self, now: i64, streaming: bool) -> Vec<AllyView> {
+        let devices = self.devices();
+        let seen: Vec<Option<Seen>> = devices.iter().map(|d| self.ally_seen(&d.id)).collect();
+        let prepared = |s: &Option<Seen>| s.as_ref().and_then(|s| s.prepared);
+        let streamer = seen.iter().enumerate().filter(|(_, s)| prepared(s).is_some()).max_by_key(|(_, s)| prepared(s)).map(|(i, _)| i).filter(|_| streaming);
+        devices
+            .into_iter()
+            .zip(seen)
+            .enumerate()
+            .map(|(i, (device, seen))| {
+                let pulsed = self.ally_pulse(&device.id);
+                let last_seen = seen.as_ref().map(|s| s.at).into_iter().chain(self.ally_listening(&device.id)).max();
+                let streaming = streamer == Some(i);
+                AllyView {
+                    connected: streaming || last_seen.is_some_and(|at| now - at <= CONNECTED_FOR),
+                    last_seen,
+                    address: seen.map(|s| s.address),
+                    streaming,
+                    health: pulsed.as_ref().and_then(|p| p.health.clone()),
+                    pulse: pulsed.map(|p| p.pulse),
+                    id: device.id,
+                    name: device.name,
+                    linked_at: device.added,
+                }
+            })
+            .collect()
     }
 
     /// Note what the launcher did, for whoever wonders why a stream ended.
