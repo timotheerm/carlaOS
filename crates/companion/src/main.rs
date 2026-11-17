@@ -68,6 +68,10 @@ const HELP: &str = "CarlaOS desktop companion
   carla-companion saves      list the games whose saves are kept in step with the Ally
   carla-companion saves set NAME FOLDER
                              say where a game keeps its saves on this desktop
+  carla-companion saves guess NAME
+                             suggest where a game keeps its saves, from folder names
+  carla-companion saves find NAME
+                             watch while you play and save, then suggest the folder
   carla-companion saves clear KEY
                              stop keeping a game's saves in step
   carla-companion saves copies KEY
@@ -656,6 +660,7 @@ fn saves(files: &Files, args: &[String]) -> Result<i32, String> {
             println!("On the Ally the game needs its save folder too: Settings, Manage games.");
             Ok(0)
         }
+        Some(word @ ("guess" | "find")) => find_saves(files, word == "find", args.get(1).ok_or("Say which game: carla-companion saves guess \"NAME\" or saves find \"NAME\".")?),
         Some("clear") => match files.clear_save_folder(args.get(1).ok_or("Say which game: carla-companion saves clear KEY (see carla-companion saves).")?)? {
             Some(title) => {
                 println!("Saves of {title} are no longer kept in step. Nothing was deleted.");
@@ -689,6 +694,60 @@ fn saves(files: &Files, args: &[String]) -> Result<i32, String> {
             Ok(0)
         }
     }
+}
+
+/// Suggest where a game keeps its saves. Only suggests: the administrator
+/// confirms with `saves set`, and nothing is written or deleted here.
+fn find_saves(files: &Files, play: bool, name: &str) -> Result<i32, String> {
+    use carla_core::library::savefind::{self, Limits, Snapshot};
+    let wanted = name.trim().to_lowercase();
+    let store = installed().into_iter().map(|(source, g)| (format!("{source}:{}", g.source_id), g.title, Some(g.install_path)));
+    let by_hand = files.extras().into_iter().map(|e| (format!("manual:{}", e.key), e.title, e.exe.parent().map(std::path::Path::to_path_buf)));
+    let known = store.chain(by_hand).find(|(id, title, _)| id.to_lowercase() == wanted || title.to_lowercase() == wanted);
+    let (title, install) = match known {
+        Some((_, title, folder)) => (title, folder),
+        None => (name.trim().to_string(), None),
+    };
+    let roots = savefind::known_roots(|v| std::env::var(v).ok(), install.as_deref());
+    let found = if play {
+        println!("Looking for where {title} keeps its saves. This only looks; nothing is changed.");
+        let before = Snapshot::take(&roots, Limits::default());
+        println!("Now start {title}, play a little, save the game, then quit it.");
+        println!("Press Enter here when you have quit the game.");
+        let mut line = String::new();
+        match std::io::stdin().read_line(&mut line) {
+            Ok(n) if n > 0 => {}
+            _ => return Err("This needs a console to press Enter in. Run it in a terminal window.".to_string()),
+        }
+        let after = Snapshot::take(&roots, Limits::default());
+        if before.cut_short || after.cut_short {
+            println!("The search was cut short by its limits, so the answer may be incomplete.");
+        }
+        savefind::diff(&before, &after, Some(&title))
+    } else {
+        savefind::guess(&title, &roots)
+    };
+    if found.is_empty() {
+        println!("No likely folder found.");
+        if play {
+            println!("Some games write their saves only when they quit, keep them in the cloud or in the registry. Try again after quitting the game fully, or look for the folder by hand.");
+        } else {
+            println!("Try: carla-companion saves find \"{title}\" (it watches the game save).");
+        }
+        return Ok(0);
+    }
+    println!("Likely folders, best first:");
+    for c in &found {
+        let what = if play { format!("{} files changed, {} KB", c.changed, c.bytes / 1024) } else { format!("{} KB", c.bytes / 1024) };
+        println!("\n  {}\n  {what}; {}", c.folder.display(), c.reasons.join(", "));
+        if title.contains('"') {
+            println!("  (the name has a double quote; type the saves set command by hand with this folder)");
+        } else {
+            println!("  carla-companion saves set \"{title}\" \"{}\"", c.folder.display());
+        }
+    }
+    println!("\nNothing was set. Check a folder, then run its line above to keep it in step with the Ally.");
+    Ok(0)
 }
 
 fn on_off(word: Option<&String>) -> Result<bool, String> {
