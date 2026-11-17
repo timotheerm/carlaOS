@@ -734,7 +734,11 @@ fn picture_for(library: &Library, host: &HostRow, link: &Link) -> Choice {
 /// Tell the desktop which game is wanted and start Moonlight on it. A desktop
 /// that does not answer is woken first; `waking` is called when that starts.
 /// Also says whether the desktop had to be woken.
-pub(crate) fn start_stream(library: &Library, game_id: &str, place: &str, waking: &dyn Fn(), stopped: &dyn Fn() -> bool) -> Result<(Child, bool), String> {
+///
+/// With `resuming` the game is already open on the desktop and only the
+/// picture is fetched again: saves are left alone, since the game there is
+/// using them.
+pub(crate) fn start_stream(library: &Library, game_id: &str, place: &str, waking: &dyn Fn(), stopped: &dyn Fn() -> bool, resuming: bool) -> Result<(Child, bool), String> {
     let host = library.store().hosts()?.into_iter().find(|h| h.id == place).ok_or("That desktop is no longer set up.")?;
     let exe = moonlight::find().ok_or("Moonlight is not installed on this Ally.")?;
     let mut woke = false;
@@ -750,7 +754,9 @@ pub(crate) fn start_stream(library: &Library, game_id: &str, place: &str, waking
     };
     seen(library, &host, &link, &status);
     // What was played on the Ally since goes to the desktop first.
-    crate::savesync::before_stream(library, game_id, &host, &link);
+    if !resuming {
+        crate::savesync::before_stream(library, game_id, &host, &link);
+    }
     // A desktop that has just woken may need a moment before Sunshine is up.
     // The picture is made for this Ally's own screen, and the desktop is told
     // its size so it can switch its screen to match.

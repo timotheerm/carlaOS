@@ -4,7 +4,7 @@ import { Cover } from "../ui/parts";
 // Shown instead of the library while a game is running. The game normally
 // covers it; it is what the player sees on the way in, on the way out, and if
 // they come back to CarlaOS while the game is still open.
-export function Playing({ session, game, from, onEnd }: { session: Session; game?: Game; from?: string; onEnd: () => void }) {
+export function Playing({ session, game, from, onEnd, onResume }: { session: Session; game?: Game; from?: string; onEnd: () => void; onResume: () => void }) {
   const waiting = session.phase !== "running";
   return (
     <div className={waiting ? "playing playing--waiting" : "playing"}>
@@ -13,11 +13,13 @@ export function Playing({ session, game, from, onEnd }: { session: Session; game
           <Cover game={game} />
         </div>
       )}
-      <p className="hero__eyebrow">{session.phase === "waking" ? "Waking the desktop" : session.phase === "starting" ? "Starting" : "Playing"}</p>
+      <p className="hero__eyebrow">{session.phase === "waking" ? "Waking the desktop" : session.phase === "reconnecting" ? "Reconnecting" : session.phase === "starting" ? "Starting" : "Playing"}</p>
       <h1 className="detail__title">{session.title}</h1>
       <p className="lede">
         {session.phase === "waking"
           ? "It was asleep. This can take up to a minute."
+          : session.phase === "reconnecting"
+          ? "The Ally woke up and the stream was cut. Picking it up again."
           : session.phase === "starting"
           ? session.cloud
             ? "Opening it. The first time, sign in to the service."
@@ -39,6 +41,11 @@ export function Playing({ session, game, from, onEnd }: { session: Session; game
         </span>
       )}
       {session.phase === "running" && <p className="lede">Hold View and Menu together for sound, brightness and ending the game.</p>}
+      {session.phase === "running" && session.adopted && (
+        <button className="pill" data-focus data-fid="playing:resume" onClick={onResume}>
+          Back to the game
+        </button>
+      )}
       <button className="pill" data-focus data-autofocus data-quiet data-fid="playing:end" onClick={onEnd}>
         {session.phase === "running" ? "I have finished playing" : "Stop"}
       </button>

@@ -144,6 +144,8 @@ impl Store {
             ("games", "cover_own", "TEXT"),
             ("games", "hero_own", "TEXT"),
             ("games", "origin", "TEXT NOT NULL DEFAULT ''"),
+            // Seconds the machine was asleep during a session: not played.
+            ("play_sessions", "asleep", "INTEGER NOT NULL DEFAULT 0"),
             // When CarlaOS last looked for pictures of a game by itself.
             ("games", "art_tried", "INTEGER NOT NULL DEFAULT 0"),
         ];
@@ -381,7 +383,7 @@ impl Store {
             .prepare(
                 "SELECT g.id, g.title, g.description, g.platform, g.kind, g.favourite, g.added,
                         COALESCE(g.cover_own, g.cover), COALESCE(g.hero_own, g.hero),
-                        (SELECT COALESCE(SUM(ended - started), 0) FROM play_sessions p WHERE p.game_id = g.id AND p.ended IS NOT NULL),
+                        (SELECT COALESCE(SUM(MAX(ended - started - asleep, 0)), 0) FROM play_sessions p WHERE p.game_id = g.id AND p.ended IS NOT NULL),
                         (SELECT MAX(started) FROM play_sessions p WHERE p.game_id = g.id),
                         g.origin, g.cover_own IS NOT NULL OR g.hero_own IS NOT NULL
                  FROM games g
@@ -779,6 +781,40 @@ impl Store {
         Ok(())
     }
 
+    /// The machine slept for a while with this session open. That time is
+    /// not time played.
+    pub fn session_slept(&mut self, session: i64, seconds: i64) -> Result<()> {
+        self.db.execute("UPDATE play_sessions SET asleep = asleep + MAX(?2, 0) WHERE id = ?1 AND ended IS NULL", params![session, seconds]).map_err(err)?;
+        Ok(())
+    }
+
+    /// Every game installed on this machine, with how to start it.
+    pub fn local_installs(&self) -> Result<Vec<Install>> {
+        let mut query = self
+            .db
+            .prepare(
+                "SELECT i.game_id, g.title, i.source, i.source_id, i.install_path, i.exe, i.args
+                 FROM installs i JOIN games g ON g.id = i.game_id WHERE i.place = ?1",
+            )
+            .map_err(err)?;
+        let rows = query
+            .query_map(params![LOCAL], |r| {
+                Ok(Install {
+                    game_id: r.get(0)?,
+                    title: r.get(1)?,
+                    source: r.get(2)?,
+                    source_id: r.get(3)?,
+                    install_path: PathBuf::from(r.get::<_, String>(4)?),
+                    exe: r.get::<_, Option<String>>(5)?.map(PathBuf::from),
+                    args: r.get(6)?,
+                })
+            })
+            .map_err(err)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(err)?;
+        Ok(rows)
+    }
+
     /// Sessions left open by a crash or a power cut count as no time played,
     /// which is the only length we can be sure they were not shorter than.
     pub fn close_dangling_sessions(&mut self) -> Result<()> {
@@ -796,6 +832,23 @@ mod tests {
 
     fn scanned(id: &str, title: &str) -> Scanned {
         Scanned { source_id: id.into(), title: title.into(), install_path: PathBuf::from("/games").join(title), ..Scanned::default() }
+    }
+
+    #[test]
+    fn time_asleep_is_not_time_played_and_local_installs_are_listed() {
+        let mut store = Store::in_memory().unwrap();
+        store.sync(LOCAL, "steam", &[scanned("1", "Alpha")], 100).unwrap();
+        store.sync("desk", "steam", &[scanned("2", "Beta")], 100).unwrap();
+        let session = store.start_session("steam:1", LOCAL, 1_000).unwrap();
+        // An hour of play around eight hours of sleep.
+        store.session_slept(session, 8 * 3600).unwrap();
+        store.end_session(session, 1_000 + 9 * 3600).unwrap();
+        assert_eq!(store.list().unwrap().iter().find(|g| g.id == "steam:1").unwrap().playtime_minutes, 60);
+        // A finished session is not changed any more, and time never goes below nothing.
+        store.session_slept(session, 99 * 3600).unwrap();
+        assert_eq!(store.list().unwrap().iter().find(|g| g.id == "steam:1").unwrap().playtime_minutes, 60);
+        let installs = store.local_installs().unwrap();
+        assert_eq!(installs.iter().map(|i| i.game_id.as_str()).collect::<Vec<_>>(), ["steam:1"], "only what is on this machine");
     }
 
     #[test]

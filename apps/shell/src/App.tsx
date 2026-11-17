@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { cloud } from "./data/sample";
 import { library, message, useLibrary } from "./library/store";
-import { appInfo, boot, quit } from "./native";
+import { appInfo, boot, inTauri, quit } from "./native";
+import { listen } from "@tauri-apps/api/event";
 import { currentFocusId, focusById, focusFirst, installScrollIntoView } from "./nav/focus";
 import { installInput, type Action } from "./nav/input";
 import { cleanup } from "./cleanup/store";
@@ -9,6 +10,7 @@ import { Cleanup, type CleanupView } from "./screens/cleanup";
 import { LinkDesktops } from "./screens/link";
 import { Manage } from "./screens/manage";
 import { Playing } from "./screens/playing";
+import { SideMenu } from "./screens/sidemenu";
 import { Search } from "./screens/search";
 import { Startup } from "./screens/startup";
 import { Storage } from "./screens/storage";
@@ -59,6 +61,8 @@ export function App() {
   const games = useMemo(() => everything.filter((g) => g.places.length > 0), [everything]);
   const favourites = useMemo(() => new Set(everything.filter((g) => g.favourite).map((g) => g.id)), [everything]);
   const [toast, setToast] = useState<string | null>(null);
+  // The side menu is over the library and takes every press until it closes.
+  const [menu, setMenu] = useState(false);
   // The startup animation plays once each time CarlaOS starts.
   const [splash, setSplash] = useState(true);
   const endSplash = useCallback(() => {
@@ -91,6 +95,22 @@ export function App() {
     return installSounds();
   }, []);
   const [sounds, setSoundsOn] = useState(soundsOn);
+
+  // Things the Rust side notices on its own: the Ally waking from sleep, and
+  // a notice for the player.
+  useEffect(() => {
+    if (!inTauri) return;
+    const stops = [
+      listen<number>("system://woke", (e) => {
+        if (e.payload >= 120) {
+          setToast("Welcome back. Your desktops are being checked.");
+          void library.refreshHosts().catch(() => undefined);
+        }
+      }),
+      listen<string>("system://notice", (e) => setToast(e.payload)),
+    ];
+    return () => stops.forEach((stop) => void stop.then((s) => s()));
+  }, []);
 
   useEffect(() => {
     appInfo().then((i) => setVersion(i.version)).catch(() => undefined);
@@ -139,8 +159,16 @@ export function App() {
   useEffect(() => installInput((action) => handler.current(action)), []);
   useEffect(() => {
     handler.current = (action: Action) => {
-      if (playing || splash) return; // only the one button on the playing screen works
-      if (action === "back") {
+      if (splash) return;
+      if (menu) {
+        if (action === "back" || action === "options") setMenu(false);
+        return;
+      }
+      if (playing) return; // only the one button on the playing screen works
+      if (action === "options") {
+        cue("section");
+        setMenu(true);
+      } else if (action === "back") {
         cue("back");
         back();
       } else if (action === "prev" || action === "next") {
@@ -162,7 +190,7 @@ export function App() {
         }
       }
     };
-  }, [back, go, playing, push, searching, section, splash, toggleFavourite]);
+  }, [back, go, menu, playing, push, searching, section, splash, toggleFavourite]);
 
   // The administrator pages lock themselves again as soon as they are left.
   const inCleanup = stack.some((p) => p.kind === "cleanup");
@@ -266,6 +294,7 @@ export function App() {
         <main className="main" ref={main} key={pageKey}>
           <Playing
             session={session}
+            onResume={() => void library.resume().catch((e) => setToast(message(e)))}
             game={games.find((g) => g.id === session.gameId)}
             from={streamFrom(games.find((g) => g.id === session.gameId)?.places ?? [], hosts)}
             onEnd={() => void library.endSession()}
@@ -298,8 +327,10 @@ export function App() {
           ["X", "Favourite"],
           ["Y", "Search"],
           ["LB RB", "Sections"],
+          ["Menu", "Quick"],
         ]}
       />
+      {menu && <SideMenu onClose={() => setMenu(false)} notify={setToast} />}
       {splash && <Splash onDone={endSplash} />}
       {toast && (
         <div className="toast" role="status">

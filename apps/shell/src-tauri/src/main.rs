@@ -14,9 +14,11 @@ mod hosts;
 mod installs;
 mod library;
 mod power;
+mod presence;
 mod quick;
 mod remote;
 mod savesync;
+mod system;
 mod updates;
 
 use carla_core::{AppInfo, Role};
@@ -50,6 +52,8 @@ fn main() {
             app.manage(admin::Admin::new(data_dir.clone()));
             remote::watch(app.handle().clone(), library.clone());
             installs::watch(app.handle().clone(), library.clone());
+            presence::watch(app.handle().clone(), library.clone());
+            system::watch(app.handle().clone(), library.clone());
             app.manage(library);
             // CarlaOS starts between games.
             std::thread::spawn(power::rest);
@@ -134,6 +138,12 @@ fn main() {
             installs::installs_room,
             installs::storage_overview,
             installs::storage_uninstall,
+            presence::session_resume,
+            quick::quick_home,
+            system::system_state,
+            system::system_set_sound,
+            system::system_set_brightness,
+            system::system_power,
         ])
         .build(context)
         .expect("failed to start the CarlaOS shell")
