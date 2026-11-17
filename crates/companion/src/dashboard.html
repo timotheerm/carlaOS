@@ -499,7 +499,11 @@ $("games-button").addEventListener("click", (e) => act(e.currentTarget, "POST", 
 function offered(list) {
   $("found").replaceChildren(...list.map((g) => h("li", null,
     h("div", { class: "body" }, h("b", null, g.title), h("p", null, g.exe), h("p", null, g.note + (g.watch ? ` (watching ${g.watch})` : ""))),
-    h("button", { class: "btn small", type: "button", onclick: (e) => act(e.currentTarget, "POST", "/local/add", { id: g.id }, (a) => { toast(`${a.title} was added. It appears on the Ally within five minutes.`); e.currentTarget.closest("li").remove(); }) }, "Add"))));
+    h("button", { class: "btn small", type: "button", onclick: (e) => {
+      // `currentTarget` is only set while the click is being handled: take what is needed now.
+      const button = e.currentTarget, row = button.closest("li");
+      act(button, "POST", "/local/add", { id: g.id }, (a) => { toast(`${a.title} was added. It appears on the Ally within five minutes.`); row.remove(); });
+    } }, "Add"))));
   if (!list.length) $("found").replaceChildren(h("li", null, "Nothing new was found. Add a program by hand with: carla-companion add NAME PROGRAM"));
 }
 $("find-button").addEventListener("click", (e) => act(e.currentTarget, "POST", "/local/find", null, offered));

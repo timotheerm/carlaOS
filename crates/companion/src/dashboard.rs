@@ -594,6 +594,24 @@ mod tests {
     use super::*;
     use carla_core::link::client::Error;
     use carla_core::link::health::Health;
+
+    /// The page's own script, run with a tiny fake DOM (scripts/test-dashboard.mjs):
+    /// an Add click must not read `event.currentTarget` after the request, when a
+    /// browser has already cleared it. Skipped where node is not installed.
+    #[test]
+    fn the_add_button_of_the_page_works_when_clicked() {
+        let script = concat!(env!("CARGO_MANIFEST_DIR"), "/../../scripts/test-dashboard.mjs");
+        let page = concat!(env!("CARGO_MANIFEST_DIR"), "/src/dashboard.html");
+        let out = match std::process::Command::new("node").arg(script).arg(page).output() {
+            Ok(out) => out,
+            Err(e) => {
+                eprintln!("skipped: node is not available ({e})");
+                return;
+            }
+        };
+        let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+        assert!(out.status.success(), "{text}");
+    }
     use carla_core::link::quality::{self, Measure, Setting};
 
     fn get(port: u16, path: &str, host: &str, token: Option<&str>) -> (u16, String) {
