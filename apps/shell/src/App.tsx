@@ -250,7 +250,7 @@ export function App() {
     openDownloads: () => push({ kind: "downloads", id: "home" }),
     refreshHosts: () => {
       setToast("Checking…");
-      void library.refreshHosts().catch((e) => setToast(message(e)));
+      void library.refreshHosts(true).catch((e) => setToast(message(e)));
     },
   };
 

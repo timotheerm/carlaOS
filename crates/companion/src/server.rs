@@ -351,6 +351,17 @@ impl Server {
         json(&serde_json::json!({ "received": true }))
     }
 
+    /// A linked Ally was removed on its side and asks to be forgotten. Only the
+    /// device that signed the request is removed, never another.
+    fn leave(&self, device: &str) -> Answer {
+        let removed = self.files.forget_device(device).map_err(|e| (500, e))?;
+        locked(&self.seen).remove(device);
+        if removed {
+            self.files.host(&format!("Device {} left (removed on the Ally).", label(device)));
+        }
+        json(&serde_json::json!({ "left": true }))
+    }
+
     /// Write down that an Ally was heard from, at most every few seconds.
     fn note_seen(&self, device: &str, from: &str, now: i64, prepared: bool) {
         let mut seen = locked(&self.seen);
@@ -946,6 +957,7 @@ impl Server {
             ("POST", "/v1/probe/burst") => self.burst(req.body, req.from, now),
             ("POST", "/v1/stream/fit") => self.fit(req.body),
             ("POST", "/v1/link/pulse") => self.pulse(device, req.body, now),
+            ("POST", "/v1/link/leave") => self.leave(device),
             ("GET", "/v1/status") => json(&self.status(now)),
             ("GET", "/v1/games") => json(&self.listed()),
             ("GET", path) if path.starts_with("/v1/cover/") => self.cover(&path["/v1/cover/".len()..]),
@@ -1229,8 +1241,8 @@ fn takes_long(path: &str) -> bool {
 /// A path as the log writes it: what kind of request it is, never which
 /// game, save folder or file it is about.
 fn route_shape(path: &str) -> String {
-    const PLAIN: [&str; 21] = [
-        "/v1/hello", "/v1/enrol/start", "/v1/enrol/finish", "/v1/enrol/ask", "/v1/enrol/reveal", "/v1/probe/burst", "/v1/stream/fit", "/v1/link/pulse", "/v1/status", "/v1/games", "/v1/library",
+    const PLAIN: [&str; 22] = [
+        "/v1/hello", "/v1/enrol/start", "/v1/enrol/finish", "/v1/enrol/ask", "/v1/enrol/reveal", "/v1/probe/burst", "/v1/stream/fit", "/v1/link/pulse", "/v1/link/leave", "/v1/status", "/v1/games", "/v1/library",
         "/v1/install", "/v1/downloads", "/v1/stream/prepare", "/v1/stream/pair", "/v1/power/sleep", "/v1/stream/end", "/v1/stream/reveal", "/v1/admin/next", "/v1/admin/done", "/v1/update",
     ];
     if path == "/" || path == "/v1/saves/find" || PLAIN.contains(&path) {
@@ -1574,6 +1586,7 @@ fn serve_with(server: std::sync::Arc<Server>, http: tiny_http::Server, limits: L
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Read, Write};
     use carla_core::link::client::{self, Error, Link};
     use std::sync::Arc;
 
@@ -1835,6 +1848,91 @@ mod tests {
         let id = desk.files.devices()[0].id.clone();
         assert!(desk.files.forget_device(&id).unwrap());
         assert_eq!(link.status().err(), Some(Error::Refused));
+    }
+
+    #[test]
+    fn a_desktop_that_forgot_the_ally_reads_as_unlinked_on_the_ally() {
+        use carla_core::link::unlinked::is_unlinked;
+        let desk = desk("unlinked", false);
+        let link = linked(&desk);
+        assert!(link.status().is_ok());
+        let id = desk.files.devices()[0].id.clone();
+        assert!(desk.files.forget_device(&id).unwrap());
+        // Every kind of question is refused the same way, so any of them shows it.
+        let refused = link.status().err().unwrap();
+        assert!(is_unlinked(&refused));
+        assert!(is_unlinked(&link.games().err().unwrap()));
+        // Linking again brings it back.
+        let again = linked(&desk);
+        assert!(again.status().is_ok());
+    }
+
+    #[test]
+    fn leaving_forgets_only_the_ally_that_asked() {
+        let desk = desk("leave", false);
+        let (one, two) = (linked(&desk), linked(&desk));
+        assert_eq!(desk.files.devices().len(), 2);
+        assert_eq!(one.leave(), Ok(true));
+        let left: Vec<String> = desk.files.devices().into_iter().map(|d| d.id).collect();
+        assert_eq!(left, vec![two.device_id.clone()]);
+        assert!(two.status().is_ok());
+        assert_eq!(one.status().err(), Some(Error::Refused));
+        logged(&desk.files, "left (removed on the Ally)");
+        // Asking again, now unknown, is refused and changes nothing.
+        assert_eq!(one.leave().err(), Some(Error::Refused));
+        assert_eq!(desk.files.devices().len(), 1);
+    }
+
+    #[test]
+    fn leaving_needs_a_genuine_linked_device() {
+        let desk = desk("leave-refused", false);
+        let link = linked(&desk);
+        let stranger = Link { key: vec![7; 32], ..link.clone() };
+        assert_eq!(stranger.leave().err(), Some(Error::Refused));
+        let unknown = Link { device_id: "nobody".into(), ..link.clone() };
+        assert_eq!(unknown.leave().err(), Some(Error::Refused));
+        // A request that names a device but is not signed is refused too.
+        let mut raw = std::net::TcpStream::connect(("127.0.0.1", desk.port)).unwrap();
+        write!(raw, "POST /v1/link/leave HTTP/1.1\r\nHost: x\r\n{}: {}\r\nContent-Length: 2\r\n\r\n{{}}", sign::DEVICE, link.device_id).unwrap();
+        let mut answer = String::new();
+        let _ = raw.read_to_string(&mut answer);
+        assert!(answer.contains("401"), "{answer}");
+        assert_eq!(desk.files.devices().len(), 1);
+        assert!(link.status().is_ok());
+    }
+
+    #[test]
+    fn an_older_desktop_that_does_not_know_leaving_is_fine() {
+        // A companion from before: answers any signed request it does not know with a signed 404.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let key = vec![9u8; 32];
+        let serving = key.clone();
+        std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 4096];
+            let n = socket.read(&mut buf).unwrap();
+            let text = String::from_utf8_lossy(&buf[..n]).to_string();
+            let nonce = text.lines().find_map(|l| l.to_ascii_lowercase().strip_prefix(&format!("{}: ", sign::NONCE)).map(str::to_string)).unwrap_or_default();
+            let body = br#"{"error":"The companion does not know that request."}"#;
+            let signature = sign::reply(&serving, &nonce, 404, body);
+            write!(socket, "HTTP/1.1 404 Not Found\r\n{}: {signature}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", sign::SIGN, body.len()).unwrap();
+            socket.write_all(body).unwrap();
+        });
+        let link = Link { address: "127.0.0.1".into(), port, device_id: "ally".into(), key };
+        assert_eq!(link.leave(), Ok(false));
+    }
+
+    #[test]
+    fn leaving_a_desktop_that_is_off_does_not_wait_long() {
+        let port = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            l.local_addr().unwrap().port()
+        };
+        let link = Link { address: "127.0.0.1".into(), port, device_id: "ally".into(), key: vec![1; 32] };
+        let asked = Instant::now();
+        assert_eq!(link.leave().err(), Some(Error::Unreachable));
+        assert!(asked.elapsed() < Duration::from_secs(5));
     }
 
     #[test]

@@ -133,7 +133,7 @@ export type ConsoleHint = { name: string; options: string; endings: string[] };
 /// A game found in the public store, for filling in details.
 export type Match = { id: string; name: string; from: string };
 
-export type HostState = "ready" | "busy" | "not_ready" | "asleep" | "off" | "unreachable" | "unknown";
+export type HostState = "ready" | "busy" | "not_ready" | "unlinked" | "asleep" | "off" | "unreachable" | "unknown";
 
 export type Host = {
   id: string;

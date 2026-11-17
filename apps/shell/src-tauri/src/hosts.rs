@@ -17,6 +17,7 @@ use carla_core::link::check::{self, Facts, Fix, Outcome, Report};
 use carla_core::link::moonlight;
 use carla_core::link::health::{Health, Pulse};
 use carla_core::link::quality::{self, Choice, Depth, Setting};
+use carla_core::link::unlinked::{self, is_unlinked, Unlinked};
 use carla_core::link::{wake, State as HostState, Status, Updating, PORT};
 use carla_core::{secret, VERSION};
 use serde::Serialize;
@@ -30,8 +31,8 @@ use crate::library::{allow_pictures, now, Library};
 pub struct HostView {
     id: String,
     name: String,
-    /// "ready", "busy", "not_ready" or "unreachable"; "unknown" before the
-    /// first answer.
+    /// "ready", "busy", "not_ready", "unreachable" or "unlinked" (the desktop
+    /// forgot this Ally: link it again); "unknown" before the first answer.
     state: &'static str,
     /// What is running there, when busy.
     playing: Option<String>,
@@ -278,34 +279,73 @@ fn mark_synced(host_id: &str) {
 /// what that one found alone.
 static REFRESHES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// The desktops that do not know this Ally any more, and when each was last asked.
+fn unlinked() -> std::sync::MutexGuard<'static, Unlinked> {
+    static CELL: std::sync::OnceLock<Mutex<Unlinked>> = std::sync::OnceLock::new();
+    CELL.get_or_init(|| Mutex::new(Unlinked::default())).lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// Find the address a desktop answers at. Every known address is asked at
 /// once, so a desktop that has moved (home network to Tailscale, or a new
 /// address from the router) costs no extra waiting. The home network wins
 /// when several answer.
 pub(crate) fn reach(host: &HostRow) -> Result<(Link, Status, u64), Error> {
+    look(host, true)
+}
+
+/// As `reach`, for what runs by itself: a desktop that said it does not know
+/// this Ally is not asked again for a few minutes. What the player asks for
+/// (Check again, streaming, measuring) is never held back.
+fn reach_in_background(host: &HostRow) -> Result<(Link, Status, u64), Error> {
+    look(host, false)
+}
+
+fn look(host: &HostRow, force: bool) -> Result<(Link, Status, u64), Error> {
     let base = link_of(host).map_err(Error::Host)?;
+    if !force && !unlinked().may_ask(&host.id, &host.device_id, Instant::now()) {
+        return Err(Error::Refused);
+    }
     let asking: Vec<_> = wake::candidates(&host.address, &host.addresses)
         .into_iter()
         .map(|address| {
             let link = Link { address, ..base.clone() };
             std::thread::spawn(move || {
                 let asked = Instant::now();
-                link.status().map(|status| (link, status, asked.elapsed().as_millis() as u64))
+                let answer = link.status().map(|status| (link.clone(), status, asked.elapsed().as_millis() as u64));
+                (link.address, answer)
             })
         })
         .collect();
-    let mut answers: Vec<_> = asking.into_iter().filter_map(|t| t.join().ok()).collect();
+    let answers: Vec<_> = asking.into_iter().filter_map(|t| t.join().ok()).collect();
+    let mut found: Vec<_> = Vec::new();
+    let mut failed: Vec<(String, Error)> = Vec::new();
+    for (address, answer) in answers {
+        match answer {
+            Ok(f) => found.push(f),
+            Err(e) => failed.push((address, e)),
+        }
+    }
     // Candidates are in order of preference, except that a Tailscale address
     // that worked last time must not beat a home address that works now.
-    answers.sort_by_key(|a| a.as_ref().map(|(link, ..)| wake::is_tailscale(&link.address)).unwrap_or(true));
-    let mut problem = Error::Unreachable;
-    for answer in answers {
-        match answer {
-            Ok(found) => return Ok(found),
-            // "Refused" or a problem in the desktop's words says more than silence.
-            Err(e) if problem == Error::Unreachable => problem = e,
-            Err(_) => {}
-        }
+    found.sort_by_key(|(link, ..)| wake::is_tailscale(&link.address));
+    if let Some(first) = found.into_iter().next() {
+        unlinked().clear(&host.id);
+        return Ok(first);
+    }
+    // A 401 from an address says nothing about the link unless it is the
+    // desktop's own: its hello (open to anyone) must name this desktop.
+    let refusers: Vec<String> = failed.iter().filter(|(_, e)| is_unlinked(e)).map(|(a, _)| a.clone()).collect();
+    let genuine: Vec<bool> = if refusers.len() == failed.len() && !failed.is_empty() {
+        let (id, port) = (host.id.clone(), base.port);
+        let asks: Vec<_> = refusers.into_iter().map(|a| { let id = id.clone(); std::thread::spawn(move || client::hello(&a, port).is_ok_and(|h| h.id == id)) }).collect();
+        asks.into_iter().map(|t| t.join().unwrap_or(false)).collect()
+    } else {
+        Vec::new()
+    };
+    let errors: Vec<Error> = failed.into_iter().map(|(_, e)| e).collect();
+    let problem = unlinked::judge(&errors, |i| genuine.get(i).copied().unwrap_or(false));
+    if is_unlinked(&problem) {
+        unlinked().mark(&host.id, &host.device_id, Instant::now());
     }
     Err(problem)
 }
@@ -352,9 +392,9 @@ fn track_reach(id: &str, up: bool) {
 ///
 /// With `generation`, a look that was overtaken by a newer one (it answered after
 /// its deadline) writes nothing: no record, no log, no sync.
-fn refresh(app: &AppHandle, library: &Library, host: &HostRow, generation: Option<u64>) -> HostView {
+fn refresh(app: &AppHandle, library: &Library, host: &HostRow, generation: Option<u64>, force: bool) -> HostView {
     crate::conn_log::know_name(&host.name);
-    let answer = reach(host);
+    let answer = if force { reach(host) } else { reach_in_background(host) };
     let current = generation.is_none_or(|g| g == REFRESHES.load(std::sync::atomic::Ordering::SeqCst));
     // A desktop that refuses or complains has answered: it is there.
     if current {
@@ -381,6 +421,8 @@ fn refresh(app: &AppHandle, library: &Library, host: &HostRow, generation: Optio
             out
         }
         Err(Error::Unreachable) => HostView { state: "unreachable", ..view_with_health(library, host) },
+        // The desktop answered, but forgot this Ally: not connected until it is linked again.
+        Err(e) if is_unlinked(&e) => HostView { state: "unlinked", problem: Some(unlinked::PROBLEM.to_string()), ..view_with_health(library, host) },
         Err(e) => HostView { state: "not_ready", problem: Some(e.to_string()), ..view_with_health(library, host) },
     }
 }
@@ -405,7 +447,8 @@ fn late_view(library: &Library, host: &HostRow) -> HostView {
 /// all. A desktop that has not answered by then is shown as unreachable, and
 /// its look is left to finish by itself.
 #[tauri::command(async)]
-pub fn hosts_refresh(app: AppHandle, library: State<'_, Library>) -> Result<Vec<HostView>, String> {
+pub fn hosts_refresh(app: AppHandle, library: State<'_, Library>, force: Option<bool>) -> Result<Vec<HostView>, String> {
+    let force = force.unwrap_or(false);
     let started = Instant::now();
     let hosts = library.store().hosts()?;
     let generation = REFRESHES.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
@@ -413,7 +456,7 @@ pub fn hosts_refresh(app: AppHandle, library: State<'_, Library>) -> Result<Vec<
         .iter()
         .map(|host| {
             let (app, library, host) = (app.clone(), library.inner().clone(), host.clone());
-            Box::new(move || refresh(&app, &library, &host, Some(generation))) as Job<HostView>
+            Box::new(move || refresh(&app, &library, &host, Some(generation), force)) as Job<HostView>
         })
         .collect();
     let answers = collect_until(jobs, REFRESH_LIMIT);
@@ -551,7 +594,7 @@ pub fn watch(library: Library) {
             std::thread::sleep(PULSE_EVERY);
             let playing = crate::library::locked(&library.0.active).is_some();
             for host in library.store().hosts().unwrap_or_default() {
-                let reached = reach(&host);
+                let reached = reach_in_background(&host);
                 let up = reached.is_ok();
                 track_reach(&host.id, !matches!(reached, Err(Error::Unreachable)));
                 if answered.insert(host.id.clone(), up).is_some_and(|before| before != up) {
@@ -844,6 +887,8 @@ fn finish_link(app: &AppHandle, library: &Library, hello: carla_core::link::Hell
         macs: Vec::new(),
     };
     library.store().save_host(&host, now())?;
+    // Linked again: the desktop knows this Ally now.
+    unlinked().relinked(&host.id, &host.device_id);
     let warning = pair_moonlight(&link).err();
     note_paired(&link.address, warning.is_none());
     let games = sync_games(library, &host, &link, Instant::now() + Duration::from_secs(60)).unwrap_or(0);
@@ -853,12 +898,21 @@ fn finish_link(app: &AppHandle, library: &Library, hello: carla_core::link::Hell
     if let Ok(status) = link.status() {
         measure_host(library, &host, &link, &status, Depth::Full);
     }
-    Ok(Linked { host: refresh(app, library, &host, None), games, warning })
+    Ok(Linked { host: refresh(app, library, &host, None, true), games, warning })
 }
 
 #[tauri::command(async)]
 pub fn hosts_remove(admin: State<'_, Admin>, library: State<'_, Library>, id: String) -> Result<(), String> {
     admin.require()?;
+    // Tell the desktop so it forgets this Ally too. Best effort and short: a
+    // desktop that is off, old or does not know this Ally must not stop the removal.
+    let host = library.store().hosts()?.into_iter().find(|h| h.id == id);
+    if let Some(host) = host.filter(|h| !unlinked().is_unlinked(&h.id)) {
+        if let Ok(link) = link_of(&host) {
+            crate::conn_log::line(&format!("desktop {id} removed: {}", unlinked::leave_note(&link.leave())));
+        }
+    }
+    unlinked().forget(&id);
     library.store().remove_host(&id)
 }
 

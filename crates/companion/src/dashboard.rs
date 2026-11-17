@@ -110,6 +110,8 @@ struct AllyView {
     state: &'static str,
     /// Seconds since it was last heard from.
     heard_ago: Option<i64>,
+    /// Seconds since it was linked.
+    linked_ago: i64,
     address: Option<String>,
     /// "home" or "tailscale".
     route: Option<&'static str>,
@@ -330,6 +332,7 @@ impl Server {
                         "away"
                     },
                     heard_ago: ally.last_seen.map(|at| (now - at).max(0)),
+                    linked_ago: (now - ally.linked_at).max(0),
                     address: ally.address.clone(),
                     route,
                     ping_ms: health.map(|h| h.ping_us / 1000),

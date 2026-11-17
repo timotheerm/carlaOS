@@ -347,7 +347,13 @@ impl Files {
 
     /// Stop accepting a device. Returns whether it was known.
     pub fn forget_device(&self, id: &str) -> Result<bool, String> {
-        let mut devices = self.devices();
+        // A list that cannot be read must not be written back as an empty one:
+        // that would forget every linked device.
+        let mut devices: Vec<Device> = match fs::read_to_string(self.dir.join("devices.json")) {
+            Ok(text) => serde_json::from_str(&text).map_err(|e| format!("The companion could not read devices.json: {e}."))?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(e) => return Err(format!("The companion could not read devices.json: {e}.")),
+        };
         let before = devices.len();
         devices.retain(|d| d.id != id);
         self.write("devices.json", &devices)?;
@@ -881,6 +887,25 @@ impl Files {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn forgetting_a_device_never_writes_over_a_list_it_could_not_read() {
+        let dir = std::env::temp_dir().join(format!("carla-files-forget-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let files = Files::new(dir.clone());
+        let keep = files.add_device("Ally", &[1; 32]).unwrap();
+        let other = files.add_device("Other", &[2; 32]).unwrap();
+        let text = fs::read_to_string(dir.join("devices.json")).unwrap();
+        // Damaged: nothing is written, and the damaged file is left for someone to look at.
+        fs::write(dir.join("devices.json"), "{ not json").unwrap();
+        assert!(files.forget_device(&keep.id).is_err());
+        assert_eq!(fs::read_to_string(dir.join("devices.json")).unwrap(), "{ not json");
+        // Readable again: only that one goes.
+        fs::write(dir.join("devices.json"), text).unwrap();
+        assert!(files.forget_device(&keep.id).unwrap());
+        assert_eq!(files.devices().into_iter().map(|d| d.id).collect::<Vec<_>>(), vec![other.id]);
+        let _ = fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn a_games_list_from_before_watching_existed_still_loads() {

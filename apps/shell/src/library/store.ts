@@ -236,12 +236,12 @@ function unreachable(hosts: Host[]): Host[] {
 }
 
 /** Ask every desktop how it is. Their games can change with the answer. */
-async function refreshHosts() {
+async function refreshHosts(force = false) {
   if (!inTauri || askingHosts) return;
   askingHosts = true;
   try {
     try {
-      set({ hosts: (await within(invoke<HostView[]>("hosts_refresh"), HOSTS_TIMEOUT)).map(fromHost) });
+      set({ hosts: (await within(invoke<HostView[]>("hosts_refresh", { force }), HOSTS_TIMEOUT)).map(fromHost) });
       hostsTimedOut = false;
     } catch (e) {
       if (e instanceof TimedOut) {
@@ -594,6 +594,9 @@ export const library = {
 
   /** Start a game. Rejects with a sentence that can be shown as it is. */
   async launch(gameId: string, place: string) {
+    // A desktop that forgot this Ally cannot stream until it is linked again: say so, do not try (or pretend to wake it).
+    const unlinked = place !== "local" && place !== "cloud" ? state.hosts.find((h) => h.id === place) : undefined;
+    if (unlinked?.state === "unlinked") throw unlinked.problem ?? "This desktop does not know this Ally any more. Link it again.";
     if (inTauri) {
       set({ session: fromSession(await invoke<SessionView>("library_launch", { gameId, place })) });
       return;

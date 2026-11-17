@@ -188,6 +188,7 @@ export function HostView({ hostId, ...ctx }: Ctx & { hostId: string }) {
     ready: `${games} ready to stream`,
     busy: host.playing ? `Playing ${host.playing}` : "A game is running there",
     not_ready: host.problem ?? "Streaming is not working on this desktop.",
+    unlinked: host.problem ?? "This desktop does not know this Ally any more. Link it again.",
     unreachable: `Not answering. It may be off or asleep. Last seen ${host.lastSeen}.`,
     asleep: `Asleep. Last seen ${host.lastSeen}.`,
     off: `Off. Last seen ${host.lastSeen}.`,
@@ -199,16 +200,16 @@ export function HostView({ hostId, ...ctx }: Ctx & { hostId: string }) {
       <div className="pagehead">
         <h1>{host.name}</h1>
         <p>{line[host.state]}</p>
-        {!awake && host.canWake && host.state !== "not_ready" && (
+        {!awake && host.canWake && host.state !== "not_ready" && host.state !== "unlinked" && (
           <button className="pill pill--primary" data-focus data-autofocus data-fid="host:wake" onClick={() => ctx.wakeHost(host.id)}>
             Wake {host.name}
           </button>
         )}
         {!awake && (
           <button
-            className={host.canWake && host.state !== "not_ready" ? "pill" : "pill pill--primary"}
+            className={host.canWake && host.state !== "not_ready" && host.state !== "unlinked" ? "pill" : "pill pill--primary"}
             data-focus
-            data-autofocus={host.canWake && host.state !== "not_ready" ? undefined : ""}
+            data-autofocus={host.canWake && host.state !== "not_ready" && host.state !== "unlinked" ? undefined : ""}
             data-fid="host:check"
             onClick={ctx.refreshHosts}
           >

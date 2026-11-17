@@ -65,6 +65,29 @@ is refused. A command normally answers within a second or two.
 - The Ally keeps a short record of what was asked in `remote.log` in its data
   folder.
 
+## Linked state
+
+A link lives on both sides: the Ally keeps the desktop and its key, the
+desktop keeps the Ally in `devices.json`. They can disagree, and each side
+says so:
+
+- **Linked on both sides.** Normal. The Ally shows the desktop as Ready, In
+  use or Not answering (asleep or off); the dashboard shows Connected, or
+  "Linked, last heard N days ago".
+- **The desktop forgot the Ally** (Forget on the dashboard, a reinstall, a
+  replaced `devices.json`). The Ally shows the desktop as **Not linked**:
+  "This desktop does not know this Ally any more. Link it again." Its games
+  are marked and not streamed. It asks that desktop again only every five
+  minutes. On the Ally: Settings, Desktops, the desktop, **Link again**
+  (administrator PIN, with the desktop's linking open).
+- **The Ally forgot the desktop** (Remove under Settings, Desktops, or a
+  reinstall of the Ally). Removing tells the desktop (`POST /v1/link/leave`,
+  signed, forgets only the asking Ally) when it is on; an older desktop or
+  one that is off is skipped and removal still works. If the desktop never
+  heard, its dashboard shows the Ally as not connected, and after three days
+  adds "Not heard from for N days. Forget it if that Ally was reset or
+  removed." Use **Forget** there.
+
 ## Limits
 
 - The Ally must be on with CarlaOS running, and able to reach the desktop.

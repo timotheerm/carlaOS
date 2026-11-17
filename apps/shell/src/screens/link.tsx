@@ -573,7 +573,22 @@ export function LinkDesktops({ hosts, notify }: { hosts: Host[]; notify: (text: 
             {host.address ? ` · ${host.address}` : ""}
           </p>
         </div>
-        {host.health && <HealthCard health={host.health} />}
+        {host.state === "unlinked" && (
+          <>
+            <p className="lede">{host.problem ?? "This desktop does not know this Ally any more. Link it again."}</p>
+            <button
+              className="setting setting--primary"
+              data-focus
+              data-autofocus
+              data-fid="desk:relink"
+              onClick={() => (host.address ? void allow(host.address, host.name) : setStep({ at: "address" }))}
+            >
+              <span>Link again</span>
+              <span className="setting__value">Open CarlaOS Desktop Host on {host.name} first</span>
+            </button>
+          </>
+        )}
+        {host.health && host.state !== "unlinked" && <HealthCard health={host.health} />}
         <button
           className="setting"
           data-focus
@@ -688,7 +703,7 @@ export function LinkDesktops({ hosts, notify }: { hosts: Host[]; notify: (text: 
         <button key={h.id} className="setting" data-focus data-fid={`desk:${h.id}`} onClick={() => setStep({ at: "host", id: h.id })}>
           <span>{h.name}</span>
           <span className="setting__value">
-            {h.health ? `${GRADES[h.health.grade]} · ${ms(h.health.ping_us)} · manage` : h.address ? `${h.address} · manage` : "Manage"}
+            {h.state === "unlinked" ? "Not linked · link it again" : h.health ? `${GRADES[h.health.grade]} · ${ms(h.health.ping_us)} · manage` : h.address ? `${h.address} · manage` : "Manage"}
           </span>
         </button>
       ))}

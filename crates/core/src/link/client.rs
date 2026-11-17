@@ -19,6 +19,8 @@ use crate::API_VERSION;
 /// Enough for a status question on Wi-Fi; a desktop that is slower is off.
 pub const QUICK: Duration = Duration::from_secs(3);
 const SLOW: Duration = Duration::from_secs(40);
+/// Telling a desktop that this Ally is gone is not worth more waiting than this.
+const LEAVE: Duration = Duration::from_secs(2);
 /// A measurement that takes longer than this has its answer: too slow.
 const PROBE: Duration = Duration::from_secs(4);
 /// One save file is the largest thing a desktop sends.
@@ -370,6 +372,17 @@ impl Link {
     /// Tell the desktop how this Ally and the connection are.
     pub fn pulse(&self, pulse: &Pulse) -> Result<()> {
         self.post::<serde_json::Value>("/v1/link/pulse", pulse, QUICK).map(|_| ())
+    }
+
+    /// Tell the desktop this Ally was removed here, so it forgets it too.
+    /// `Ok(false)` when the desktop is older and does not know the request.
+    /// Short: a desktop that is off must not hold removal up.
+    pub fn leave(&self) -> Result<bool> {
+        match self.ask_status("POST", "/v1/link/leave", b"{}", LEAVE)? {
+            (200, _) => Ok(true),
+            (404, _) => Ok(false),
+            (_, bytes) => Err(problem(&bytes)),
+        }
     }
 
     /// What screen the desktop would give a stream of this size.

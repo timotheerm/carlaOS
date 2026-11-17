@@ -24,6 +24,7 @@ pub mod moonlight;
 pub mod probe;
 pub mod quality;
 pub mod sign;
+pub mod unlinked;
 pub mod wake;
 
 /// TCP port of the companion API and UDP port for finding companions.

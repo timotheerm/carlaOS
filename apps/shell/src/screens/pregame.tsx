@@ -316,7 +316,7 @@ export function GameDetail({ gameId, onToggleFavourite, ...ctx }: Ctx & { gameId
                   onClick={() => ctx.play(game.id, place)}
                 >
                   {label}
-                  {away ? (host.state === "not_ready" ? " (needs attention)" : host.canWake ? " (wakes it first)" : " (not answering)") : ""}
+                  {away ? (host.state === "unlinked" ? " (link it again first)" : host.state === "not_ready" ? " (needs attention)" : host.canWake ? " (wakes it first)" : " (not answering)") : ""}
                 </button>
               );
             })}

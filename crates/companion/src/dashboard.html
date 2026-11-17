@@ -387,16 +387,18 @@ function allies(o) {
   return o.allies.map((a) => {
     const [tone, word] = state[a.state];
     const bits = [
-      a.state === "away" ? (a.heard_ago == null ? "Has not asked for anything since it was linked" : `Last heard from ${ago(a.heard_ago)}`) : (a.route === "tailscale" ? "Away from home, through Tailscale" : "On the home network"),
+      a.state === "away" ? (a.heard_ago == null ? "Linked, but has not asked for anything since it was linked" : `Linked, last heard ${ago(a.heard_ago)}`) : (a.route === "tailscale" ? "Connected now, away from home, through Tailscale" : "Connected now, on the home network"),
       a.address && a.state !== "away" ? a.address : null,
       a.version ? `CarlaOS ${a.version}` : null,
       a.paired === true ? "Moonlight paired" : a.paired === false ? "Moonlight pairs at the first stream" : null,
       a.remote_admin ? "can be set up from here" : null,
     ].filter(Boolean).join(" · ");
     const asking = forgetting === a.id;
+    const quiet = a.state === "away" ? (a.heard_ago ?? a.linked_ago ?? 0) : 0;
+    const stale = quiet > 3 * 86400 ? `Not heard from for ${Math.floor(quiet / 86400)} days. Forget it if that Ally was reset or removed.` : null;
     return h("li", {},
       h("div", { class: "avatar", "aria-hidden": "true" }, svg(ICONS.ally)),
-      h("div", { class: "body" }, h("div", { class: "title-line" }, h("b", {}, a.name), h("span", { class: `pill ${tone}` }, word)), h("p", {}, asking ? `Stop accepting ${a.name}? It would need a new code to link again.` : bits)),
+      h("div", { class: "body" }, h("div", { class: "title-line" }, h("b", {}, a.name), h("span", { class: `pill ${tone}` }, word)), h("p", {}, asking ? `Stop accepting ${a.name}? It would need a new code to link again.` : bits), !asking && stale ? h("p", { class: "warn" }, stale) : null),
       asking
         ? h("div", { class: "actions" }, h("button", { class: "btn small danger", type: "button", onclick: (e) => { forgetting = null; act(e.currentTarget, "POST", "/local/forget", { id: a.id }, () => toast(`${a.name} is no longer linked.`)); } }, "Forget it"), h("button", { class: "btn small quiet", type: "button", onclick: () => { forgetting = null; refresh(); } }, "Keep"))
         : h("button", { class: "btn small quiet", type: "button", "aria-label": `Forget ${a.name}`, onclick: () => { forgetting = a.id; refresh(); } }, "Forget"));
