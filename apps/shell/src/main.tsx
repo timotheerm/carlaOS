@@ -3,8 +3,12 @@ import { createRoot } from "react-dom/client";
 import { App } from "./App";
 import { QuickMenu } from "./screens/quick";
 import { crash } from "./native";
+import { watchCommands } from "./inflight";
 import "./tokens.css";
 import "./app.css";
+
+// Before anything calls the native side: a command the page waits on for long is written down.
+watchCommands();
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
