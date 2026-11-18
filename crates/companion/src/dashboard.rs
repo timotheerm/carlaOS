@@ -174,6 +174,8 @@ struct Overview {
     vitals: Vitals,
     games: GamesView,
     code: Option<CodeView>,
+    /// The screen driver is being installed right now.
+    installing_driver: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -469,6 +471,7 @@ impl Server {
             vitals: (self.vitals)(),
             games: self.games_view(),
             code: self.files.code(now).map(|code| CodeView { seconds_left: (code.expires - now).max(0), code: code.code }),
+            installing_driver: self.installing_driver.load(std::sync::atomic::Ordering::SeqCst),
         }
     }
 
@@ -558,6 +561,31 @@ impl Server {
         ok()
     }
 
+    /// Install the screen driver on a thread of its own and answer at once.
+    /// Only this click does it, never by itself, and it takes no parameters.
+    fn install_driver(&self, bytes: &[u8]) -> Answer {
+        use std::sync::atomic::Ordering::SeqCst;
+        if !bytes.is_empty() {
+            return refuse(400, "Installing the screen driver takes no parameters.");
+        }
+        if self.screens.as_ref().is_some_and(|d| d.present()) {
+            return refuse(409, "The screen driver is already installed.");
+        }
+        if self.installing_driver.swap(true, SeqCst) {
+            return refuse(409, "The screen driver is being installed already. Allow it when Windows asks.");
+        }
+        self.files.host("Installing the screen driver was asked for from the dashboard: Windows asks to allow it.");
+        let (installing, install, files) = (self.installing_driver.clone(), self.driver_install.clone(), self.files.clone());
+        std::thread::spawn(move || {
+            match install() {
+                Ok(()) => files.host("The screen driver was installed."),
+                Err(e) => files.host(&format!("The screen driver was not installed: {e}")),
+            }
+            installing.store(false, SeqCst);
+        });
+        ok()
+    }
+
     /// Answer the dashboard. `None` when the request is not for it, which
     /// leaves it to the signed API.
     ///
@@ -592,6 +620,7 @@ impl Server {
                 ("POST", "/local/add") => self.add_found(bytes),
                 ("POST", "/local/update") => self.update(now),
                 ("POST", "/local/end") => self.end(now),
+                ("POST", "/local/virtual/install") => self.install_driver(bytes),
                 _ => refuse(404, "The dashboard does not know that request."),
             }
         };
@@ -854,6 +883,103 @@ mod tests {
         assert_eq!(serde_json::from_str::<serde_json::Value>(&newer).unwrap()["newer"], "9.9.9");
         let (status, updating) = ask("POST", down.port, "/local/update", &own, Some(&token), "");
         assert_eq!((status, serde_json::from_str::<serde_json::Value>(&updating).unwrap()["updating"].as_bool()), (200, Some(true)));
+    }
+
+    /// A driver that is there or not, and does nothing.
+    struct Present(bool);
+    impl virtual_screen::Driver for Present {
+        fn present(&self) -> bool {
+            self.0
+        }
+        fn set_count(&self, _: u32) -> Result<(), String> {
+            Ok(())
+        }
+        fn settings(&self) -> Option<std::path::PathBuf> {
+            None
+        }
+        fn screens(&self) -> Vec<carla_core::layout::Screen> {
+            Vec::new()
+        }
+        fn only_virtual(&self) -> Result<(), String> {
+            Ok(())
+        }
+        fn restore(&self) -> Result<(), String> {
+            Ok(())
+        }
+        fn modes(&self) -> Vec<Mode> {
+            Vec::new()
+        }
+        fn apply(&self, _: Mode) -> Result<(), String> {
+            Ok(())
+        }
+        fn pause(&self, _: Duration) {}
+    }
+
+    /// A server with nothing behind it, to ask `local` directly.
+    fn bare(name: &str, installer: std::sync::Arc<dyn Fn() -> Result<(), String> + Send + Sync>, present: bool) -> Server {
+        let dir = std::env::temp_dir().join(format!("carla-driver-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut server = Server::new(Files::new(dir), Config::new("HOME PC"), None, Box::new(Vec::new), "launch".into(), "hw".into(), || (vec![], vec![]), |_| vec![], || Ok(()))
+            .with_driver_installer(installer);
+        server = server.with_virtual_screens(Box::new(Present(present)));
+        server
+    }
+
+    fn click(server: &Server, method: &str, host: &str, token: Option<&str>, body: &[u8]) -> u16 {
+        server.local(method, "/local/virtual/install", Some(host), token, body, 0).unwrap().status
+    }
+
+    #[test]
+    fn the_driver_install_button_is_for_this_page_only_and_takes_no_parameters() {
+        let ran = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = ran.clone();
+        let server = bare("refuse", std::sync::Arc::new(move || { counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst); Ok(()) }), false);
+        let token = server.token.clone();
+        assert_eq!(click(&server, "POST", "evil.example", Some(&token), b""), 403, "wrong Host");
+        assert_eq!(click(&server, "POST", "localhost", None, b""), 403, "no token");
+        assert_eq!(click(&server, "POST", "localhost", Some("wrong"), b""), 403, "wrong token");
+        assert_eq!(click(&server, "GET", "localhost", Some(&token), b""), 404, "GET");
+        assert_eq!(click(&server, "POST", "localhost", Some(&token), b"{\"id\":\"x\"}"), 400, "parameters");
+        std::thread::sleep(Duration::from_millis(50));
+        assert_eq!(ran.load(std::sync::atomic::Ordering::SeqCst), 0, "none of those installed anything");
+        assert_eq!(click(&server, "POST", "localhost", Some(&token), b""), 200);
+        for _ in 0..100 {
+            if ran.load(std::sync::atomic::Ordering::SeqCst) == 1 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(ran.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_second_click_while_the_driver_installs_is_refused_and_an_installed_driver_needs_none() {
+        let (release, wait) = std::sync::mpsc::channel::<()>();
+        let wait = std::sync::Mutex::new(wait);
+        let ran = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = ran.clone();
+        let server = bare("single", std::sync::Arc::new(move || {
+            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let _ = wait.lock().unwrap().recv_timeout(Duration::from_secs(5));
+            Ok(())
+        }), false);
+        let token = server.token.clone();
+        assert_eq!(click(&server, "POST", "localhost", Some(&token), b""), 200);
+        assert!(server.installing_driver.load(std::sync::atomic::Ordering::SeqCst));
+        assert_eq!(click(&server, "POST", "localhost", Some(&token), b""), 409);
+        assert!(serde_json::to_value(server.overview(0)).unwrap()["installing_driver"].as_bool().unwrap());
+        release.send(()).unwrap();
+        for _ in 0..200 {
+            if !server.installing_driver.load(std::sync::atomic::Ordering::SeqCst) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(ran.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let installed = bare("present", std::sync::Arc::new(|| panic!("must not run")), true);
+        let token = installed.token.clone();
+        assert_eq!(click(&installed, "POST", "localhost", Some(&token), b""), 409);
     }
 
     #[test]

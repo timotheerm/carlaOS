@@ -80,7 +80,8 @@ fn keep(library: &Library, game_id: &str, wide: bool, bytes: &[u8]) -> Result<()
     let stamp = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
     let path = dir.join(format!("{}-{}-{stamp:x}.{ending}", manual_key(game_id), if wide { "wide" } else { "cover" }));
     std::fs::write(&path, bytes).map_err(problem)?;
-    match library.store().set_own_art(game_id, wide, Some(&path)) {
+    let set = library.store().set_own_art(game_id, wide, Some(&path));
+    match set {
         Ok(old) => {
             forget(library, old);
             Ok(())

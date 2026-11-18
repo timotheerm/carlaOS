@@ -592,27 +592,40 @@ pub fn watch(library: Library) {
         let mut answered: std::collections::HashMap<String, bool> = std::collections::HashMap::new();
         loop {
             std::thread::sleep(PULSE_EVERY);
-            let playing = crate::library::locked(&library.0.active).is_some();
-            for host in library.store().hosts().unwrap_or_default() {
-                let reached = reach_in_background(&host);
-                let up = reached.is_ok();
-                track_reach(&host.id, !matches!(reached, Err(Error::Unreachable)));
-                if answered.insert(host.id.clone(), up).is_some_and(|before| before != up) {
-                    crate::crash::note(&format!("desktop {} {} (a game or stream is running: {playing})", host.id, if up { "answers again" } else { "stopped answering" }));
-                }
-                // A desktop that is off is left alone: asking costs seconds.
-                let Ok((link, status, _)) = reached else { continue };
-                if playing {
-                    let _ = link.pulse(&pulse_of(&library, &link.address, None));
-                } else {
-                    let host = seen(&library, &host, &link, &status);
-                    if measure_host(&library, &host, &link, &status, Depth::Quick).is_none() {
-                        let _ = link.pulse(&pulse_of(&library, &link.address, None));
-                    }
-                }
-            }
+            pulse_all(&library, &mut answered, &reach_in_background);
         }
     });
+}
+
+/// One round of `watch`: every desktop is asked how it is and told how this Ally is.
+/// How `watch` asks a desktop; a stand-in in tests.
+type Reach = dyn Fn(&HostRow) -> Result<(Link, Status, u64), Error>;
+
+fn pulse_all(library: &Library, answered: &mut std::collections::HashMap<String, bool>, reach: &Reach) {
+    let playing = crate::library::locked(&library.0.active).is_some();
+    // Copied out first. In a `for` header the lock would be held for the whole loop
+    // (a temporary lives until the loop ends), and `seen` and `measure_host` below take
+    // it again: on the same thread that never returns, and every other use of the
+    // library waits for ever behind it.
+    let hosts = library.store().hosts().unwrap_or_default();
+    for host in hosts {
+        let reached = reach(&host);
+        let up = reached.is_ok();
+        track_reach(&host.id, !matches!(reached, Err(Error::Unreachable)));
+        if answered.insert(host.id.clone(), up).is_some_and(|before| before != up) {
+            crate::crash::note(&format!("desktop {} {} (a game or stream is running: {playing})", host.id, if up { "answers again" } else { "stopped answering" }));
+        }
+        // A desktop that is off is left alone: asking costs seconds.
+        let Ok((link, status, _)) = reached else { continue };
+        if playing {
+            let _ = link.pulse(&pulse_of(library, &link.address, None));
+        } else {
+            let host = seen(library, &host, &link, &status);
+            if measure_host(library, &host, &link, &status, Depth::Quick).is_none() {
+                let _ = link.pulse(&pulse_of(library, &link.address, None));
+            }
+        }
+    }
 }
 
 /// Desktops Moonlight was seen paired with since CarlaOS started, by address.
@@ -657,7 +670,8 @@ fn ensure_paired(exe: &std::path::Path, link: &Link) -> Result<(), String> {
 /// Forget that a desktop was paired, after a stream from it ended at once.
 pub(crate) fn stream_failed(library: &Library, place: &str) {
     crate::crash::note(&format!("stream from {place} ended before it started: pairing will be asked again"));
-    if let Some(host) = library.store().hosts().ok().and_then(|hosts| hosts.into_iter().find(|h| h.id == place)) {
+    let host = library.store().hosts().ok().and_then(|hosts| hosts.into_iter().find(|h| h.id == place));
+    if let Some(host) = host {
         let mut cache = paired_cache();
         if let Some(set) = cache.as_mut() {
             set.remove(&host.address);
@@ -1131,4 +1145,56 @@ fn start_stream_steps(library: &Library, game_id: &str, place: &str, waking: &dy
     let moonlight = moonlight::stream(&exe, &link.address, picture).map_err(|e| format!("Moonlight could not be started: {e}."))?;
     step("Moonlight started");
     Ok((moonlight, woke))
+}
+
+
+#[cfg(test)]
+mod watch_tests {
+    use super::*;
+
+    /// The background round that runs 45 s after CarlaOS starts must finish when a desktop
+    /// answers. It used to keep the library's lock for the whole round and take it again in
+    /// `seen`, which on the same thread never returns: the whole Ally stopped (no game list,
+    /// no local games, no measuring) until CarlaOS was restarted.
+    #[test]
+    fn a_round_with_a_desktop_that_answers_finishes_and_leaves_the_library_usable() {
+        let dir = std::env::temp_dir().join(format!("carla-watch-round-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let library = Library::open(&dir).unwrap();
+        let row = HostRow {
+            id: "desk-1".into(),
+            name: "HOME PC".into(),
+            address: "127.0.0.1".into(),
+            port: 9,
+            device_id: "ally".into(),
+            key: vec![0; 32],
+            hardware: String::new(),
+            last_seen: None,
+            addresses: vec!["127.0.0.1".into()],
+            macs: Vec::new(),
+        };
+        library.store().save_host(&row, 0).unwrap();
+        let status: Status = serde_json::from_value(serde_json::json!({
+            "name": "HOME PC", "id": "desk-1", "version": "1.0.0", "state": "ready",
+            "playing": null, "problem": null, "hardware": "test"
+        }))
+        .unwrap();
+        // A desktop that answers; port 9 refuses at once, so measuring and the pulse fail fast.
+        let answers = move |host: &HostRow| Ok((Link { address: host.address.clone(), port: 9, device_id: "ally".into(), key: vec![0; 32] }, status.clone(), 1));
+        let (done, finished) = std::sync::mpsc::channel();
+        let round = library.clone();
+        std::thread::spawn(move || {
+            let mut answered = std::collections::HashMap::new();
+            pulse_all(&round, &mut answered, &answers);
+            let _ = done.send(());
+        });
+        if finished.recv_timeout(Duration::from_secs(30)).is_err() {
+            let lock_held = library.0.store.try_lock().is_err();
+            panic!("the round never finished after 30 s; library lock still held: {lock_held}");
+        }
+        // And the rest of CarlaOS can still use the library.
+        assert_eq!(library.store().hosts().unwrap().len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

@@ -163,6 +163,12 @@ pub struct Server {
     /// A look for games is running. At most one at a time, so that clicking
     /// the button again cannot occupy the workers that answer the Ally.
     finding: std::sync::atomic::AtomicBool,
+    /// Starts Sunshine when it is installed and silent.
+    starter: Option<std::sync::Arc<crate::setup::Starter>>,
+    /// Installs the virtual screen's driver (winget; Windows asks first).
+    driver_install: std::sync::Arc<dyn Fn() -> Result<(), String> + Send + Sync>,
+    /// The driver is being installed: a second click is refused.
+    installing_driver: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// An installed game and the store it is from ("steam", "epic", "gog").
@@ -285,6 +291,9 @@ impl Server {
             finder: Box::new(|| find::find(&find::default_roots(), &[])),
             candidates: Mutex::default(),
             finding: Default::default(),
+            starter: None,
+            driver_install: std::sync::Arc::new(|| Err("This companion cannot install the screen driver.".to_string())),
+            installing_driver: Default::default(),
         }
     }
 
@@ -431,6 +440,18 @@ impl Server {
     /// Give each stream a virtual screen of its own through this driver.
     pub fn with_virtual_screens(mut self, driver: Box<dyn Driver + Send + Sync>) -> Self {
         self.screens = Some(driver);
+        self
+    }
+
+    /// Start Sunshine itself when it is installed and does not answer.
+    pub fn with_starter(mut self, starter: std::sync::Arc<crate::setup::Starter>) -> Self {
+        self.starter = Some(starter);
+        self
+    }
+
+    /// What the dashboard's "Install the screen driver" button runs.
+    pub fn with_driver_installer(mut self, install: std::sync::Arc<dyn Fn() -> Result<(), String> + Send + Sync>) -> Self {
+        self.driver_install = install;
         self
     }
 
@@ -770,6 +791,13 @@ impl Server {
             // The same game is still running: the stream picks it up again.
             self.files.host(&format!("Prepare: {} ({}) is already running; the stream picks it up again.", playing.title, playing.game_id));
             return json(&self.status(now));
+        }
+        // The Ally asked for a game: a Sunshine that is not running is started
+        // first. Whatever that says, the answer below is the one the Ally knows.
+        if let Some(starter) = &self.starter {
+            if self.streamer().and_then(Streamer::check).is_err() {
+                let _ = starter.ensure();
+            }
         }
         self.streamer().and_then(|s| s.ensure_app(&self.launcher)).map_err(|e| (503, e))?;
         self.files.set_pending(&pending).map_err(|e| (500, e))?;

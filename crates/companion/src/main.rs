@@ -543,6 +543,9 @@ fn console(files: &Files, args: &[String]) -> Result<i32, String> {
 fn build(files: &Files, config: Config) -> Server {
     let streamer = streamer(&config).ok().map(|s| Box::new(s) as Box<dyn Streamer>);
     let scan = Box::new(installed);
+    // Sunshine does the streaming: the host starts it itself, now and when the Ally asks for a game.
+    let starter = Arc::new(setup::Starter::for_machine(&config.sunshine_url, files.clone()));
+    setup::ensure_sunshine_running_later(starter.clone());
     Server::new(
         files.clone(),
         config,
@@ -557,6 +560,8 @@ fn build(files: &Files, config: Config) -> Server {
     .with_updater(update_from_afar)
     .with_dashboard(vitals, || update::check(Part::DesktopHost).map(|found| found.map(|f| f.version)))
     .with_virtual_screens(Box::new(virtual_screen::Vdd))
+    .with_starter(starter)
+    .with_driver_installer(Arc::new(virtual_screen::install))
     .with_installs(server::Installs {
         offered: steam_library,
         start: |app| steam_root().and_then(|root| downloads::start_here(&root, app)),

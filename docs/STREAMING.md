@@ -110,7 +110,7 @@ stream needs, in order, and marks the first broken one:
 | The desktop answers | **Wake it** (when it has said how), or turning it on |
 | It still accepts this Ally | **Link it again** with a new code (it was forgotten there, or set up afresh) |
 | Same CarlaOS on both | **Update the desktop** (a note only: different versions still work) |
-| Sunshine runs there | The desktop itself: `carla-companion status` says what is wrong |
+| Sunshine runs there | The host starts it itself (at start, and when a game is asked for while it is silent; the Windows service `SunshineService` if it may, else `sunshine.exe` with no window; one attempt a minute, up to 20 s of waiting, logged in `host.log`). When Sunshine is not installed nothing is started: run the desktop set-up. |
 | Moonlight is installed on the Ally | Installing it once |
 | Moonlight is paired with that Sunshine | **Pair streaming again**: over the link, no PIN typed |
 | The Ally can wake it | A note: it learns this the first time it answers |
