@@ -1,7 +1,7 @@
 # CarlaOS — instructions for coding agents
 
 ## Project
-CarlaOS is a pink, console-style gaming shell for the ASUS ROG Xbox Ally (RC73YA) on Windows 11. Read `README.md` and the relevant documents in `docs/` before changing architecture or release behaviour.
+CarlaOS is a pink, console-style gaming shell for the ASUS ROG Xbox Ally (RC73YA) on Windows 11. Read `README.md` and the relevant documents in `docs/` before changing architecture or release behaviour. The developer guide `docs/dev/README.md` explains how the code works (threads, locks, protocol, data, build, recipes, pitfalls); read its chapter for the area you change.
 
 Vision and goals: `knowledge/PROJECT.md`. Hard boundary: CarlaOS launches installed games only; it never downloads games/ROMs/firmware/keys or bypasses DRM/anti-cheat.
 

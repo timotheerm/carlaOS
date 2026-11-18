@@ -1,6 +1,6 @@
 # CarlaOS — shared instructions for coding agents
 
-Read this file before editing the repository. Then read `knowledge/START-HERE.md`, the dated `knowledge/operations/current-state.md`, and the relevant feature documents.
+Read this file before editing the repository, then the developer guide [`docs/dev/README.md`](docs/dev/README.md). Then read `knowledge/START-HERE.md`, the dated `knowledge/operations/current-state.md`, and the relevant feature documents.
 
 ## Source of truth
 

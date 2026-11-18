@@ -23,6 +23,7 @@ beforehand or remotely by an administrator.
 | `packaging` | The desktop host and full installers, and the check that tries them. |
 | `scripts/release` | Version numbering and release notes, run by the Build workflow. |
 | `docs` | Architecture and decisions. |
+| `docs/dev` | **Developer guide**: how the code works and how to change it safely. Start at [docs/dev/README.md](docs/dev/README.md). |
 
 ## Downloads
 

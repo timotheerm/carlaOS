@@ -9,6 +9,11 @@ updated: 2026-11-17
 Newest first. Append an entry at the end of each meaningful session
 (format: [session entry template](../templates/session-entry.md)). Keep entries short.
 
+## 2026-11-18: Client freeze root cause and developer guide
+
+- Root cause of the recurring Ally freeze found and fixed (PR #61, v0.34.1): a library-lock self-deadlock in `hosts::watch` since v0.20.0; confirmed fixed on the device. Earlier defensive fixes left in, listed for review in `docs/dev/10-pitfalls-and-open-questions.md`.
+- Added the developer guide `docs/dev/` (architecture, every crate, protocol, data, build/release, recipes, pitfalls).
+
 ## 2026-11-17: Independent review and connection work
 
 - An independent static review of `main` (b437d1b) found the after-stream retry bug and the release-planner race (both fixed), plus open points KI-017..019. Its local run: 347 tests pass; no real device was available.
