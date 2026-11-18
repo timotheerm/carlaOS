@@ -1938,9 +1938,23 @@ mod tests {
         let serving = key.clone();
         std::thread::spawn(move || {
             let (mut socket, _) = listener.accept().unwrap();
+            // The whole request first (it may arrive in pieces): answering and closing while the
+            // Ally is still sending resets the connection, which reads as "unreachable".
+            let mut raw = Vec::new();
             let mut buf = [0u8; 4096];
-            let n = socket.read(&mut buf).unwrap();
-            let text = String::from_utf8_lossy(&buf[..n]).to_string();
+            let text = loop {
+                let n = socket.read(&mut buf).unwrap();
+                raw.extend_from_slice(&buf[..n]);
+                let text = String::from_utf8_lossy(&raw).to_string();
+                if let Some(end) = text.find("\r\n\r\n") {
+                    let length = text.lines().find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length: ").and_then(|v| v.trim().parse::<usize>().ok())).unwrap_or(0);
+                    if raw.len() >= end + 4 + length || n == 0 {
+                        break text;
+                    }
+                } else if n == 0 {
+                    break text;
+                }
+            };
             let nonce = text.lines().find_map(|l| l.to_ascii_lowercase().strip_prefix(&format!("{}: ", sign::NONCE)).map(str::to_string)).unwrap_or_default();
             let body = br#"{"error":"The companion does not know that request."}"#;
             let signature = sign::reply(&serving, &nonce, 404, body);
