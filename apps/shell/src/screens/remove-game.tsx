@@ -10,39 +10,20 @@ import { PinPad } from "../ui/pin";
 export function RemoveGame({ game, onDone, notify }: { game: Game; onDone: () => void; notify: (text: string) => void }) {
   const localSteam = game.platform === "Steam" && game.id.startsWith("steam:") && game.places.includes("local");
   const [admin, setAdmin] = useState<AdminStatus | null>(null);
-  const [statusError, setStatusError] = useState(false);
-  const [checking, setChecking] = useState(localSteam);
   const [sure, setSure] = useState(false);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     if (!localSteam) return;
-    let current = true;
-    backend.status().then(
-      (status) => { if (current) setAdmin(status); },
-      () => { if (current) setStatusError(true); },
-    ).finally(() => { if (current) setChecking(false); });
-    return () => {
-      current = false;
-      void backend.lock().catch(() => undefined);
-    };
+    void backend.status().then(setAdmin, () => setAdmin({ pin_set: false, unlocked: false }));
+    return () => void backend.lock().catch(() => undefined);
   }, [localSteam]);
-
-  const retryStatus = () => {
-    setChecking(true);
-    setStatusError(false);
-    setAdmin(null);
-    void backend.status().then(
-      setAdmin,
-      () => setStatusError(true),
-    ).finally(() => setChecking(false));
-  };
 
   const removeSelection = async () => {
     setBusy(true);
     try {
       await library.removeFromMyLibrary(game.id);
-      notify(game.title + " was removed from My Library. Its installation was not changed.");
+      notify(`${game.title} was removed from My Library. Its installation was not changed.`);
       onDone();
     } catch (e) {
       notify(message(e));
@@ -54,7 +35,7 @@ export function RemoveGame({ game, onDone, notify }: { game: Game; onDone: () =>
     setBusy(true);
     try {
       await library.removeAndUninstallFromMyLibrary(game.id);
-      notify("Steam is asking whether to uninstall " + game.title + ". Confirm there to remove it from My Library. Cancel to keep it.");
+      notify(`Steam is asking whether to uninstall ${game.title}. Confirm there to remove it from My Library. Cancel to keep it.`);
       onDone();
     } catch (e) {
       notify(message(e));
@@ -63,42 +44,7 @@ export function RemoveGame({ game, onDone, notify }: { game: Game; onDone: () =>
   };
 
   if (localSteam) {
-    if (checking) {
-      return (
-        <div className="settings remove-status">
-          <div className="pagehead">
-            <h1>Check administrator access</h1>
-            <p>Before Steam can uninstall this game.</p>
-          </div>
-          <div className="notice">
-            <b>Checking access…</b>
-            <span>CarlaOS is checking whether the administrator PIN is set and unlocked.</span>
-          </div>
-        </div>
-      );
-    }
-    if (statusError || !admin) {
-      return (
-        <div className="settings remove-status">
-          <div className="pagehead">
-            <h1>Cannot check administrator access</h1>
-            <p>No changes have been made to this game.</p>
-          </div>
-          <div className="notice notice--warn">
-            <b>CarlaOS could not check the administrator PIN.</b>
-            <span>Check that the shell is responding, then try again.</span>
-          </div>
-          <button className="setting setting--primary" data-focus data-autofocus data-fid="remove:retry" onClick={retryStatus}>
-            <span>Try again</span>
-            <span className="setting__value">Check administrator access</span>
-          </button>
-          <button className="setting" data-focus data-fid="remove:back" onClick={onDone}>
-            <span>Keep in My Library</span>
-            <span className="setting__value">Nothing will be changed</span>
-          </button>
-        </div>
-      );
-    }
+    if (!admin) return null;
     if (!admin.unlocked) {
       return (
         <PinPad
@@ -128,7 +74,7 @@ export function RemoveGame({ game, onDone, notify }: { game: Game; onDone: () =>
           <span>Ask Steam to uninstall</span>
           <span className="setting__value">{busy ? "Waiting for Steam…" : "Steam confirmation required"}</span>
         </button>
-        <button className="setting" data-focus data-fid="remove:back" disabled={busy} onClick={onDone}>
+        <button className="setting" data-focus data-fid="remove:back" onClick={onDone}>
           <span>Keep in My Library</span>
           <span className="setting__value">Nothing will be changed</span>
         </button>
@@ -168,7 +114,7 @@ export function RemoveGame({ game, onDone, notify }: { game: Game; onDone: () =>
         <span>{sure ? "Press again to remove" : "Remove from My Library"}</span>
         <span className="setting__value">{busy ? "Removing…" : "Does not delete game files"}</span>
       </button>
-      <button className="setting" data-focus data-fid="remove:cancel" disabled={busy} onClick={onDone}>
+      <button className="setting" data-focus data-fid="remove:cancel" onClick={onDone}>
         <span>Keep in My Library</span>
         <span className="setting__value">Go back</span>
       </button>

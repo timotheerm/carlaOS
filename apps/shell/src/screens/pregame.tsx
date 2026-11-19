@@ -354,7 +354,7 @@ export function GameDetail({ gameId, onToggleFavourite, ...ctx }: Ctx & { gameId
               </button>
             )}
           </div>
-          {localDownload && ctx.library.some((g) => g.id === game.id) && <p className="detail__room">Finish or cancel the Steam install or update before removing this game from My Library.</p>
+          {localDownload && ctx.library.some((g) => g.id === game.id) && <p className="detail__room">Finish or cancel the Steam install or update before removing this game from My Library.</p>}
           {offersHere && room !== null && <p className="detail__room">{size(room)} free on this Ally. Steam does the downloading; CarlaOS shows how far it is.</p>}
         </div>
       </article>

@@ -165,7 +165,7 @@ export function Games(ctx: Ctx) {
       <div className="library-heading">
         <div>
           <h1>My Library</h1>
-          <p>{ctx.library.length} games in your collection · {counts.local} on this Ally · {counts.stream} ready to stream</p>
+          <p>{ctx.library.length} games in your collection · {counts.local} on this Ally · {counts.stream} on linked desktops</p>
         </div>
         <button className="pill pill--primary" data-focus data-autofocus data-fid="library:add" onClick={ctx.openAddGames}>Add games</button>
       </div>
