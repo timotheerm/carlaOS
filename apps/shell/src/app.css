@@ -3181,3 +3181,204 @@ button {
     align-items: flex-start;
   }
 }
+
+
+/* ---------- library browsing and collection management ---------- */
+.library-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 1rem;
+  margin-top: 0.75rem;
+}
+
+.library-toolbar .chips,
+.addgame__filters {
+  flex-wrap: wrap;
+}
+
+.chip__count {
+  display: inline-grid;
+  place-items: center;
+  min-width: 1.5rem;
+  margin-left: 0.4rem;
+  padding: 0.05rem 0.4rem;
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+  font-size: 0.9rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.chip--on .chip__count {
+  background: color-mix(in srgb, var(--on-accent) 12%, transparent);
+}
+
+.library-sort {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  color: var(--text-quiet);
+  font-size: 1rem;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.library-sort .field {
+  width: 14rem;
+  min-height: 3.5rem;
+  padding: 0 1rem;
+  font-size: 1rem;
+}
+
+.library-summary,
+.addgame__summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin: 0.9rem 0 0.2rem;
+  color: var(--text-quiet);
+  font-size: 1rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.library-summary strong,
+.addgame__summary strong {
+  color: var(--text);
+  font-weight: 900;
+}
+
+.library-summary + .grid {
+  margin-top: 0.7rem;
+}
+
+.addgame__searchrow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.75rem;
+  max-width: 54rem;
+}
+
+.addgame__search {
+  width: 100%;
+  max-width: none;
+}
+
+.addgame__keyboard-toggle {
+  white-space: nowrap;
+  min-height: var(--touch-min);
+}
+
+.addgame__keyboard {
+  width: fit-content;
+  max-width: 100%;
+  padding: 0.8rem 1rem;
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  border-radius: var(--radius-card);
+  background: color-mix(in srgb, var(--accent-soft) 45%, var(--surface));
+}
+
+.addgame__keyboard[hidden] {
+  display: none;
+}
+
+.addgame__keyboard .keys {
+  gap: 0.35rem;
+}
+
+.addgame__keyboard .keys__row {
+  gap: 0.35rem;
+}
+
+.addgame__keyboard .key {
+  width: 3.7rem;
+  height: 2.8rem;
+  border-radius: 0.75rem;
+  font-size: 1.1rem;
+}
+
+.addgame__keyboard .key--wide {
+  width: auto;
+  padding: 0 1rem;
+}
+
+.addgame__filters {
+  gap: 0.65rem;
+}
+
+.addgame__item {
+  border: 1px solid color-mix(in srgb, var(--text-quiet) 10%, transparent);
+  transition:
+    transform var(--fast) var(--ease),
+    border-color var(--fast) var(--ease),
+    box-shadow var(--fast) var(--ease);
+}
+
+.addgame__item:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 0.15rem color-mix(in srgb, var(--accent) 28%, transparent), var(--shadow);
+}
+
+.addgame__summary {
+  justify-content: flex-start;
+}
+
+.detail__library-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.8rem 1rem;
+  padding-top: 0.85rem;
+  border-top: 1px solid color-mix(in srgb, var(--text-quiet) 20%, transparent);
+}
+
+.detail__library-label {
+  color: var(--text-quiet);
+  font-size: 1rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.remove-status {
+  max-width: 60rem;
+}
+
+@media (max-width: 700px) {
+  .library-toolbar {
+    align-items: stretch;
+  }
+
+  .library-toolbar .chips {
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    padding: 0.3rem;
+  }
+
+  .library-sort {
+    justify-content: space-between;
+  }
+
+  .library-sort .field {
+    flex: 1;
+    width: auto;
+  }
+
+  .addgame__searchrow {
+    grid-template-columns: 1fr;
+  }
+
+  .addgame__keyboard-toggle {
+    justify-self: start;
+  }
+
+  .library-summary,
+  .addgame__summary {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 0.2rem;
+  }
+}
