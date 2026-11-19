@@ -18,6 +18,16 @@ being online still does.
 
 Cloud is only for rented cloud gaming services.
 
+My Library is a cover-led collection, rather than the full catalogue. Its filters
+show how many games are in each view, and the collection can be sorted by last
+played, name, date added or total playtime. The grid adapts to the available
+screen width while keeping the artwork large enough to scan from the sofa.
+
+**Add games** keeps the controller keyboard available but collapsed until it is
+needed. A physical or touch keyboard can be used directly in the search field.
+The filter counts update with the search, and adding a game returns focus to the
+next result instead of sending the player back to the top of the page.
+
 ## The page of a game, before it starts
 
 Opening a game shows, before anything starts: time played, when it was last

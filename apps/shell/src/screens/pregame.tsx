@@ -341,17 +341,20 @@ export function GameDetail({ gameId, onToggleFavourite, ...ctx }: Ctx & { gameId
               <Heart />
               {fav ? "Favourite" : "Add to favourites"}
             </button>
+          </div>
+          <div className="detail__library-actions">
+            <span className="detail__library-label">My Library</span>
             {ctx.library.some((g) => g.id === game.id) ? (
               <button className="pill" data-focus data-fid="library:remove" disabled={localDownload} onClick={() => ctx.removeGame(game.id)}>
                 {localDownload ? "Steam is busy on this Ally" : "Remove from My Library"}
               </button>
             ) : (
-              <button className="pill pill--primary" data-focus data-fid="library:add" onClick={() => void ctx.addToLibrary(game.id).then(() => ctx.notify(`${game.title} was added to My Library.`)).catch((e) => ctx.notify(typeof e === "string" ? e : "The game could not be added."))}>
+              <button className="pill pill--primary" data-focus data-fid="library:add" onClick={() => void ctx.addToLibrary(game.id).then(() => ctx.notify(game.title + " was added to My Library.")).catch((e) => ctx.notify(typeof e === "string" ? e : "The game could not be added."))}>
                 Add to My Library
               </button>
             )}
-            {localDownload && ctx.library.some((g) => g.id === game.id) && <p className="detail__room">Finish or cancel the Steam install or update before removing this game from My Library.</p>}
           </div>
+          {localDownload && ctx.library.some((g) => g.id === game.id) && <p className="detail__room">Finish or cancel the Steam install or update before removing this game from My Library.</p>}
           {offersHere && room !== null && <p className="detail__room">{size(room)} free on this Ally. Steam does the downloading; CarlaOS shows how far it is.</p>}
         </div>
       </article>

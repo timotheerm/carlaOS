@@ -127,54 +127,91 @@ const FILTERS = [
   { id: "fav", label: "Favourites" },
 ] as const;
 
+type LibrarySort = "recent" | "name" | "added" | "played";
+
 export function Games(ctx: Ctx) {
   const [filter, setFilter] = useState<(typeof FILTERS)[number]["id"]>("all");
-  const absent = ctx.library.filter((g) => g.places.length === 0);
-  const list = ctx.library
-    .filter((g) =>
-      filter === "local"
-        ? g.places.includes("local")
-        : filter === "stream"
-          ? g.places.some((p) => p !== "local" && p !== "cloud")
-          : filter === "cloud"
-            ? g.places.includes("cloud")
-            : filter === "absent"
-              ? g.places.length === 0
-              : filter === "fav"
-                ? ctx.favourites.has(g.id)
-                : true,
-    )
-    .sort((a, b) => a.title.localeCompare(b.title));
+  const [sort, setSort] = useState<LibrarySort>("recent");
+  const counts = {
+    all: ctx.library.length,
+    local: countOn(ctx.library, "local"),
+    stream: ctx.library.filter((g) => g.places.some((p) => p !== "local" && p !== "cloud")).length,
+    cloud: countOn(ctx.library, "cloud"),
+    absent: ctx.library.filter((g) => g.places.length === 0).length,
+    fav: ctx.library.filter((g) => ctx.favourites.has(g.id)).length,
+  };
+  const filtered = ctx.library.filter((g) =>
+    filter === "local"
+      ? g.places.includes("local")
+      : filter === "stream"
+        ? g.places.some((p) => p !== "local" && p !== "cloud")
+        : filter === "cloud"
+          ? g.places.includes("cloud")
+          : filter === "absent"
+            ? g.places.length === 0
+            : filter === "fav"
+              ? ctx.favourites.has(g.id)
+              : true,
+  );
+  const list = [...filtered].sort((a, b) => {
+    if (sort === "name") return a.title.localeCompare(b.title);
+    if (sort === "added") return b.added.localeCompare(a.added) || a.title.localeCompare(b.title);
+    if (sort === "played") return b.playtimeMinutes - a.playtimeMinutes || a.title.localeCompare(b.title);
+    return (b.lastPlayed ?? "").localeCompare(a.lastPlayed ?? "") || b.added.localeCompare(a.added) || a.title.localeCompare(b.title);
+  });
 
   return (
     <>
       <div className="library-heading">
         <div>
           <h1>My Library</h1>
-          <p>Your selected games, wherever they are.</p>
+          <p>{ctx.library.length} {ctx.library.length === 1 ? "game" : "games"} in your collection · {counts.local} on this Ally · {counts.stream} on linked desktops</p>
         </div>
         <button className="pill pill--primary" data-focus data-autofocus data-fid="library:add" onClick={ctx.openAddGames}>Add games</button>
       </div>
-      <div className="chips">
-        {FILTERS.map((f, i) => (
-          <button
-            key={f.id}
-            className={f.id === filter ? "chip chip--on" : "chip"}
+      <div className="library-toolbar">
+        <div className="chips" role="group" aria-label="Filter My Library">
+          {FILTERS.map((f, i) => (
+            <button
+              key={f.id}
+              className={f.id === filter ? "chip chip--on" : "chip"}
+              data-focus
+              data-autofocus={i === 0 ? "" : undefined}
+              data-fid={"filter:" + f.id}
+              aria-pressed={f.id === filter}
+              onClick={() => setFilter(f.id)}
+            >
+              {f.label}
+              <span className="chip__count">{counts[f.id]}</span>
+            </button>
+          ))}
+        </div>
+        <label className="library-sort">
+          <span>Sort by</span>
+          <select
+            className="field"
             data-focus
-            data-autofocus={i === 0 ? "" : undefined}
-            data-fid={`filter:${f.id}`}
-            onClick={() => setFilter(f.id)}
+            data-fid="library:sort"
+            aria-label="Sort games"
+            value={sort}
+            onChange={(e) => setSort(e.target.value as LibrarySort)}
           >
-            {f.label}
-            {f.id === "absent" && absent.length > 0 ? ` · ${absent.length}` : ""}
-          </button>
-        ))}
+            <option value="recent">Recently played</option>
+            <option value="name">Name</option>
+            <option value="added">Recently added</option>
+            <option value="played">Most played</option>
+          </select>
+        </label>
+      </div>
+      <div className="library-summary" aria-live="polite">
+        <span>Showing <strong>{list.length}</strong> of {ctx.library.length} games</span>
+        {filter !== "all" && <span>{FILTERS.find((f) => f.id === filter)?.label}</span>}
       </div>
       {list.length ? (
         <Grid>{cards(list, ctx)}</Grid>
       ) : (
         <div className="library-empty library-empty--small">
-          <p>{filter === "absent" ? "No selected games are waiting to be installed." : "No games in this view yet."}</p>
+          <p>{filter === "absent" ? "No selected games are waiting to be installed." : filter === "fav" ? "You have not marked any games as favourites yet." : "No games in this view yet."}</p>
           <button className="pill pill--primary" data-focus data-fid="library:add-empty" onClick={ctx.openAddGames}>Add games</button>
         </div>
       )}
