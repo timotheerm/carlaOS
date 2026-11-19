@@ -191,6 +191,25 @@ pub fn library_list(library: State<'_, Library>) -> Result<Vec<GameView>, String
 }
 
 #[tauri::command(async)]
+pub fn library_personal_list(library: State<'_, Library>) -> Result<Vec<GameView>, String> {
+    library.store().list_personal()
+}
+
+#[tauri::command(async)]
+pub fn library_personal_add(library: State<'_, Library>, id: String) -> Result<(), String> {
+    library.store().add_to_my_library(&id, now())
+}
+
+#[tauri::command(async)]
+pub fn library_personal_remove(library: State<'_, Library>, id: String) -> Result<(), String> {
+    let installed_from_steam = library.store().installed_from_local_steam(&id)?;
+    if installed_from_steam {
+        return Err("This game is installed on the Ally. Uninstall it from My Library to remove it.".to_string());
+    }
+    library.store().remove_from_my_library(&id)
+}
+
+#[tauri::command(async)]
 pub fn library_set_favourite(library: State<'_, Library>, id: String, favourite: bool) -> Result<(), String> {
     library.store().set_favourite(&id, favourite)
 }

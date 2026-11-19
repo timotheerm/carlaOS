@@ -299,7 +299,7 @@ All threads are detached `std::thread::spawn` loops that run until the process e
 | `savesync::all` fan-out | per call | One thread per desktop to `reach`, then copies happen one after another | status then saves endpoints | `BUSY` (held by caller thread) |
 | `installs::fetch_covers` thread | per scan | Fetch up to 800 Steam covers for games not installed anywhere; stops after 8 misses in a row; emits `library://changed` every 12 | Steam public store (`meta::cover`) | `BUSY` atomic, `store` briefly |
 | `autoart::run` thread | per scan / setting change | Look up covers/hero art for games without any (max 400 per run, retries after `TRY_AGAIN_AFTER`); waits in 20 s steps while a game runs; gives up after 3 unreachable | public art sources (+ SteamGridDB with key) | `BUSY` atomic, `active` (read), `store` briefly |
-| `storage_uninstall` thread | 2 s x 90 | Wait for Steam to finish an uninstall (the user answers in Steam), then rescan | none | `store` (via scan) |
+| `uninstall_local_steam` thread | 2 s x 90 | Shared by Storage uninstall and Remove from My Library. Wait for Steam's confirmation; when the manifest disappears, optionally remove the personal membership and rescan. A cancelled prompt leaves membership intact | none | `UNINSTALLING` (per-game duplicate guard), `store` (via membership and scan) |
 
 Network summary: the page makes no network calls (CSP). Rust talks to (a) desktops over the signed link
 (`carla_core::link::client`: HTTP to the companion on `PORT`, addresses may be LAN or Tailscale), (b) GitHub
@@ -417,7 +417,7 @@ re-lock: `quick.rs::state` (`match locked(active).as_ref()` clones fields), `qui
 
 ---
 
-## 7. Command table (all 97 `#[tauri::command]`)
+## 7. Command table (all 101 `#[tauri::command]`)
 
 Legend. **Mode**: `async` = `#[tauri::command(async)]` (runs on Tauri's async runtime thread pool, safe for
 blocking work); `sync` = plain `#[tauri::command]` (Tauri 2 runs these on the **main thread**; keep them fast).
@@ -449,7 +449,10 @@ Tauri 2 docs for `#[tauri::command]` or by logging `std::thread::current().name(
 | Command | Module | Mode | Admin | What it does / resources |
 | --- | --- | --- | --- | --- |
 | `library_scan` | library | async | - | Full refresh (4.1). One at a time (`SCANNING`); a concurrent call returns the catalogue as it is. Reads disks, Steam files; spawns cover/art threads. Page gives up after 120 s |
-| `library_list` | library | async | - | `store.list_all()` |
+| `library_list` | library | async | - | Full catalogue: `store.list_all()` |
+| `library_personal_list` | library | async | - | My Library: `store.list_personal()` (explicit Ally membership + local Steam installs) |
+| `library_personal_add` | library | async | - | Add a known catalogue game to this Ally's `library_entries` |
+| `library_personal_remove` | library | async | - | Remove a non-local-Steam selection; refuses while a local Steam install exists |
 | `library_set_favourite` | library | async | - | `store.set_favourite` |
 | `library_session` | library | async | - | Current `SessionView` or null (`active`) |
 | `library_end_session` | library | async | - | Sets `active.stop = true` (the follow thread then ends the session; stream process is killed) |
@@ -528,7 +531,8 @@ Tauri 2 docs for `#[tauri::command]` or by logging `std::thread::current().name(
 | `installs_list` | installs | sync | - | Last seen downloads |
 | `installs_room` | installs | async | - | Free bytes on the roomiest Steam disk |
 | `storage_overview` | installs | async | **-** (the page gates it, Rust does not) | Disks and per-game footprints. Note: no `require()` here |
-| `storage_uninstall` | installs | async | require | Ask Steam to uninstall; background thread rescans afterwards |
+| `storage_uninstall` | installs | async | require | Ask Steam to uninstall, first retaining the title in My Library so it can be reinstalled; background thread rescans afterwards |
+| `installs_remove_from_my_library` | installs | async | require | Ask Steam to uninstall a local Steam game; remove its My Library entry only after the Steam manifest disappears. Cancelling Steam's confirmation keeps both install and membership |
 | `update_check` | updates | async | - | GitHub: newer interface; also the desktop host installed on this machine |
 | `update_install` | updates | async | require | Download + run installers (host first, then Ally); the Ally installer ends this program via `app.exit(0)`; emits `update-progress` |
 | `system_state` | system | async | - | Sound, brightness, battery, Wi-Fi |

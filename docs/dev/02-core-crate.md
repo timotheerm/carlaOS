@@ -465,8 +465,14 @@ behaviour:
   way has `added = 0` until first installed somewhere.
 * **`add_manual` / `remove_manual` / `add_cloud`** — games added by hand; the id is stable for a program
   so re-adding updates; `remove_manual` only accepts ids starting `manual:` or `cloud:` (else "Only games added by hand can be removed here."). A manual game that a *desktop* lists is stored as an install of that desktop's place with source `manual`; `GameView.manual` is `false` for it (see test `a_game_added_by_hand_on_a_desktop_is_streamable_but_not_removable_here`), so the UI offers no removal on the Ally and it disappears at the next sync when the desktop drops it.
-* **`list()` / `list_all()`** — `GameView`s; `list` hides titles with no install, `list_all` includes
-  titles only offered somewhere. Playtime = `SUM(ended - started - asleep)` over finished sessions.
+* **`list()` / `list_all()` / `list_personal()`** — `GameView`s; `list` hides titles with no install,
+  `list_all` includes titles only offered somewhere, and `list_personal` returns this Ally's curated My Library:
+  games in `library_entries` plus every Steam game installed locally on this Ally. Desktop installs, uninstalled
+  Steam offers, Epic/GOG games, emulated games and other catalogue entries need an explicit membership row.
+  Playtime = `SUM(ended - started - asleep)` over finished sessions.
+* **Personal membership:** `add_to_my_library(game_id, added)` inserts once, `remove_from_my_library(game_id)`
+  removes only the Ally-side selection, and `installed_from_local_steam(game_id)` checks whether removal requires
+  the Steam uninstall path. Membership is not an install and is independent of the game's launch places.
 * **Sessions:** `start_session`, `end_session`, `session_slept`, `close_dangling_sessions` (sessions cut short
   count as no time), `sessions(game_id)`.
 * **Pictures:** `set_cover_if_none`, `set_art_if_none`, `set_own_art` (wins over store art and survives a

@@ -6,7 +6,7 @@ import { playtime } from "./parts";
 
 export const SECTIONS = [
   { id: "home", label: "Home" },
-  { id: "games", label: "My Games" },
+  { id: "games", label: "My Library" },
   { id: "desktops", label: "My Desktops" },
   { id: "cloud", label: "Cloud" },
   { id: "settings", label: "Settings" },

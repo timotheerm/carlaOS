@@ -12,8 +12,10 @@ every linked desktop. Nothing needs setting up and no account is asked for.
 | GOG | The registry key each GOG game writes | The game's own program, directly |
 
 Add-ons, half-finished installs and games whose folder or program has gone are
-left out. A game on both the Ally and a desktop is one card with both badges,
-as with Steam.
+left out. This is the catalogue discovery layer, not the player's My Library:
+only Steam games installed locally on the Ally are included automatically.
+Epic and GOG games, like desktop games, must be selected through **My Library,
+Add games** before they appear in the player's collection.
 
 Not included: Game Pass and Microsoft Store games (they start differently and
 come later), and achievements for Epic and GOG, which those stores keep only on
@@ -26,10 +28,11 @@ have no cover picture yet; they show the coloured card with their name.
 
 Press **Y** on the controller (or `/` on a keyboard) anywhere in CarlaOS.
 Letters are chosen with the controller; a keyboard or the Windows touch
-keyboard types straight into the field. Results appear beside the letters as
-you type. Every word typed has to begin a word of the name or of the store, so
-"ha" finds "Neon Harbor" and "gog" lists the GOG games. Accents and
-punctuation do not matter. Going into a game and back keeps what was typed.
+keyboard types straight into the field. Search shows the games in My Library.
+To find something outside it, open **My Library, Add games**, where the full
+catalogue can be filtered by Ally, desktop or installation state. Every word
+typed has to begin a word of the name or of the store; accents and punctuation
+do not matter. Going into a game and back keeps what was typed.
 
 ## Not tried on real machines yet
 

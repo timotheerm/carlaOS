@@ -5,8 +5,8 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
-use std::time::Duration;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use carla_core::library::downloads::{self, Download, Phase, Started};
 use carla_core::library::owned::{self, App};
@@ -278,6 +278,52 @@ pub fn watch(app: AppHandle, library: Library) {
     });
 }
 
+/// Games waiting for Steam's own uninstall confirmation. Prevents duplicate prompts.
+static UNINSTALLING: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+
+fn unix_now() -> i64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
+}
+
+/// Ask Steam to uninstall a local game, then update catalogue membership only
+/// after the Steam manifest says it is gone. A cancelled prompt changes nothing.
+fn uninstall_local_steam(
+    app: AppHandle,
+    library: Library,
+    root: PathBuf,
+    appid: String,
+    game_id: String,
+    remove_from_library: bool,
+) -> Result<(), String> {
+    let ongoing = UNINSTALLING.get_or_init(|| Mutex::new(HashSet::new()));
+    if !locked(ongoing).insert(game_id.clone()) {
+        return Err("Steam is already waiting for confirmation for this game.".to_string());
+    }
+    if let Err(problem) = downloads::uninstall_here(&root, &appid) {
+        locked(ongoing).remove(&game_id);
+        return Err(problem);
+    }
+    std::thread::spawn(move || {
+        // Long enough for someone to read Steam's question and answer it.
+        for _ in 0..90 {
+            std::thread::sleep(Duration::from_secs(2));
+            if !downloads::still_installed(&root, &appid) {
+                if remove_from_library {
+                    let _ = library.store().remove_from_my_library(&game_id);
+                }
+                if library.scan(&app).is_ok() {
+                    let _ = app.emit(CHANGED_EVENT, ());
+                }
+                locked(UNINSTALLING.get_or_init(|| Mutex::new(HashSet::new()))).remove(&game_id);
+                return;
+            }
+        }
+        // If Steam's prompt was cancelled, the game and its library entry stay.
+        locked(UNINSTALLING.get_or_init(|| Mutex::new(HashSet::new()))).remove(&game_id);
+    });
+    Ok(())
+}
+
 /// One installed game on the storage page.
 #[derive(Debug, Clone, Serialize)]
 pub struct StoredGame {
@@ -309,8 +355,29 @@ pub fn storage_overview(library: State<'_, Library>) -> Result<Storage, String> 
     Ok(Storage { disks: downloads::disks(&root), games })
 }
 
-/// Ask Steam to uninstall a game from this Ally. Steam asks for a yes in its
-/// own window; once the game is gone, the library is read again.
+/// Remove a locally installed Steam game from My Library. Its Steam
+/// installation is removed only after the player confirms in Steam.
+#[tauri::command(async)]
+pub fn installs_remove_from_my_library(
+    app: AppHandle,
+    admin: State<'_, crate::admin::Admin>,
+    library: State<'_, Library>,
+    game_id: String,
+) -> Result<(), String> {
+    admin.require()?;
+    let install = library.store().install(&game_id, LOCAL)?;
+    if install.source != "steam" || game_id.strip_prefix("steam:") != Some(install.source_id.as_str()) {
+        return Err("Only a locally installed Steam game can be uninstalled from My Library.".to_string());
+    }
+    if locked(&library.0.active).as_ref().is_some_and(|a| a.view.game_id == game_id) {
+        return Err("That game is running. Close it first.".to_string());
+    }
+    let root = steam_root(&library).ok_or("Steam is not installed on this Ally.")?;
+    uninstall_local_steam(app, library.inner().clone(), root, install.source_id, game_id, true)
+}
+
+/// Uninstall from Storage but retain the game's personal-library entry, so it
+/// can be installed again later.
 #[tauri::command(async)]
 pub fn storage_uninstall(app: AppHandle, admin: State<'_, crate::admin::Admin>, library: State<'_, Library>, game_id: String) -> Result<(), String> {
     admin.require()?;
@@ -319,19 +386,6 @@ pub fn storage_uninstall(app: AppHandle, admin: State<'_, crate::admin::Admin>, 
         return Err("That game is running. Close it first.".to_string());
     }
     let root = steam_root(&library).ok_or("Steam is not installed on this Ally.")?;
-    downloads::uninstall_here(&root, &appid)?;
-    let library = library.inner().clone();
-    std::thread::spawn(move || {
-        // Long enough for someone to read Steam's question and answer it.
-        for _ in 0..90 {
-            std::thread::sleep(Duration::from_secs(2));
-            if !downloads::still_installed(&root, &appid) {
-                if library.scan(&app).is_ok() {
-                    let _ = app.emit(CHANGED_EVENT, ());
-                }
-                return;
-            }
-        }
-    });
-    Ok(())
+    library.store().add_to_my_library(&game_id, unix_now())?;
+    uninstall_local_steam(app, library.inner().clone(), root, appid, game_id, false)
 }
