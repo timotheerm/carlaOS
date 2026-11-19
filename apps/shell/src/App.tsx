@@ -9,6 +9,8 @@ import { cleanup } from "./cleanup/store";
 import { Cleanup, type CleanupView } from "./screens/cleanup";
 import { LinkDesktops } from "./screens/link";
 import { Manage } from "./screens/manage";
+import { AddGames } from "./screens/add-games";
+import { RemoveGame } from "./screens/remove-game";
 import { Playing } from "./screens/playing";
 import { SideMenu } from "./screens/sidemenu";
 import { Search } from "./screens/search";
@@ -26,8 +28,8 @@ import type { Backdrop } from "./data/types";
 import { installSounds, play as cue, setSounds, soundsOn } from "./ui/sound";
 import { Splash } from "./ui/splash";
 
-type Page = { kind: "game"; id: string } | { kind: "host"; id: string } | { kind: "cleanup"; id: CleanupView }
-  | { kind: "manage"; id: "home" } | { kind: "desktops"; id: "home" } | { kind: "search"; id: "home" }
+type Page = { kind: "game"; id: string } | { kind: "host"; id: string } | { kind: "remove"; id: string } | { kind: "cleanup"; id: CleanupView }
+  | { kind: "manage"; id: "home" } | { kind: "add-games"; id: "home" } | { kind: "desktops"; id: "home" } | { kind: "search"; id: "home" }
   | { kind: "updates"; id: "home" } | { kind: "startup"; id: "home" } | { kind: "crash"; id: "home" } | { kind: "log"; id: "home" } | { kind: "storage"; id: "home" } | { kind: "downloads"; id: "home" };
 type Theme = "light" | "dark";
 
@@ -58,9 +60,10 @@ export function App() {
     const saved = load<Backdrop>(BACKDROP_KEY, "full");
     return BACKDROPS.includes(saved) ? saved : "full";
   });
-  const { games: everything, hosts, session, scanning, downloads } = useLibrary();
-  // What can be played now. The rest of the library is only offered for installing.
-  const games = useMemo(() => everything.filter((g) => g.places.length > 0), [everything]);
+  const { games: everything, myLibrary, hosts, session, scanning, downloads } = useLibrary();
+  // The complete catalogue is retained for selection and for sessions adopted from outside CarlaOS.
+  const cataloguePlayable = useMemo(() => everything.filter((g) => g.places.length > 0), [everything]);
+  const games = useMemo(() => myLibrary.filter((g) => g.places.length > 0), [myLibrary]);
   const favourites = useMemo(() => new Set(everything.filter((g) => g.favourite).map((g) => g.id)), [everything]);
   const [toast, setToast] = useState<string | null>(null);
   // The side menu is over the library and takes every press until it closes.
@@ -222,7 +225,8 @@ export function App() {
 
   const ctx: Ctx = {
     games,
-    library: everything,
+    library: myLibrary,
+    catalogue: everything,
     downloads,
     install: (gameId, place) => {
       void library.install(gameId, place).then(
@@ -248,6 +252,10 @@ export function App() {
       void library.openCloud(service, name).catch((e) => setToast(message(e)));
     },
     openDownloads: () => push({ kind: "downloads", id: "home" }),
+    addToLibrary: (id) => library.addToMyLibrary(id),
+    openAddGames: () => push({ kind: "add-games", id: "home" }),
+    openManage: () => push({ kind: "manage", id: "home" }),
+    removeGame: (id) => push({ kind: "remove", id }),
     refreshHosts: () => {
       setToast("Checking…");
       void library.refreshHosts().catch((e) => setToast(message(e)));
@@ -257,8 +265,15 @@ export function App() {
   let page;
   if (top?.kind === "game") page = <GameDetail {...ctx} games={everything} gameId={top.id} onToggleFavourite={toggleFavourite} />;
   else if (top?.kind === "host") page = <HostView {...ctx} hostId={top.id} />;
-  else if (top?.kind === "search") page = <Search {...ctx} games={everything} query={query} setQuery={setQuery} />;
-  else if (top?.kind === "manage") page = <Manage games={games} notify={setToast} />;
+  else if (top?.kind === "remove") {
+    const game = myLibrary.find((g) => g.id === top.id);
+    page = game
+      ? <RemoveGame game={game} onDone={() => go("games")} notify={setToast} />
+      : <Games {...ctx} />;
+  }
+  else if (top?.kind === "search") page = <Search {...ctx} query={query} setQuery={setQuery} />;
+  else if (top?.kind === "add-games") page = <AddGames {...ctx} />;
+  else if (top?.kind === "manage") page = <Manage games={cataloguePlayable} notify={setToast} />;
   else if (top?.kind === "desktops") page = <LinkDesktops hosts={hosts} notify={setToast} />;
   else if (top?.kind === "updates") page = <Updates hosts={hosts} notify={setToast} refreshHosts={() => void library.refreshHosts().catch(() => undefined)} />;
   else if (top?.kind === "startup") page = <Startup notify={setToast} />;
@@ -305,13 +320,13 @@ export function App() {
   if (session) {
     return (
       <div className="shell shell--playing">
-        <Ambient games={games} fixed={games.find((g) => g.id === session.gameId) ?? null} backdrop={backdrop} />
+        <Ambient games={cataloguePlayable} fixed={cataloguePlayable.find((g) => g.id === session.gameId) ?? null} backdrop={backdrop} />
         <main className="main" ref={main} key={pageKey}>
           <Playing
             session={session}
             onResume={() => void library.resume().catch((e) => setToast(message(e)))}
-            game={games.find((g) => g.id === session.gameId)}
-            from={streamFrom(games.find((g) => g.id === session.gameId)?.places ?? [], hosts)}
+            game={cataloguePlayable.find((g) => g.id === session.gameId)}
+            from={streamFrom(cataloguePlayable.find((g) => g.id === session.gameId)?.places ?? [], hosts)}
             onEnd={() => void library.endSession()}
           />
         </main>
@@ -326,7 +341,7 @@ export function App() {
 
   return (
     <div className="shell">
-      <Ambient games={everything} backdrop={backdrop} />
+      <Ambient games={myLibrary} backdrop={backdrop} />
       <TopBar section={section} onSelect={go} downloads={downloads} onDownloads={() => !stack.some((p) => p.kind === "downloads") && ctx.openDownloads()} />
       <main className="main" ref={main} key={pageKey}>
         {/* Section pages have no visible title: the top bar shows where you are. Screen readers still get one. */}

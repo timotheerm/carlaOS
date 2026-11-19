@@ -3,7 +3,7 @@
 import { Empty, GameCard, Grid } from "../ui/parts";
 import type { Ctx } from "./screens";
 
-const ROWS = ["ABCDEFGHIJ", "KLMNOPQRST", "UVWXYZ0123", "456789"];
+export const ROWS = ["ABCDEFGHIJ", "KLMNOPQRST", "UVWXYZ0123", "456789"];
 
 // "Pokémon" is found by "pokemon", and "Moss & Ember" by "moss ember".
 const plain = (text: string) =>
@@ -33,7 +33,7 @@ export function Search({
   setQuery,
   ...ctx
 }: Ctx & { query: string; setQuery: (update: (q: string) => string) => void }) {
-  const found = ctx.games
+  const found = ctx.library
     .filter((g) => matches(g.title, g.platform, query))
     .sort((a, b) => a.title.localeCompare(b.title));
   const type = (letter: string) => setQuery((q) => (q + letter).slice(0, 40));
@@ -100,7 +100,7 @@ export function Search({
       </div>
       {plain(query) === "" ? (
         <Empty>
-          Search looks through every game, on this Ally and on your desktops.
+          Search looks through the games you have added to My Library.
         </Empty>
       ) : found.length ? (
         <Grid>

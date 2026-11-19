@@ -10,7 +10,7 @@ import type { ArtChoice, ArtSearch, CheckFix, CheckReport, Console, ConsoleHint,
 import { crash, inTauri } from "../native";
 import { when } from "../ui/parts";
 
-type State = { games: Game[]; hosts: Host[]; session: Session | null; scanning: boolean; downloads: Download[] };
+type State = { games: Game[]; myLibrary: Game[]; hosts: Host[]; session: Session | null; scanning: boolean; downloads: Download[] };
 
 // What the Rust side sends for one game.
 type GameView = {
@@ -181,9 +181,17 @@ function previewDownloads(): Download[] {
   ];
 }
 
+const previewGames = sample();
 let state: State = inTauri
-  ? { games: [], hosts: [], session: null, scanning: false, downloads: [] }
-  : { games: sample(), hosts: sampleHosts, session: null, scanning: false, downloads: previewDownloads() };
+  ? { games: [], myLibrary: [], hosts: [], session: null, scanning: false, downloads: [] }
+  : {
+      games: previewGames,
+      myLibrary: previewGames.filter((g) => g.platform === "Steam" && g.places.includes("local")),
+      hosts: sampleHosts,
+      session: null,
+      scanning: false,
+      downloads: previewDownloads(),
+    };
 const listeners = new Set<() => void>();
 
 function set(patch: Partial<State>) {
@@ -195,7 +203,11 @@ export const message = (e: unknown) =>
   typeof e === "string" ? e : e instanceof Error ? e.message : "Something went wrong.";
 
 async function reload() {
-  set({ games: (await invoke<GameView[]>("library_list")).map(fromView) });
+  const [catalogue, personal] = await Promise.all([
+    invoke<GameView[]>("library_list"),
+    invoke<GameView[]>("library_personal_list"),
+  ]);
+  set({ games: catalogue.map(fromView), myLibrary: personal.map(fromView) });
 }
 
 let started = false;
@@ -544,6 +556,11 @@ export const library = {
               ? { ...g, places: [...g.places.filter((p) => p !== place), place].sort(near), installable: g.installable.filter((p) => p !== place), added: new Date().toISOString() }
               : g,
           ),
+          myLibrary: state.myLibrary.map((g) =>
+            g.id === gameId
+              ? { ...g, places: [...g.places.filter((p) => p !== place), place].sort(near), installable: g.installable.filter((p) => p !== place), added: new Date().toISOString() }
+              : g,
+          ),
         });
       }
     }, 600);
@@ -564,9 +581,9 @@ export const library = {
   /** Ask Steam to uninstall a game from this Ally. Steam asks before anything goes. */
   async uninstall(gameId: string) {
     if (inTauri) return invoke("storage_uninstall", { gameId });
-    setTimeout(() => {
-      set({ games: state.games.map((g) => (g.id === gameId ? { ...g, places: g.places.filter((p) => p !== "local"), installable: ["local", ...g.installable] } : g)) });
-    }, 1500);
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    const uninstall = (games: Game[]) => games.map((g) => (g.id === gameId ? { ...g, places: g.places.filter((p) => p !== "local"), installable: ["local", ...g.installable] } : g));
+    set({ games: uninstall(state.games), myLibrary: uninstall(state.myLibrary) });
   },
 
   /** Room for new games on this Ally, in bytes, when it is known. */
@@ -579,15 +596,17 @@ export const library = {
     if (!inTauri) return;
     set({ scanning: true });
     try {
-      // So long a look through the disks is not coming back: the spinner must not stay for ever.
-      set({ games: (await within(invoke<GameView[]>("library_scan"), 120_000)).map(fromView) });
+      // A scan updates the full catalogue; then refresh its separate personal view.
+      await within(invoke<GameView[]>("library_scan"), 120_000);
+      await reload();
     } finally {
       set({ scanning: false });
     }
   },
 
   async setFavourite(id: string, favourite: boolean) {
-    set({ games: state.games.map((g) => (g.id === id ? { ...g, favourite } : g)) });
+    const update = (games: Game[]) => games.map((g) => (g.id === id ? { ...g, favourite } : g));
+    set({ games: update(state.games), myLibrary: update(state.myLibrary) });
     if (inTauri) await invoke("library_set_favourite", { id, favourite });
     else localStorage.setItem(FAV_KEY, JSON.stringify(state.games.filter((g) => g.favourite).map((g) => g.id)));
   },
@@ -728,7 +747,10 @@ export const library = {
       manual: true,
       cover: game.cover ?? undefined,
     };
-    set({ games: [...state.games.filter((g) => g.id !== added.id), added] });
+    set({
+      games: [...state.games.filter((g) => g.id !== added.id), added],
+      myLibrary: state.myLibrary.map((g) => g.id === added.id ? added : g),
+    });
     return added.id;
   },
 
@@ -736,7 +758,43 @@ export const library = {
     if (inTauri) {
       await invoke("library_remove_manual", { id });
       await reload();
-    } else set({ games: state.games.filter((g) => g.id !== id) });
+    } else set({ games: state.games.filter((g) => g.id !== id), myLibrary: state.myLibrary.filter((g) => g.id !== id) });
+  },
+
+  /** Add a catalogue entry to the Ally's independent personal library. */
+  async addToMyLibrary(id: string) {
+    if (inTauri) {
+      await invoke("library_personal_add", { id });
+      await reload();
+      return;
+    }
+    const game = state.games.find((g) => g.id === id);
+    if (!game) throw "That game is no longer in the catalogue.";
+    if (!state.myLibrary.some((g) => g.id === id)) set({ myLibrary: [...state.myLibrary, game] });
+  },
+
+  /** Remove a selection that is not installed through Steam on this Ally. */
+  async removeFromMyLibrary(id: string) {
+    if (inTauri) {
+      await invoke("library_personal_remove", { id });
+      await reload();
+      return;
+    }
+    set({ myLibrary: state.myLibrary.filter((g) => g.id !== id) });
+  },
+
+  /** Ask Steam to uninstall a local game before removing its personal entry. */
+  async removeAndUninstallFromMyLibrary(id: string) {
+    if (inTauri) {
+      await invoke("installs_remove_from_my_library", { gameId: id });
+      await reload();
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    set({
+      games: state.games.map((g) => g.id === id ? { ...g, places: g.places.filter((p) => p !== "local"), installable: ["local", ...g.installable] } : g),
+      myLibrary: state.myLibrary.filter((g) => g.id !== id),
+    });
   },
 
   /** Achievements, milestones and saves of one game. */
@@ -755,7 +813,8 @@ export const library = {
     if (!inTauri) return state.games.find((g) => g.id === gameId)?.updates ?? [];
     const updates = await invoke<Waiting[]>("library_updates", { gameId });
     // The cards show it too, without waiting for the next look through the library.
-    set({ games: state.games.map((g) => (g.id === gameId ? { ...g, updates } : g)) });
+    const update = (games: Game[]) => games.map((g) => (g.id === gameId ? { ...g, updates } : g));
+    set({ games: update(state.games), myLibrary: update(state.myLibrary) });
     return updates;
   },
 
@@ -839,7 +898,8 @@ export const library = {
       return;
     }
     const wide = choice.candidate.shape === "wide";
-    set({ games: state.games.map((g) => (g.id === gameId ? { ...g, ownArt: true, ...(wide ? { hero: choice.preview } : { cover: choice.preview }) } : g)) });
+    const update = (games: Game[]) => games.map((g) => (g.id === gameId ? { ...g, ownArt: true, ...(wide ? { hero: choice.preview } : { cover: choice.preview }) } : g));
+    set({ games: update(state.games), myLibrary: update(state.myLibrary) });
   },
 
   /** Use a picture that is on the Ally. Resolves with whether one was chosen. */
@@ -855,7 +915,10 @@ export const library = {
     if (inTauri) {
       await invoke("art_clear", { gameId });
       await reload();
-    } else set({ games: state.games.map((g) => (g.id === gameId ? { ...g, ownArt: false, cover: undefined, hero: undefined } : g)) });
+    } else {
+      const update = (games: Game[]) => games.map((g) => (g.id === gameId ? { ...g, ownArt: false, cover: undefined, hero: undefined } : g));
+      set({ games: update(state.games), myLibrary: update(state.myLibrary) });
+    }
   },
 
   /** Whether pictures are looked for by themselves. */

@@ -14,7 +14,7 @@ Related chapters: `docs/dev/03-desktop-host.md` documents the desktop host's dat
 
 | Where | What | Owner (code) | Section |
 | --- | --- | --- | --- |
-| `%LOCALAPPDATA%\dev.carlaos.shell\library.sqlite` (+ `-wal`, `-shm`) | The catalogue: games, installs, play sessions, consoles, linked desktops, save-sync state, settings | `crates/core/src/library/store.rs`, opened by `apps/shell/src-tauri/src/library.rs` | 2 to 5 |
+| `%LOCALAPPDATA%\dev.carlaos.shell\library.sqlite` (+ `-wal`, `-shm`) | The catalogue: games, installs, available titles, personal-library membership, play sessions, consoles, linked desktops, save-sync state, settings | `crates/core/src/library/store.rs`, opened by `apps/shell/src-tauri/src/library.rs` | 2 to 5 |
 | `%LOCALAPPDATA%\dev.carlaos.shell\art\...` | Pictures (covers, wide pictures) CarlaOS fetched or the administrator chose | `apps/shell/src-tauri/src/{art,autoart,details,hosts,installs,library}.rs` | 7.3 |
 | `...\saves\<game>\<timestamp>\` | Backups of a game's save folder | `crates/core/src/library/saves.rs`, called from `details.rs` and `savesync.rs` | 7.4 |
 | `...\admin.json` | The administrator PIN as salted, iterated SHA-256 | `crates/core/src/admin.rs` | 8.2 |
@@ -155,7 +155,7 @@ There is no `PRAGMA user_version` and no migration table.
 
 Relationships: a game exists without installs (shows only with `list_all` if it has an `available` row). Deleting a `games` row cascades to `installs` (foreign key `ON DELETE CASCADE`).
 
-Read by: `Store::list`/`list_all` (the interface), `artless` (automatic art), `save_*` methods, `own_art`.
+Read by: `Store::list`/`list_all`/`list_personal` (the interface), `artless` (automatic art), `save_*` methods, `own_art`.
 
 Written by:
 
@@ -320,6 +320,24 @@ Written by: `save_host` (link), `host_seen` (every successful poll; does not tou
 | `play_sessions_game` | `play_sessions (game_id)` |
 
 (plus the implicit primary-key and `UNIQUE` indexes). Listing is done with correlated subqueries per game; the library is small (hundreds to low thousands), so there is no pagination.
+
+### 3.12 `library_entries`: the Ally's personal My Library
+
+| Column | Type | Meaning |
+| --- | --- | --- |
+| `game_id` | TEXT PK, FK `games(id)` ON DELETE CASCADE | A game explicitly selected for this Ally's personal library |
+| `added` | INTEGER NOT NULL | Unix seconds when it was selected |
+
+This table is local to the Ally's catalogue. It does not represent a Steam account, a desktop library or a second game record. `Store::list_personal` returns rows selected here **plus every game with an install where `place = 'local'` and `source = 'steam'`**. Other installed games, remote games and uninstalled Steam offers are included only after `add_to_my_library`.
+
+Written by `add_to_my_library` (`INSERT OR IGNORE`, so repeat selection keeps its first timestamp) and `remove_from_my_library`. Deleting a game cascades to this table. There is deliberately no migration backfill: an existing catalogue starts with an empty membership table, while local Steam installs appear through the default rule.
+
+Two uninstall paths differ:
+
+- **Remove from My Library:** a local Steam install is passed to `installs_remove_from_my_library`; membership is deleted only after Steam's manifest shows the install is gone. Cancelling Steam's confirmation leaves the install and selection intact.
+- **Settings, Storage:** `storage_uninstall` first ensures a membership row exists, then asks Steam to uninstall. This frees local space while keeping the title selected and available to install again.
+
+Removing a desktop game from My Library deletes only this Ally's membership; it does not delete or uninstall anything on the desktop.
 
 ---
 

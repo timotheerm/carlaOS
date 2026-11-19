@@ -340,6 +340,15 @@ export function GameDetail({ gameId, onToggleFavourite, ...ctx }: Ctx & { gameId
               <Heart />
               {fav ? "Favourite" : "Add to favourites"}
             </button>
+            {ctx.library.some((g) => g.id === game.id) ? (
+              <button className="pill" data-focus data-fid="library:remove" onClick={() => ctx.removeGame(game.id)}>
+                Remove from My Library
+              </button>
+            ) : (
+              <button className="pill pill--primary" data-focus data-fid="library:add" onClick={() => void ctx.addToLibrary(game.id).then(() => ctx.notify(`${game.title} was added to My Library.`)).catch((e) => ctx.notify(typeof e === "string" ? e : "The game could not be added."))}>
+                Add to My Library
+              </button>
+            )}
           </div>
           {offersHere && room !== null && <p className="detail__room">{size(room)} free on this Ally. Steam does the downloading; CarlaOS shows how far it is.</p>}
         </div>

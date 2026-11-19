@@ -2,12 +2,15 @@
 
 ## What it does
 
-- The games of the Steam library that are not installed appear under
-  **My Games, Not installed**, and in search. Nothing has to be set up and no
-  account is asked for.
-- A game's page offers **Install on this Ally** and, for each linked desktop
-  that has the game in its library, **Install on HOME PC**. A game that
-  already streams from a desktop can also be installed on the Ally from there.
+- Steam games installed on this Ally appear in **My Library** automatically.
+- Steam games that are not installed, and games on linked desktops, appear in
+  **Add games** for the player to select. They do not enter My Library just
+  because Steam or a desktop knows about them.
+- Adding a game does not install it. Once selected, its page offers
+  **Install on this Ally** and, for each linked desktop that has the game in
+  its library, **Install on HOME PC**.
+- A game that already streams from a desktop can also be installed on the Ally
+  from its game page.
 - While Steam fetches it, the card and the page show how far it is, and Home
   has an **Installing now** row. When Steam has finished, the game becomes
   playable by itself.
@@ -62,15 +65,21 @@ it is updated.
 are meant to be shared with anything else that needs to know what Steam is
 fetching.
 
+Uninstalling a selected local Steam game from My Library is a separate
+action: My Library asks Steam to remove it and removes the selection only
+after the Steam install has disappeared. Cancelling Steam's own confirmation
+leaves the game in My Library. Non-Steam local games and desktop games are not
+uninstalled by this action.
+
 ## Making room: Settings, Storage
 
 Behind the administrator PIN. It shows how full each disk with a Steam library
 folder is, and the Steam games installed on the Ally, largest first, with
 when each was last played from CarlaOS. Pressing a game twice asks Steam to
 uninstall it (`steam://uninstall/<id>`); Steam then asks for a yes in its own
-window, so nothing is deleted without someone saying so. Once Steam has
-removed it, the game moves back to Not installed and can be installed again.
-A game that is running cannot be uninstalled.
+window, so nothing is deleted without someone saying so. The game remains in
+My Library under **Not installed** after Steam removes it, and can be installed
+again later. A game that is running cannot be uninstalled.
 
 ## Not tried on real machines yet
 
@@ -83,5 +92,6 @@ All of this is tested on made-up Steam files, not on a real Steam install:
 - the library can include games of every account that has signed in on that
   machine, and family-shared ones.
 
-Epic and GOG are not included yet: their launchers have no equivalent that
-needs no sign-in.
+Epic and GOG are not part of this Steam installation flow. Their existing
+discovery and launching remain separate; CarlaOS does not add their
+installation or uninstallation support here.

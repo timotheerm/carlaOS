@@ -6,10 +6,12 @@ import { StateLine, installState } from "../ui/install";
 import type { Backdrop } from "../data/types";
 
 export type Ctx = {
-  /** Games that can be played now, here or from a desktop. */
+  /** Personal-library games that can be played now, here or from a desktop. */
   games: Game[];
-  /** Those, and the games of the library that are not installed anywhere. */
+  /** Every game selected for this Ally's personal library, installed or not. */
   library: Game[];
+  /** The complete catalogue known to CarlaOS, used to select more games. */
+  catalogue: Game[];
   /** What the stores are fetching, here and on the desktops. */
   downloads: Download[];
   /** Ask the store to install a game in one place. */
@@ -29,6 +31,10 @@ export type Ctx = {
   openCloud: (service: string, name: string) => void;
   /** Open the page of everything that is being installed. */
   openDownloads: () => void;
+  addToLibrary: (id: string) => Promise<void>;
+  openAddGames: () => void;
+  openManage: () => void;
+  removeGame: (id: string) => void;
 };
 
 const byRecent = (a: Game, b: Game) => (b.lastPlayed ?? "").localeCompare(a.lastPlayed ?? "");
@@ -51,11 +57,15 @@ export function Home(ctx: Ctx) {
 
   if (ctx.games.length === 0 && fetched.length === 0) {
     return (
-      <Empty>
-        {ctx.library.length
-          ? "Nothing is installed yet. Your library is under My Games, then Not installed."
-          : "No games yet. Install some, or add them under Settings, then Manage games."}
-      </Empty>
+      <div className="library-empty">
+        <div className="library-empty__mark">C</div>
+        <h1>{ctx.library.length ? "Nothing ready to play yet" : "Your library starts here"}</h1>
+        <p>{ctx.library.length
+          ? "Install one of your selected games, or add games from a linked desktop."
+          : "Games installed on this Ally through Steam appear automatically. Add games from your desktops or choose Steam games to install later."}</p>
+        <button className="pill pill--primary" data-focus data-autofocus data-fid="home:add-games" onClick={ctx.openAddGames}>Add games</button>
+        {ctx.library.length === 0 && <button className="pill" data-focus data-fid="home:manage" onClick={ctx.openManage}>Add a game from this Ally</button>}
+      </div>
     );
   }
 
@@ -113,14 +123,14 @@ const FILTERS = [
   { id: "local", label: "On this Ally" },
   { id: "stream", label: "Streamed" },
   { id: "cloud", label: "Cloud" },
-  { id: "fav", label: "Favourites" },
   { id: "absent", label: "Not installed" },
+  { id: "fav", label: "Favourites" },
 ] as const;
 
 export function Games(ctx: Ctx) {
   const [filter, setFilter] = useState<(typeof FILTERS)[number]["id"]>("all");
   const absent = ctx.library.filter((g) => g.places.length === 0);
-  const list = (filter === "absent" ? absent : ctx.games)
+  const list = ctx.library
     .filter((g) =>
       filter === "local"
         ? g.places.includes("local")
@@ -128,14 +138,23 @@ export function Games(ctx: Ctx) {
           ? g.places.some((p) => p !== "local" && p !== "cloud")
           : filter === "cloud"
             ? g.places.includes("cloud")
-            : filter === "fav"
-            ? ctx.favourites.has(g.id)
-            : true,
+            : filter === "absent"
+              ? g.places.length === 0
+              : filter === "fav"
+                ? ctx.favourites.has(g.id)
+                : true,
     )
     .sort((a, b) => a.title.localeCompare(b.title));
 
   return (
     <>
+      <div className="library-heading">
+        <div>
+          <h1>My Library</h1>
+          <p>Your selected games, wherever they are.</p>
+        </div>
+        <button className="pill pill--primary" data-focus data-autofocus data-fid="library:add" onClick={ctx.openAddGames}>Add games</button>
+      </div>
       <div className="chips">
         {FILTERS.map((f, i) => (
           <button
@@ -154,7 +173,10 @@ export function Games(ctx: Ctx) {
       {list.length ? (
         <Grid>{cards(list, ctx)}</Grid>
       ) : (
-        <Empty>{filter === "absent" ? "Every game of your Steam library is installed, or Steam has not been opened here yet." : "Nothing here yet."}</Empty>
+        <div className="library-empty library-empty--small">
+          <p>{filter === "absent" ? "No selected games are waiting to be installed." : "No games in this view yet."}</p>
+          <button className="pill pill--primary" data-focus data-fid="library:add-empty" onClick={ctx.openAddGames}>Add games</button>
+        </div>
       )}
     </>
   );
@@ -247,7 +269,7 @@ export function Cloud({ services, ...ctx }: Ctx & { services: CloudService[] }) 
       {games.length > 0 ? (
         <Row title="Cloud games">{cards(games, ctx)}</Row>
       ) : (
-        <p className="lede">Cloud games can be added under Settings, Manage games, so they get a card of their own here and in My Games.</p>
+        <p className="lede">Add a cloud game from Settings, Manage games, then select it under Add Games in My Library.</p>
       )}
     </>
   );

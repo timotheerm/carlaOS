@@ -2,8 +2,10 @@
 
 ## Fewer tabs, badges instead
 
-The sections are Home, My Games, My Desktops, Cloud and Settings. Every game,
-whatever it is and wherever it came from, is under My Games. Each card says
+The sections are Home, My Library, My Desktops, Cloud and Settings. My
+Library contains the games selected for this Ally: local Steam installs are
+included automatically, while desktop games and other catalogue entries are
+added by choice. Add games never installs anything by itself. Each card says
 two things with small badges:
 
 - where the game is from (Steam, Standalone, Switch, Native port and so on);

@@ -74,7 +74,7 @@ There is no router. The app has **sections** (top-level tabs) and a **page stack
 
 ### 3.1 Sections
 
-`SECTIONS` in `ui/chrome.tsx`: `home` ("Home"), `games` ("My Games"), `desktops` ("My Desktops"), `cloud` ("Cloud"),
+`SECTIONS` in `ui/chrome.tsx`: `home` ("Home"), `games` ("My Library"), `desktops` ("My Desktops"), `cloud` ("Cloud"),
 `settings` ("Settings"). `section` state picks which list screen is the base. LB/RB (or Q/E) cycle through them with wrap-around
 (`go()`), and the top bar buttons select them (`data-fid="rail:<id>"`).
 
@@ -82,8 +82,8 @@ There is no router. The app has **sections** (top-level tabs) and a **page stack
 
 ```ts
 type Page =
-  | { kind: "game"; id: string } | { kind: "host"; id: string } | { kind: "cleanup"; id: CleanupView }
-  | { kind: "manage" | "desktops" | "search" | "updates" | "startup" | "crash" | "log" | "storage" | "downloads"; id: "home" };
+  | { kind: "game"; id: string } | { kind: "host"; id: string } | { kind: "remove"; id: string } | { kind: "cleanup"; id: CleanupView }
+  | { kind: "manage" | "add-games" | "desktops" | "search" | "updates" | "startup" | "crash" | "log" | "storage" | "downloads"; id: "home" };
 ```
 
 `stack: Page[]`. `top = stack[stack.length-1]`. Rendering is a long `if/else` chain choosing a page by `top?.kind`, falling back to the
@@ -91,10 +91,12 @@ section screen. Mapping:
 
 | Page kind | Component (file) | Opened from |
 | --- | --- | --- |
-| `game` | `GameDetail` (`screens/pregame.tsx`) | any `GameCard`/hero (`ctx.openGame`) |
+| `game` | `GameDetail` (`screens/pregame.tsx`) | any catalogue card/hero (`ctx.openGame`); can add/remove My Library membership |
 | `host` | `HostView` (`screens/screens.tsx`) | a `HostCard` (`ctx.openHost`) |
-| `search` | `Search` (`screens/search.tsx`) | Y / `/` (`action === "search"`) |
-| `manage` | `Manage` (`screens/manage.tsx`) | Settings, "Manage games" |
+| `remove` | `RemoveGame` (`screens/remove-game.tsx`) | Game details, "Remove from My Library"; local Steam uses PIN + Steam confirmation |
+| `search` | `Search` (`screens/search.tsx`) | Y / `/` (`action === "search"`); searches My Library |
+| `add-games` | `AddGames` (`screens/add-games.tsx`) | My Library, "Add games"; selects from the full catalogue without installing |
+| `manage` | `Manage` (`screens/manage.tsx`) | Settings, "Manage games"; registers standalone programs on this Ally |
 | `desktops` | `LinkDesktops` (`screens/link.tsx`) | Settings, "Desktops" |
 | `updates` | `Updates` (`screens/updates.tsx`) | Settings, "Updates" |
 | `startup` | `Startup` (`screens/startup.tsx`) | Settings, "Starting up" |
@@ -140,9 +142,11 @@ Stack operations:
 
 ### 3.5 The `Ctx` object
 
-Screens receive a `Ctx` (`screens/screens.tsx`) assembled in `App`: `games` (playable now = `places.length > 0`), `library` (all
-including not installed), `downloads`, `hosts`, `favourites` (Set), and callbacks `install`, `openGame`, `openHost`, `notify`, `play`,
-`wakeHost`, `openCloud`, `openDownloads`, `refreshHosts`. Callbacks wrap the store with cue sounds and error toasts. A new
+Screens receive a `Ctx` (`screens/screens.tsx`) assembled in `App`: `games` (playable personal-library games),
+`library` (the complete personal library, including not-installed titles), `catalogue` (all known games, for Add Games and details),
+`downloads`, `hosts`, `favourites` (Set), and callbacks including `addToLibrary`, `openAddGames`, `removeGame`,
+`install`, `openGame`, `openHost`, `notify`, `play`, `wakeHost`, `openCloud`, `openDownloads`, `openManage`,
+`refreshHosts`. Callbacks wrap the store with cue sounds and error toasts. A new
 cross-screen action is added here (recipe in section 14.3).
 
 ---
@@ -154,9 +158,10 @@ A module-level singleton, not React state. `useLibrary()` is `useSyncExternalSto
 ### 4.1 Shape and update model
 
 ```ts
-type State = { games: Game[]; hosts: Host[]; session: Session | null; scanning: boolean; downloads: Download[] };
-let state: State = inTauri ? { games: [], hosts: [], session: null, scanning: false, downloads: [] }
-                           : { games: sample(), hosts: sampleHosts, session: null, scanning: false, downloads: previewDownloads() };
+type State = { games: Game[]; myLibrary: Game[]; hosts: Host[]; session: Session | null; scanning: boolean; downloads: Download[] };
+const previewGames = sample();
+let state: State = inTauri ? { games: [], myLibrary: [], hosts: [], session: null, scanning: false, downloads: [] }
+                           : { games: previewGames, myLibrary: previewGames.filter(g => g.platform === "Steam" && g.places.includes("local")), hosts: sampleHosts, session: null, scanning: false, downloads: previewDownloads() };
 function set(patch) { state = { ...state, ...patch }; listeners.forEach(l => l()); }   // immutable replace + notify
 ```
 
@@ -180,8 +185,8 @@ In order:
    "recently played" refresh.
 2. `listen("library://downloads")`: `set({ downloads })`; then initial `installs_list`.
 3. `listen("library://changed")`: `reload()` (administrator changed the library from a desktop, covers arrived, scan finished in the background...).
-4. `library_session` (state at start; a session may already be running if the page reloads), `reload()` = `library_list`
-   ("show what we knew last time at once").
+4. `library_session` (state at start; a session may already be running if the page reloads), `reload()` = `library_list` plus
+   `library_personal_list` in parallel. It keeps the full catalogue and My Library as separate views of the same store.
 5. `hosts_list` (instant, from the database), then `refreshHosts()` (network, may take 10 s).
 6. A **30 s interval** (`HOSTS_EVERY`) that calls `refreshHosts()` only when `session === null`, there are hosts, `document.visibilityState === "visible"`
    and `document.hasFocus()` ("nothing is asked while a game is in front or the screen is off"). The interval is never cleared (app lifetime).
@@ -224,8 +229,10 @@ All methods start `if (inTauri) ... else <preview>`. Arguments are passed camelC
 | `sleepHost(id)` | `hosts_sleep` | marks asleep after 0.8 s |
 | `install(gameId, place)` | `installs_start` (resolves to `asked_store`) | animates a fake download for 13 s then adds the place |
 | `storage()` / `uninstall(gameId)` / `room()` | `storage_overview` / `storage_uninstall` / `installs_room` | fake disk + sizes |
-| `scan()` | `library_scan` (120 s guard, `scanning` flag) | no-op |
-| `setFavourite(id, fav)` | `library_set_favourite` (state updated optimistically first) | localStorage |
+| `scan()` | `library_scan` (120 s guard, `scanning` flag), then reload both catalogue and My Library | no-op |
+| `addToMyLibrary(id)` / `removeFromMyLibrary(id)` | `library_personal_add` / `library_personal_remove`, then reload | update selected list in memory |
+| `removeAndUninstallFromMyLibrary(id)` | `installs_remove_from_my_library` (Steam uninstall confirmation; admin PIN), then reload | simulated uninstall |
+| `setFavourite(id, fav)` | `library_set_favourite` (updates both catalogue and personal view optimistically first) | localStorage |
 | `launch(gameId, place)` | `library_launch` (sets `session` from the returned view) | fake waking/starting/running phases |
 | `openCloud(service, name)` | `cloud_open` | fake running session |
 | `inspectCloud(link)` / `addCloud(link, title)` | `cloud_inspect` / `cloud_add` (then reload) | URL pattern check for the four services |

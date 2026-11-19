@@ -90,6 +90,10 @@ CREATE TABLE IF NOT EXISTS settings (
     name  TEXT PRIMARY KEY,
     value BLOB NOT NULL
 );
+CREATE TABLE IF NOT EXISTS library_entries (
+    game_id TEXT PRIMARY KEY REFERENCES games(id) ON DELETE CASCADE,
+    added   INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS hosts (
     id        TEXT PRIMARY KEY,
     name      TEXT NOT NULL,
@@ -381,6 +385,33 @@ impl Store {
         Ok(())
     }
 
+    /// Add a catalogue game to this Ally's personal library. Membership is
+    /// independent of the places where the game is installed or offered.
+    pub fn add_to_my_library(&mut self, game_id: &str, added: i64) -> Result<()> {
+        let exists: bool = self.db.query_row("SELECT EXISTS(SELECT 1 FROM games WHERE id = ?1)", params![game_id], |r| r.get(0)).map_err(err)?;
+        if !exists {
+            return Err("That game is no longer in the catalogue.".to_string());
+        }
+        self.db.execute("INSERT OR IGNORE INTO library_entries (game_id, added) VALUES (?1, ?2)", params![game_id, added]).map_err(err)?;
+        Ok(())
+    }
+
+    /// Remove a personal-library selection. Callers handle a locally
+    /// installed Steam game separately because removing that entry uninstalls it.
+    pub fn remove_from_my_library(&mut self, game_id: &str) -> Result<()> {
+        self.db.execute("DELETE FROM library_entries WHERE game_id = ?1", params![game_id]).map_err(err)?;
+        Ok(())
+    }
+
+    /// Whether this game has an actual Steam install on this machine.
+    pub fn installed_from_local_steam(&self, game_id: &str) -> Result<bool> {
+        self.db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM installs WHERE game_id = ?1 AND place = ?2 AND source = 'steam')",
+            params![game_id, LOCAL],
+            |r| r.get(0),
+        ).map_err(err)
+    }
+
     pub fn set_favourite(&mut self, id: &str, favourite: bool) -> Result<()> {
         self.db.execute("UPDATE games SET favourite = ?2 WHERE id = ?1", params![id, favourite]).map_err(err)?;
         Ok(())
@@ -388,15 +419,21 @@ impl Store {
 
     /// Every game that is installed somewhere, by title.
     pub fn list(&self) -> Result<Vec<GameView>> {
-        self.listing(false)
+        self.listing(false, false)
     }
 
-    /// The same, and the games that could be installed somewhere.
+    /// The full catalogue of games installed somewhere or offered by a store.
     pub fn list_all(&self) -> Result<Vec<GameView>> {
-        self.listing(true)
+        self.listing(true, false)
     }
 
-    fn listing(&self, all: bool) -> Result<Vec<GameView>> {
+    /// The user's personal library: local Steam installs by default, plus
+    /// games explicitly selected on this Ally.
+    pub fn list_personal(&self) -> Result<Vec<GameView>> {
+        self.listing(false, true)
+    }
+
+    fn listing(&self, all: bool, personal: bool) -> Result<Vec<GameView>> {
         let mut games = self
             .db
             .prepare(
@@ -406,8 +443,15 @@ impl Store {
                         (SELECT MAX(started) FROM play_sessions p WHERE p.game_id = g.id),
                         g.origin, g.cover_own IS NOT NULL OR g.hero_own IS NOT NULL
                  FROM games g
-                 WHERE EXISTS (SELECT 1 FROM installs i WHERE i.game_id = g.id)
-                    OR (?1 AND EXISTS (SELECT 1 FROM available a WHERE a.game_id = g.id))
+                 WHERE
+                    (?2 = 0 AND (
+                        EXISTS (SELECT 1 FROM installs i WHERE i.game_id = g.id)
+                        OR (?1 AND EXISTS (SELECT 1 FROM available a WHERE a.game_id = g.id))
+                    ))
+                    OR (?2 = 1 AND (
+                        EXISTS (SELECT 1 FROM library_entries e WHERE e.game_id = g.id)
+                        OR EXISTS (SELECT 1 FROM installs i WHERE i.game_id = g.id AND i.place = 'local' AND i.source = 'steam')
+                    ))
                  ORDER BY g.title COLLATE NOCASE",
             )
             .map_err(err)?;
@@ -428,7 +472,7 @@ impl Store {
             .prepare("SELECT place, pending_update FROM installs WHERE game_id = ?1 AND pending_update IS NOT NULL ORDER BY place <> 'local', place")
             .map_err(err)?;
         let rows = games
-            .query_map(params![all], |r| {
+            .query_map(params![all, personal], |r| {
                 Ok(GameView {
                     id: r.get(0)?,
                     title: r.get(1)?,
@@ -1454,6 +1498,60 @@ mod tests {
         // Taken off the desktop's list: gone here at the next look.
         store.sync("home", "manual", &[], 2).unwrap();
         assert!(store.list().unwrap().is_empty());
+    }
+
+    #[test]
+    fn personal_library_is_curated_but_local_steam_installs_are_default() {
+        let mut store = Store::in_memory().unwrap();
+        store.sync(LOCAL, "steam", &[scanned("10", "Local Steam")], 100).unwrap();
+        store.sync("home", "steam", &[scanned("20", "Desktop Steam")], 100).unwrap();
+        store.sync(LOCAL, "gog", &[scanned("30", "Local GOG")], 100).unwrap();
+        store.sync_available(LOCAL, "steam", &[Offered { source_id: "40".into(), title: "Install Later".into(), cover: None }]).unwrap();
+
+        let ids = |store: &Store| store.list_personal().unwrap().into_iter().map(|g| g.id).collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(ids(&store), std::collections::BTreeSet::from(["steam:10".to_string()]));
+
+        store.add_to_my_library("steam:20", 110).unwrap();
+        store.add_to_my_library("gog:30", 120).unwrap();
+        store.add_to_my_library("steam:40", 130).unwrap();
+        assert_eq!(
+            ids(&store),
+            std::collections::BTreeSet::from(["gog:30".to_string(), "steam:10".to_string(), "steam:20".to_string(), "steam:40".to_string()])
+        );
+
+        store.sync(LOCAL, "steam", &[], 140).unwrap();
+        assert_eq!(
+            ids(&store),
+            std::collections::BTreeSet::from(["gog:30".to_string(), "steam:20".to_string(), "steam:40".to_string()])
+        );
+
+        // Storage uninstall adds membership before Steam removes the local install,
+        // so the uninstalled game remains available in My Library.
+        store.sync(LOCAL, "steam", &[scanned("10", "Local Steam")], 150).unwrap();
+        store.add_to_my_library("steam:10", 150).unwrap();
+        store.sync(LOCAL, "steam", &[], 160).unwrap();
+        assert!(ids(&store).contains("steam:10"));
+
+        store.remove_from_my_library("steam:40").unwrap();
+        assert!(!ids(&store).contains("steam:40"));
+    }
+
+    #[test]
+    fn personal_library_schema_is_created_for_an_existing_catalogue_without_backfilling() {
+        let db = Connection::open_in_memory().unwrap();
+        let old_schema = SCHEMA.replace(
+            "CREATE TABLE IF NOT EXISTS library_entries (\n    game_id TEXT PRIMARY KEY REFERENCES games(id) ON DELETE CASCADE,\n    added   INTEGER NOT NULL\n);\n",
+            "",
+        );
+        assert!(old_schema.len() < SCHEMA.len(), "the old catalogue fixture must omit the personal table");
+        db.execute_batch(&old_schema).unwrap();
+        db.execute("INSERT INTO games (id, title, platform, added) VALUES ('steam:1', 'Already Installed', 'Steam', 1)", []).unwrap();
+        db.execute("INSERT INTO installs (game_id, place, source, source_id, install_path) VALUES ('steam:1', 'local', 'steam', '1', '/games/one')", []).unwrap();
+        db.execute("INSERT INTO games (id, title, platform, added) VALUES ('steam:2', 'Desktop Only', 'Steam', 1)", []).unwrap();
+        db.execute("INSERT INTO installs (game_id, place, source, source_id, install_path) VALUES ('steam:2', 'home', 'steam', '2', '/games/two')", []).unwrap();
+        let store = Store::prepare(db).unwrap();
+        let ids = store.list_personal().unwrap().into_iter().map(|g| g.id).collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(ids, ["steam:1".to_string()].into_iter().collect());
     }
 
     #[test]
