@@ -97,15 +97,6 @@ section screen. Mapping:
 | `search` | `Search` (`screens/search.tsx`) | Y / `/` (`action === "search"`); searches My Library |
 | `add-games` | `AddGames` (`screens/add-games.tsx`) | My Library, "Add games"; selects from the full catalogue without installing |
 
-The My Library screen (`Games`) keeps its selection filters and counts visible,
-and sorts the same personal collection by last played, name, date added or
-playtime. The CSS grid uses an auto-fit minimum card width, so cover art stays
-legible when the shell is shown in a narrower window.
-
-Add Games filters the unselected catalogue before applying the selected view.
-Its on-screen controller keyboard is collapsible; physical/touch keyboard input
-still goes directly to the search field. After an item is added, focus moves to
-the next result when one exists, rather than jumping back to the page heading.
 | `manage` | `Manage` (`screens/manage.tsx`) | Settings, "Manage games"; registers standalone programs on this Ally |
 | `desktops` | `LinkDesktops` (`screens/link.tsx`) | Settings, "Desktops" |
 | `updates` | `Updates` (`screens/updates.tsx`) | Settings, "Updates" |
@@ -115,6 +106,15 @@ the next result when one exists, rather than jumping back to the page heading.
 | `storage` | `Storage` (`screens/storage.tsx`) | Settings, "Storage" |
 | `downloads` | `Downloads` (`screens/downloads.tsx`) | top bar download chip, Home "See every step", Settings |
 | `cleanup` | `Cleanup` (`screens/cleanup.tsx`), `id` = `home\|review\|changes\|kept` | Settings, "Clean up Windows"; sub-pages pushed by `open(view)` |
+
+The My Library screen (`Games`) keeps its selection filters and counts visible,
+and sorts the same personal collection by last played, name, date added or
+playtime. Its grid adapts to the available width while keeping cover art legible.
+
+Add Games filters the unselected catalogue before applying the selected view.
+Its on-screen controller keyboard is collapsible; physical/touch keyboard input
+still goes directly to the search field. After an item is added, focus moves to
+the next result when one exists, rather than jumping back to the page heading.
 
 Stack operations:
 
